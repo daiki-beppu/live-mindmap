@@ -33,7 +33,7 @@ const measured = (context: Context, time: number, patch: Partial<Model["playback
 // = で拡大した（見る状態が manual の）Model
 const manualAt = (context: Context, time: number, patch: Partial<Model["playback"]> = {}): Model => {
   const manual = appOf(context).update(measured(context, time, patch), keyOf("=")).model;
-  expect(manual.mapSurface.viewing.mode).toBe("manual");
+  expect(manual.mapSurface.camera.mode).toBe("manual");
   return manual;
 };
 
@@ -60,21 +60,21 @@ describe.each([
   it.each(operations)("%s", (_label, operation) => {
     const manual = manualAt(context, 150);
     const result = update(manual, operation);
-    expect(result.model.mapSurface.viewing.mode).toBe("auto");
+    expect(result.model.mapSurface.camera.mode).toBe("auto");
   });
 
   it("全体を見ている間（overview）も、時刻を動かすボタンで自動に戻る", () => {
     const overview = update(measured(context, 150), keyOf("F")).model;
-    expect(overview.mapSurface.viewing.mode).toBe("overview");
-    expect(update(overview, Message.ClickedPrev()).model.mapSurface.viewing.mode).toBe("auto");
+    expect(overview.mapSurface.camera.mode).toBe("overview");
+    expect(update(overview, Message.ClickedPrev()).model.mapSurface.camera.mode).toBe("auto");
   });
 
   it("差分を見ている間（diff）も、時刻を動かすボタン・キーで自動に戻る。F → F で差分を見る状態に入るのは、最後の反映で変わったノードがあるとき", () => {
     const overview = update(measured(context, 150), keyOf("F")).model;
     const diff = update(overview, keyOf("F")).model;
-    expect(diff.mapSurface.viewing.mode).toBe("diff");
+    expect(diff.mapSurface.camera.mode).toBe("diff");
     for (const operation of [Message.ClickedPrev(), Message.ClickedNext(), keyOf("J"), keyOf(","), seekTo("Min", 150)]) {
-      expect(update(diff, operation).model.mapSurface.viewing.mode).toBe("auto");
+      expect(update(diff, operation).model.mapSurface.camera.mode).toBe("auto");
     }
   });
 
@@ -86,7 +86,7 @@ describe.each([
       Message.ClickedMute(),
       context === plainContext ? Message.TickedFrame({ ms: 1000 }) : Message.UpdatedAudioTime({ time: 151 }),
     ];
-    for (const operation of untouched) expect(update(playing, operation).model.mapSurface.viewing.mode, JSON.stringify(operation)).toBe("manual");
+    for (const operation of untouched) expect(update(playing, operation).model.mapSurface.camera.mode, JSON.stringify(operation)).toBe("manual");
   });
 });
 
@@ -119,8 +119,8 @@ describe("右の列の出し入れは、表示面の見る状態（viewing.sideH
 
   it("隠していた列を E でもボタンでも出すと、列の幅だけのカメラのずらしが保留になる", () => {
     const hiddenFromStart = sideHiddenOf(measured(plainContext, 100));
-    expect(update(hiddenFromStart, keyOf("E")).model.mapSurface.pendingShift).toBe(true);
-    expect(update(hiddenFromStart, Message.ClickedSide()).model.mapSurface.pendingShift).toBe(true);
+    expect(update(hiddenFromStart, keyOf("E")).model.mapSurface.camera.pendingShift).toBe(true);
+    expect(update(hiddenFromStart, Message.ClickedSide()).model.mapSurface.camera.pendingShift).toBe(true);
   });
 
   it("列を出し入れしても、字幕の状態は変わらない", () => {
@@ -177,7 +177,7 @@ describe("見る状態の知らせは、どの入口で mode が変わっても�
       message(keyOf("F")),
       settle,
       model((m) => {
-        expect(m.mapSurface.viewing.mode).toBe("diff");
+        expect(m.mapSurface.camera.mode).toBe("diff");
         expect(noticeOf(m)).toBe(DIFF);
       }),
       message(Message.ClickedPrev()),
@@ -191,7 +191,7 @@ describe("見る状態の知らせは、どの入口で mode が変わっても�
       message(keyOf("Escape")),
       settle,
       model((m) => {
-        expect(m.mapSurface.viewing.mode).toBe("auto");
+        expect(m.mapSurface.camera.mode).toBe("auto");
         expect(noticeOf(m)).toBeNull();
       }),
     );
@@ -204,13 +204,13 @@ describe("見る状態の知らせは、どの入口で mode が変わっても�
       message(wheel(100)),
       settle,
       model((m) => {
-        expect(m.mapSurface.viewing.mode).toBe("manual");
+        expect(m.mapSurface.camera.mode).toBe("manual");
         expect(noticeOf(m)).toBe(MANUAL);
       }),
       message(surface(MapSurfaceMessage.ElapsedIdleTime())),
       settle,
       model((m) => {
-        expect(m.mapSurface.viewing.mode).toBe("auto");
+        expect(m.mapSurface.camera.mode).toBe("auto");
         expect(noticeOf(m)).toBeNull();
       }),
     );
@@ -250,7 +250,7 @@ describe("選んだノードが消える時刻へ動かすと、見る状態に�
 
   it("変わったことの項目を選ぶと見る状態は manual。その状態で先頭へ戻ると、選んだノードは今のマップに無いので、移り先（残っているノード）が選ばれる", () => {
     const selected = selectChangeAtEnd();
-    expect(selected.mapSurface.viewing.mode).toBe("manual");
+    expect(selected.mapSurface.camera.mode).toBe("manual");
     expect(selected.mapSurface.viewing.selection?.id).toBe("n3");
     const atStart = update(selected, keyOf("Home")).model;
     expect(atStart.playback.time).toBe(0);

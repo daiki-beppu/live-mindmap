@@ -188,13 +188,15 @@ describe("見返しの update: 表示面の実測", () => {
 // 見る状態（Issue #818）は表示面の Model.viewing に持ち、見返しの Model.mapSurface に持ち越される（時刻を動かしても残る）
 describe("見返しの update: 表示面の見る状態", () => {
   it("初期は自動のカメラ・選択なしで、本物の Model に通る", () => {
-    expect(init(context).mapSurface.viewing).toEqual({ mode: "auto" });
+    expect(init(context).mapSurface.viewing).toEqual({  });
+    expect(init(context).mapSurface.camera.mode).toBe("auto");
     expect(Schema.is(Model)(init(context))).toBe(true);
   });
 
   it("狭い幅で開くと（Flags の startsNarrow）、右の列と字幕を隠して始める。広い幅では両方出して始める", () => {
     const narrow = init(context, { startsNarrow: true });
-    expect(narrow.mapSurface.viewing).toEqual({ mode: "auto", sideHidden: true });
+    expect(narrow.mapSurface.viewing).toEqual({ sideHidden: true });
+    expect(narrow.mapSurface.camera.mode).toBe("auto");
     expect(narrow.captionsHidden).toBe(true);
     expect(Schema.is(Model)(narrow)).toBe(true);
     const wide = init(context, { startsNarrow: false });
@@ -207,11 +209,13 @@ describe("見返しの update: 表示面の見る状態", () => {
       update,
       given(at(30)),
       message(Message.GotMapSurfaceMessage({ message: MapSurfaceMessage.ClickedNodeButton({ nodeId: "t2", clientX: 0, clientY: 0 }) })),
-      model((m) => expect(m.mapSurface.viewing).toEqual({ mode: "auto", selection: { id: "t2", byKey: false } })),
+      model((m) => { expect(m.mapSurface.viewing).toEqual({ selection: { id: "t2", byKey: false } });
+      expect(m.mapSurface.camera.mode).toBe("auto"); }),
       message(Message.ClickedPrev()),
       model((m) => {
         expect(m.playback.time).toBe(10);
-        expect(m.mapSurface.viewing).toEqual({ mode: "auto", selection: { id: "t2", byKey: false } });
+        expect(m.mapSurface.viewing).toEqual({ selection: { id: "t2", byKey: false } });
+        expect(m.mapSurface.camera.mode).toBe("auto");
       }),
     );
   });
@@ -232,9 +236,9 @@ describe("見返しの update: 表示面のカメラ", () => {
       given(base),
       message(surface(MapSurfaceMessage.WheeledMapSurface({ x: 0, y: 0, deltaX: 40, deltaY: 100, deltaMode: 0, shiftKey: false, ctrlKey: false, metaKey: false, timeStamp: 0 }))),
       model((m) => {
-        expect(m.mapSurface.viewing.mode).toBe("manual");
-        expect(m.mapSurface.viewport.x).toBeCloseTo(base.mapSurface.viewport.x - 20, 9);
-        expect(m.mapSurface.viewport.y).toBeCloseTo(base.mapSurface.viewport.y - 50, 9);
+        expect(m.mapSurface.camera.mode).toBe("manual");
+        expect(m.mapSurface.camera.viewport.x).toBeCloseTo(base.mapSurface.camera.viewport.x - 20, 9);
+        expect(m.mapSurface.camera.viewport.y).toBeCloseTo(base.mapSurface.camera.viewport.y - 50, 9);
         expect(m.mapSurface.idleStamp).not.toBe(base.mapSurface.idleStamp);
       }),
       settleNotice,
@@ -242,7 +246,7 @@ describe("見返しの update: 表示面のカメラ", () => {
       restarted,
       model((m) => {
         expect(m.playback.time).toBe(10);
-        expect(m.mapSurface.viewing.mode).toBe("auto");
+        expect(m.mapSurface.camera.mode).toBe("auto");
       }),
       settleNotice,
     );
@@ -250,14 +254,15 @@ describe("見返しの update: 表示面のカメラ", () => {
 
   it("止めている間に 10 秒が過ぎる（ElapsedIdleTime）と、自動に戻り、viewport は寄せ直される", () => {
     const moved = scrolled(measured(at(30)));
-    expect(moved.mapSurface.viewing.mode).toBe("manual");
+    expect(moved.mapSurface.camera.mode).toBe("manual");
     story(
       update,
       given(moved),
       message(surface(MapSurfaceMessage.ElapsedIdleTime())),
       model((m) => {
-        expect(m.mapSurface.viewing).toEqual({ mode: "auto" });
-        expect(m.mapSurface.viewport).not.toEqual(moved.mapSurface.viewport);
+        expect(m.mapSurface.viewing).toEqual({  });
+        expect(m.mapSurface.camera.mode).toBe("auto");
+        expect(m.mapSurface.camera.viewport).not.toEqual(moved.mapSurface.camera.viewport);
       }),
       settleNotice,
     );
@@ -270,8 +275,9 @@ describe("見返しの update: 表示面のカメラ", () => {
       given(base),
       message(surface(MapSurfaceMessage.ElapsedIdleTime())),
       model((m) => {
-        expect(m.mapSurface.viewing).toEqual({ mode: "auto" });
-        expect(m.mapSurface.viewport).toEqual(base.mapSurface.viewport);
+        expect(m.mapSurface.viewing).toEqual({  });
+        expect(m.mapSurface.camera.mode).toBe("auto");
+        expect(m.mapSurface.camera.viewport).toEqual(base.mapSurface.camera.viewport);
       }),
     );
   });
@@ -285,10 +291,10 @@ describe("見返しの update: 表示面のカメラ", () => {
   const expectFollowed = (before: Model, after: Model, to: number) => {
     const expected = expectedAfter(before, to);
     expect(after.playback.time).toBe(to);
-    expect(after.mapSurface.viewport.x).toBeCloseTo(expected.viewport.x, 9);
-    expect(after.mapSurface.viewport.y).toBeCloseTo(expected.viewport.y, 9);
-    expect(after.mapSurface.viewport.zoom).toBeCloseTo(expected.viewport.zoom, 9);
-    expect(after.mapSurface.viewport).not.toEqual(before.mapSurface.viewport);
+    expect(after.mapSurface.camera.viewport.x).toBeCloseTo(expected.camera.viewport.x, 9);
+    expect(after.mapSurface.camera.viewport.y).toBeCloseTo(expected.camera.viewport.y, 9);
+    expect(after.mapSurface.camera.viewport.zoom).toBeCloseTo(expected.camera.viewport.zoom, 9);
+    expect(after.mapSurface.camera.viewport).not.toEqual(before.mapSurface.camera.viewport);
   };
 
   it("自動・測定済みで prev すると、viewport が移動先の Snapshot へ寄せ直される", () => {
@@ -355,7 +361,7 @@ describe("見返しの update: 開閉の後の最終配置とカメラ", () => {
   // view と同じ式で描く、ノードの画面座標
   const drawnAt = (m: Model, id: string) => {
     const surface = surfaceOf(m);
-    return screenPoint(surface.viewport, MapSurface.displayedPositions(surface)[id]!);
+    return screenPoint(surface.camera.viewport, MapSurface.displayedPositions(surface)[id]!);
   };
   const expectDrawnAt = (m: Model, id: string, point: { x: number; y: number }) => {
     const at = drawnAt(m, id);
@@ -374,7 +380,7 @@ describe("見返しの update: 開閉の後の最終配置とカメラ", () => {
 
   it("止めている間（manual）に丸を押すと、押したノードの画面座標は押す前と同じ。補間の最中も終わった後も、位置を保っている間に高さが変わっても同じ", () => {
     const start = run(initial(), measureMsg(), wheelMsg);
-    expect(start.mapSurface.viewing.mode).toBe("manual");
+    expect(start.mapSurface.camera.mode).toBe("manual");
     const point = drawnAt(start, T1);
     expectChildStartsMotion(start, clickDot(T1));
     story(
@@ -383,7 +389,7 @@ describe("見返しの update: 開閉の後の最終配置とカメラ", () => {
       message(clickDot(T1)),
       model((m) => {
         expect(Option.isSome(m.mapSurface.motion)).toBe(true);
-        expect(m.mapSurface.viewport.zoom).toBe(start.mapSurface.viewport.zoom);
+        expect(m.mapSurface.camera.viewport.zoom).toBe(start.mapSurface.camera.viewport.zoom);
         expectDrawnAt(m, T1, point);
       }),
       message(tick(250)),
@@ -413,7 +419,7 @@ describe("見返しの update: 開閉の後の最終配置とカメラ", () => {
 
   it("全体を見ている間（overview）の開閉も、押したノードの画面座標は押す前と同じ", () => {
     const start = run(initial(), measureMsg(), keyMsg("F"));
-    expect(start.mapSurface.viewing.mode).toBe("overview");
+    expect(start.mapSurface.camera.mode).toBe("overview");
     const point = drawnAt(start, T1);
     expectChildStartsMotion(start, clickDot(T1));
     story(
@@ -421,9 +427,9 @@ describe("見返しの update: 開閉の後の最終配置とカメラ", () => {
       given(start),
       message(clickDot(T1)),
       model((m) => {
-        expect(m.mapSurface.viewing.mode).toBe("overview");
+        expect(m.mapSurface.camera.mode).toBe("overview");
         expect(Option.isSome(m.mapSurface.motion)).toBe(true);
-        expect(m.mapSurface.viewport.zoom).toBe(start.mapSurface.viewport.zoom);
+        expect(m.mapSurface.camera.viewport.zoom).toBe(start.mapSurface.camera.viewport.zoom);
         expectDrawnAt(m, T1, point);
       }),
       message(tick(250)),
@@ -458,7 +464,7 @@ describe("見返しの update: 今の議題が無い自動のカメラ", () => {
     const message = got(MapSurfaceMessage.MeasuredMapSurface({ width: 800, height: 600, nodeHeights: heights(300) }));
     // 前提: 今の議題が無く、子の update では補間が始まって収め直しが始まりの位置で行われる
     expect(cameraFocus(snapshotOf(ctx, first))).toBeNull();
-    expect(first.mapSurface.viewing.mode).toBe("auto");
+    expect(first.mapSurface.camera.mode).toBe("auto");
     const child = MapSurface.update(surfaceOf(first), (message as { message: MapSurfaceMessage }).message).model;
     expect(Option.isSome(child.motion)).toBe(true);
     const during = upd(first, message).model;
@@ -469,11 +475,11 @@ describe("見返しの update: 今の議題が無い自動のカメラ", () => {
     const positions = MapSurface.displayedPositions(surface);
     const rects = surface.snapshot.nodes.map((n) => ({ x: positions[n.id]!.x, y: positions[n.id]!.y, width: NODE_WIDTH, height: heights(300)[n.id]! }));
     const expected = fitViewport(rects, { width: 800, height: 600 }, 0.5, USER_MAX_ZOOM)!;
-    expect(next.mapSurface.viewport.x).toBeCloseTo(expected.x, 6);
-    expect(next.mapSurface.viewport.y).toBeCloseTo(expected.y, 6);
-    expect(next.mapSurface.viewport.zoom).toBeCloseTo(expected.zoom, 6);
+    expect(next.mapSurface.camera.viewport.x).toBeCloseTo(expected.x, 6);
+    expect(next.mapSurface.camera.viewport.y).toBeCloseTo(expected.y, 6);
+    expect(next.mapSurface.camera.viewport.zoom).toBeCloseTo(expected.zoom, 6);
     // 前提: 補間中の位置で収めた viewport とは別の値になる入力である
-    const childFit = MapSurface.update({ ...surfaceOf(first) }, (message as { message: MapSurfaceMessage }).message).model.viewport;
+    const childFit = MapSurface.update({ ...surfaceOf(first) }, (message as { message: MapSurfaceMessage }).message).model.camera.viewport;
     expect(Math.abs(childFit.x - expected.x) + Math.abs(childFit.y - expected.y) + Math.abs(childFit.zoom - expected.zoom)).toBeGreaterThan(1e-3);
   });
 });

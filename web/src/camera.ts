@@ -1,3 +1,4 @@
+import { Option, Schema } from "effect";
 import type { Snapshot } from "../../server/src/core/index.ts";
 import { changedNodeIds } from "./changes.ts";
 import { DEFAULT_HEIGHT, NODE_WIDTH, type Position } from "./layout.ts";
@@ -258,11 +259,6 @@ export function anchoredViewport(viewport: Viewport, position: Position, anchor:
   return { x: anchor.x - position.x * viewport.zoom, y: anchor.y - position.y * viewport.zoom, zoom: viewport.zoom };
 }
 
-export function shouldMoveCamera(snapshot: Snapshot, placedRound: number | null): boolean {
-  if (placedRound === null || placedRound === snapshot.round) return true;
-  return snapshot.lastChanged !== undefined || snapshot.changes.some((c) => c.round === snapshot.round);
-}
-
 const FIT_PADDING = 0.1;
 
 const fitPadding = (side: number): number => Math.floor((side - side / (1 + FIT_PADDING)) * 0.5);
@@ -281,4 +277,181 @@ export function fitViewport(rects: readonly Rect[], size: Size, minZoom: number,
   const shortRight = Math.min(Math.floor(size.width - (right * zoom + x)) - padX, 0);
   const shortBottom = Math.min(Math.floor(size.height - (bottom * zoom + y)) - padY, 0);
   return { x: x - shortLeft + shortRight, y: y - shortTop + shortBottom, zoom };
+}
+
+
+export const Camera = Schema.Struct({
+  mode: Schema.Literals(["auto", "manual", "overview", "diff"]),
+  topic: Schema.UndefinedOr(Schema.String),
+  viewport: Schema.Struct({ x: Schema.Finite, y: Schema.Finite, zoom: Schema.Finite }),
+  placedRound: Schema.Option(Schema.Finite),
+  keepAnchor: Schema.Option(Schema.Struct({ id: Schema.String, point: Schema.Struct({ x: Schema.Finite, y: Schema.Finite }) })),
+  pendingShift: Schema.Boolean,
+});
+export type Camera = typeof Camera.Type;
+
+export const initialCamera = (): Camera => ({ mode: "auto", topic: undefined, viewport: { x: 0, y: 0, zoom: 1 }, placedRound: Option.none(), keepAnchor: Option.none(), pendingShift: false });
+
+export type CameraInput =
+  | { type: "selectedByKey"; id: string }
+  | { type: "toggledFold"; id: string }
+  | { type: "pointedNode"; id: string }
+  | { type: "selectedSubtree"; id: string }
+  | { type: "viewKey"; key: "=" | "-" | "0" | "Shift+ArrowLeft" | "Shift+ArrowRight" | "Shift+ArrowUp" | "Shift+ArrowDown" }
+  | { type: "toggledOverview" }
+  | { type: "escaped" }
+  | { type: "toggledSide" }
+  | { type: "reflected" }
+  | { type: "elapsedIdle" }
+  | { type: "movedTime" }
+  | { type: "unrelated" }
+  | { type: "measured"; heightsChanged: boolean }
+  | { type: "replacedSnapshot" }
+  | { type: "frame" }
+  | { type: "movedByUser"; viewport: Viewport };
+
+type Focus = NonNullable<ReturnType<typeof cameraFocus>>;
+export type CameraSeen = {
+  scope: "still" | "live" | "review";
+  currentTopic: string | undefined;
+  round: number;
+  hasChanges: boolean;
+  sideHidden: boolean;
+  size: Option.Option<Size>;
+  targets: Record<string, Position>;
+  positions: Record<string, Position>;
+  dims: Record<string, { height: number }>;
+  ids: string[];
+  parents: Record<string, string | null>;
+  shownIdOf: (id: string) => string;
+  focus: Focus | null;
+  changed: Focus | null;
+};
+
+type Placement = "topic" | "unchanged" | "all" | "changes" | "input";
+type Decision = { mode: Camera["mode"]; placement: Placement; reset: "keep" | "clear" | "refocus" | "side"; topic: "keep" | "current" | "clear" };
+const decision = (mode: Camera["mode"], placement: Placement, reset: Decision["reset"], topic: Decision["topic"]): Decision => ({ mode, placement, reset, topic });
+
+const clampedViewport = (viewport: Viewport, size: Size): Viewport => zoomAroundCenter(viewport, clampUserZoom(viewport.zoom), size);
+const boxesOf = (seen: CameraSeen, focus: Focus) => ({ rects: focus.ids.map((id) => nodeRect(id, seen.targets, seen.dims)), center: nodeRect(focus.center, seen.targets, seen.dims) });
+const fittedOf = (seen: CameraSeen, size: Size): Viewport =>
+  fitViewport(seen.ids.filter((id) => seen.dims[id] !== undefined).map((id) => nodeRect(id, seen.positions, seen.dims)), size, seen.scope === "still" ? OVERVIEW_MIN_ZOOM : USER_MIN_ZOOM, USER_MAX_ZOOM) ?? { x: 0, y: 0, zoom: 1 };
+
+function placeCamera(camera: Camera, placement: Placement, seen: CameraSeen): Camera {
+  if (Option.isNone(seen.size) || placement === "unchanged" || placement === "input") return camera;
+  const size = seen.size.value;
+  if (seen.scope === "still") return { ...camera, viewport: fittedOf(seen, size) };
+  if (placement === "all") {
+    if (Option.isSome(camera.keepAnchor)) return camera;
+    const viewport = overviewViewport(seen.ids, seen.targets, seen.dims, size);
+    return viewport === null ? camera : { ...camera, viewport };
+  }
+  if (placement === "changes") {
+    if (Option.isSome(camera.keepAnchor) || seen.changed === null) return camera;
+    const boxes = boxesOf(seen, seen.changed);
+    return { ...camera, viewport: focusViewport(boxes.rects, boxes.center, size, USER_MIN_ZOOM) };
+  }
+  if (seen.focus === null) return { ...camera, placedRound: Option.none(), viewport: fittedOf(seen, size) };
+  const placed = Option.getOrNull(camera.placedRound);
+  if (placed !== null && placed !== seen.round && !seen.hasChanges) return camera;
+  const boxes = boxesOf(seen, seen.focus);
+  return { ...camera, placedRound: Option.some(seen.round), viewport: focusViewport(boxes.rects, boxes.center, size) };
+}
+
+function reanchor(camera: Camera, seen: CameraSeen): Camera {
+  if (Option.isNone(camera.keepAnchor)) return camera;
+  const { id, point } = camera.keepAnchor.value;
+  const at = seen.positions[id];
+  return at === undefined ? camera : { ...camera, viewport: anchoredViewport(camera.viewport, at, point) };
+}
+
+function keyViewport(viewport: Viewport, key: Extract<CameraInput, { type: "viewKey" }>["key"], size: Size): Viewport {
+  switch (key) {
+    case "=": return zoomAroundCenter(viewport, clampUserZoom(viewport.zoom * 1.25), size);
+    case "-": return zoomAroundCenter(viewport, clampUserZoom(viewport.zoom / 1.25), size);
+    case "0": return zoomAroundCenter(viewport, clampUserZoom(1), size);
+    case "Shift+ArrowLeft": return panViewport(clampedViewport(viewport, size), { dx: -1, dy: 0 }, size);
+    case "Shift+ArrowRight": return panViewport(clampedViewport(viewport, size), { dx: 1, dy: 0 }, size);
+    case "Shift+ArrowUp": return panViewport(clampedViewport(viewport, size), { dx: 0, dy: -1 }, size);
+    case "Shift+ArrowDown": return panViewport(clampedViewport(viewport, size), { dx: 0, dy: 1 }, size);
+  }
+}
+
+function applyInput(camera: Camera, input: CameraInput, previous: CameraSeen, seen: CameraSeen): Camera {
+  if (input.type === "movedByUser") return { ...camera, viewport: Option.isNone(seen.size) ? input.viewport : clampedViewport(input.viewport, seen.size.value) };
+  if (Option.isNone(seen.size)) return camera;
+  const size = seen.size.value;
+  switch (input.type) {
+    case "selectedByKey": return { ...camera, viewport: revealViewport(clampedViewport(camera.viewport, size), nodeRect(input.id, seen.targets, seen.dims), size) };
+    case "pointedNode": return { ...camera, viewport: nodeFocusViewport(nodeRect(input.id, seen.targets, seen.dims), camera.viewport.zoom, size) };
+    case "selectedSubtree": return { ...camera, viewport: subtreeViewport(input.id, seen, seen.targets, seen.dims, size) };
+    case "viewKey": return { ...camera, viewport: keyViewport(camera.viewport, input.key, size) };
+    case "toggledFold": {
+      const at = previous.positions[input.id] ?? seen.positions[input.id];
+      return at === undefined ? camera : { ...camera, keepAnchor: Option.some({ id: seen.shownIdOf(input.id), point: screenPoint(camera.viewport, at) }) };
+    }
+    default: return camera;
+  }
+}
+
+function measuredCamera(camera: Camera, placement: Placement, input: Extract<CameraInput, { type: "measured" }>, previous: CameraSeen, seen: CameraSeen): Camera {
+  const widthChanged = Option.isSome(seen.size) && (Option.isNone(previous.size) || previous.size.value.width !== seen.size.value.width);
+  const sizeChanged = Option.isSome(seen.size) && (Option.isNone(previous.size) || previous.size.value.width !== seen.size.value.width || previous.size.value.height !== seen.size.value.height);
+  const changed = Option.isNone(previous.size) || (!(camera.pendingShift && widthChanged) && sizeChanged) || input.heightsChanged;
+  const placed = reanchor(changed ? placeCamera(camera, placement, seen) : camera, seen);
+  if (!placed.pendingShift || !widthChanged || Option.isNone(seen.size)) return placed;
+  const settled = { ...placed, pendingShift: false };
+  return seen.scope === "still" || seen.sideHidden || seen.focus === null ? settled : { ...settled, viewport: shiftIntoView(settled.viewport, boxesOf(seen, seen.focus).rects, seen.size.value) };
+}
+
+export function stepCamera(camera: Camera, input: CameraInput, previous: CameraSeen, seen: CameraSeen): Camera {
+  const automatic = decision("auto", "topic", "clear", "clear");
+  const refocused = decision("auto", "topic", "refocus", "clear");
+  const manualInput = decision("manual", "input", "clear", "current");
+  const settled = {
+    auto: automatic,
+    manual: decision("manual", "unchanged", "clear", "keep"),
+    overview: decision("overview", "all", "clear", "keep"),
+    diff: decision("diff", "changes", "clear", "keep"),
+  };
+  const retained = {
+    auto: decision("auto", "topic", "keep", "keep"),
+    manual: decision("manual", "unchanged", "keep", "keep"),
+    overview: decision("overview", "all", "keep", "keep"),
+    diff: decision("diff", "changes", "keep", "keep"),
+  };
+  const allManual = { auto: manualInput, manual: manualInput, overview: manualInput, diff: manualInput };
+  const fold = (mode: Camera["mode"]) => decision(mode, "input", "clear", "keep");
+  const side = (mode: Camera["mode"]) => decision(mode, "unchanged", "side", "keep");
+  const reflected = (mode: "manual" | "overview" | "diff") => seen.currentTopic !== camera.topic ? refocused : settled[mode];
+  const overview = decision("overview", "all", "clear", "current");
+  const table: Record<CameraInput["type"], Record<Camera["mode"], Decision>> = {
+    selectedByKey: allManual,
+    pointedNode: allManual,
+    selectedSubtree: allManual,
+    viewKey: allManual,
+    movedByUser: allManual,
+    toggledOverview: { auto: overview, manual: overview, overview: seen.changed === null ? refocused : decision("diff", "changes", "clear", "current"), diff: overview },
+    escaped: { auto: automatic, manual: refocused, overview: refocused, diff: refocused },
+    reflected: { auto: automatic, manual: reflected("manual"), overview: reflected("overview"), diff: reflected("diff") },
+    toggledFold: { auto: refocused, manual: fold("manual"), overview: fold("overview"), diff: fold("diff") },
+    toggledSide: { auto: side("auto"), manual: side("manual"), overview: side("overview"), diff: side("diff") },
+    elapsedIdle: { ...settled, manual: seen.scope === "review" ? refocused : settled.manual },
+    movedTime: { auto: decision("auto", "unchanged", "keep", "keep"), manual: seen.scope === "review" ? refocused : settled.manual, overview: seen.scope === "review" ? refocused : settled.overview, diff: seen.scope === "review" ? refocused : settled.diff },
+    unrelated: settled,
+    measured: retained,
+    replacedSnapshot: retained,
+    frame: { ...retained, auto: { ...retained.auto, placement: seen.scope !== "still" && seen.focus === null ? "topic" : "unchanged" }, overview: { ...retained.overview, placement: "unchanged" }, diff: { ...retained.diff, placement: "unchanged" } },
+  };
+  const rule = table[input.type][camera.mode];
+  const next: Camera = {
+    ...camera,
+    mode: rule.mode,
+    topic: rule.topic === "clear" ? undefined : rule.topic === "current" ? seen.currentTopic : camera.topic,
+    pendingShift: rule.reset === "keep" ? camera.pendingShift : rule.reset === "side",
+    keepAnchor: rule.reset === "keep" ? camera.keepAnchor : Option.none(),
+    placedRound: rule.reset === "refocus" ? Option.none() : camera.placedRound,
+  };
+  if (input.type === "measured") return measuredCamera(next, rule.placement, input, previous, seen);
+  return reanchor(rule.placement === "input" ? applyInput(next, input, previous, seen) : placeCamera(next, rule.placement, seen), seen);
 }

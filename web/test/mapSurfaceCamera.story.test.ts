@@ -4,8 +4,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { Snapshot, type ChangeEntry, type SnapshotNode } from "../../server/src/core/index.ts";
 import { blinkRestartsOf, changedSnapshot, displayedPositions, init, Model, update } from "../src/app/mapSurface/main.ts";
 import { Message } from "../src/app/mapSurface/message.ts";
+import * as Meeting from "../src/app/meeting/main.ts";
+import { Message as MeetingMessage } from "../src/app/meeting/message.ts";
+import { Message as LiveFeedMessage } from "../src/app/liveFeed/message.ts";
 import {
   cameraFocus,
+  anchoredViewport,
   changedFocus,
   clampUserZoom,
   fitViewport,
@@ -25,9 +29,8 @@ import {
   type Viewport,
 } from "../src/camera.ts";
 import { foldView, keepTargetOf } from "../src/folding.ts";
-import * as folding from "../src/folding.ts";
 import { layout, NODE_WIDTH } from "../src/layout.ts";
-import { type ViewingState, type ViewKey } from "../src/viewing.ts";
+import { type ViewKey } from "../src/viewing.ts";
 
 // マップの表示面のカメラ（Issue #819）の Story。update に Message を流し、そのたびの Model の viewport と viewing を見る。
 // 反映で寄せる・人が動かすと止まる・全体を見て戻る・開閉で位置を保つ・列を出してずらす、を update の中の関数の呼び順として確かめる。
@@ -129,46 +132,162 @@ const expectViewport = (actual: Viewport, expected: Viewport) => {
   expect(actual.zoom).toBeCloseTo(expected.zoom, 6);
 };
 const expectDifferent = (a: Viewport, b: Viewport) => expect(Math.abs(a.x - b.x) + Math.abs(a.y - b.y) + Math.abs(a.zoom - b.zoom)).toBeGreaterThan(1e-3);
-const manualAt = (topic: string | undefined): ViewingState => ({ mode: "manual", topic });
+const manualAt = (topic: string | undefined) => ({ mode: "manual", topic });
+const cameraViewOf = (m: MapSurfaceModel) => m.camera.mode === "auto" ? { mode: "auto" } : { mode: m.camera.mode, topic: m.camera.topic };
+const withViewport = (m: MapSurfaceModel, viewport: Viewport): MapSurfaceModel => ({ ...m, camera: { ...m.camera, viewport } });
+
+describe("入力と前の見方から決まるカメラ", () => {
+  type Mode = MapSurfaceModel["camera"]["mode"];
+  type Case = {
+    input: string;
+    before: Mode;
+    after: Mode;
+    start: () => MapSurfaceModel;
+    apply: (m: MapSurfaceModel) => MapSurfaceModel;
+    expected: (before: MapSurfaceModel, after: MapSurfaceModel) => Viewport;
+  };
+  const modes: Mode[] = ["auto", "manual", "overview", "diff"];
+  const inMode = (mode: Mode, scope: "live" | "review" = "live"): MapSurfaceModel => {
+    const initial = settle(withChanges(["B1"]), scope);
+    if (mode === "manual") return run(initial, scroll);
+    if (mode === "overview") return run(initial, key("F"));
+    if (mode === "diff") return run(initial, key("F"), key("F"));
+    return initial;
+  };
+  const unchanged = (before: MapSurfaceModel) => before.camera.viewport;
+  const clamped = (m: MapSurfaceModel) => zoomAroundCenter(m.camera.viewport, clampUserZoom(m.camera.viewport.zoom), sizeOf(m));
+  const keys: ReadonlyArray<readonly [ViewKey, (m: MapSurfaceModel) => Viewport]> = [
+    ["=", (m) => zoomAroundCenter(m.camera.viewport, clampUserZoom(m.camera.viewport.zoom * 1.25), sizeOf(m))],
+    ["-", (m) => zoomAroundCenter(m.camera.viewport, clampUserZoom(m.camera.viewport.zoom / 1.25), sizeOf(m))],
+    ["0", (m) => zoomAroundCenter(m.camera.viewport, clampUserZoom(1), sizeOf(m))],
+    ["Shift+ArrowRight", (m) => panViewport(clamped(m), { dx: 1, dy: 0 }, sizeOf(m))],
+    ["Shift+ArrowLeft", (m) => panViewport(clamped(m), { dx: -1, dy: 0 }, sizeOf(m))],
+    ["Shift+ArrowUp", (m) => panViewport(clamped(m), { dx: 0, dy: -1 }, sizeOf(m))],
+    ["Shift+ArrowDown", (m) => panViewport(clamped(m), { dx: 0, dy: 1 }, sizeOf(m))],
+  ];
+  const cases: Case[] = modes.flatMap((mode): Case[] => [
+    ...keys.map(([pressed, expected]): Case => ({ input: pressed, before: mode, after: "manual", start: () => inMode(mode), apply: (m) => run(m, key(pressed)), expected })),
+    { input: "F", before: mode, after: mode === "overview" ? "diff" : "overview", start: () => inMode(mode), apply: (m) => run(m, key("F")), expected: (_before, after) => mode === "overview" ? changedExpected(after) : overviewExpected(after) },
+    { input: "Esc", before: mode, after: "auto", start: () => inMode(mode), apply: (m) => run(m, Message.PressedEscapeKey(mods)), expected: (_before, after) => focusExpected(after) },
+    { input: "クリックで選ぶ", before: mode, after: mode, start: () => inMode(mode), apply: (m) => run(m, clickNode("A")), expected: unchanged },
+    { input: "選択を外す", before: mode, after: mode, start: () => run(inMode(mode), clickNode("A")), apply: (m) => run(m, Message.ClickedEvidenceClose()), expected: unchanged },
+    { input: "Z（選択あり）", before: mode, after: "manual", start: () => run(inMode(mode), clickNode("A")), apply: (m) => run(m, key("Z")), expected: (_before, after) => {
+      const shown = shownOf(after);
+      return subtreeViewport("A", { ids: shown.map((n) => n.id), parents: Object.fromEntries(shown.map((n) => [n.id, n.parent])) }, targetsOf(after), dimsOf(after), sizeOf(after));
+    } },
+    { input: "Z（選択なし）", before: mode, after: mode, start: () => inMode(mode), apply: (m) => run(m, key("Z")), expected: unchanged },
+    { input: "矢印で画面外の子を選ぶ", before: mode, after: "manual", start: () => run(inMode(mode), clickNode("A")), apply: (m) => run(m, Message.PressedArrowKey({ dir: "right", ...mods })), expected: (before, after) => revealViewport(clamped(before), nodeRect("A1", targetsOf(after), dimsOf(after)), sizeOf(after)) },
+    { input: "縁の点", before: mode, after: "manual", start: () => inMode(mode), apply: (m) => run(m, Message.ClickedEdgeDot({ nodeId: "B3" })), expected: (before, after) => nodeFocusViewport(nodeRect("B3", targetsOf(after), dimsOf(after)), before.camera.viewport.zoom, sizeOf(after)) },
+    { input: "変更項目", before: mode, after: "manual", start: () => inMode(mode), apply: (m) => run(m, Message.ClickedChangeItem({ nodeId: "B3" })), expected: (before, after) => nodeFocusViewport(nodeRect("B3", targetsOf(after), dimsOf(after)), before.camera.viewport.zoom, sizeOf(after)) },
+    { input: "同じ議題の反映", before: mode, after: mode, start: () => inMode(mode), apply: (m) => run(m, changed(withChanges(["A1", "B3"], 3))), expected: (before, after) => mode === "manual" ? before.camera.viewport : mode === "overview" ? overviewExpected(after) : mode === "diff" ? changedExpected(after) : focusExpected(after) },
+    { input: "議題が変わる反映", before: mode, after: "auto", start: () => inMode(mode), apply: (m) => run(m, changed(withChanges(["B3"], 3, { currentTopic: "B" }))), expected: (_before, after) => focusExpected(after) },
+    { input: "議題がなくなる反映", before: mode, after: "auto", start: () => inMode(mode), apply: (m) => run(m, changed(snap(baseNodes(), { round: 3 }))), expected: (_before, after) => fitExpected(after) },
+    { input: "ライブの時刻の移動", before: mode, after: mode, start: () => inMode(mode), apply: (m) => run(m, Message.MovedTime()), expected: unchanged },
+    { input: "人のスクロール", before: mode, after: "manual", start: () => inMode(mode), apply: (m) => run(m, scroll), expected: (before) => zoomAroundCenter({ ...before.camera.viewport, x: before.camera.viewport.x - 20, y: before.camera.viewport.y - 50 }, clampUserZoom(before.camera.viewport.zoom), sizeOf(before)) },
+    { input: "見返しの待ち時間", before: mode, after: mode === "manual" ? "auto" : mode, start: () => inMode(mode, "review"), apply: (m) => run(m, Message.ElapsedIdleTime()), expected: (before, after) => mode === "manual" ? focusExpected(after) : before.camera.viewport },
+    { input: "見返しの時刻の移動", before: mode, after: "auto", start: () => inMode(mode, "review"), apply: (m) => run(m, Message.MovedTime()), expected: (before, after) => mode === "auto" ? before.camera.viewport : focusExpected(after) },
+  ]);
+  for (const [input, toggle] of [["丸で開いて畳む", clickFoldDot("A")], ["Enterで開いて畳む", Message.PressedEnterKey(mods)]] as const) {
+    cases.push({
+      input,
+      before: "diff",
+      after: "diff",
+      start: () => run(settle(foldable({ round: 2, changes: [change("B1", 2)], lastChanged: "B1" })), clickNode("A"), key("F"), key("F")),
+      apply: (start) => {
+        expect(displayedPositions(start)["A1"]).toBeUndefined();
+        expect(displayedPositions(start)["A2"]).toBeUndefined();
+        let current = start;
+        for (const open of [true, false]) {
+          const before = current;
+          const position = displayedPositions(before)["A"]!;
+          const point = screenPoint(before.camera.viewport, position);
+          current = run(current, toggle);
+          for (const elapsed of [0, 250, 500]) {
+            if (elapsed > 0) current = run(current, tick(250));
+            const positions = displayedPositions(current);
+            const actual = screenPoint(current.camera.viewport, positions["A"]!);
+            expect(current.camera.mode).toBe("diff");
+            expect(current.camera.viewport.zoom).toBe(before.camera.viewport.zoom);
+            expect(actual.x).toBeCloseTo(point.x, 6);
+            expect(actual.y).toBeCloseTo(point.y, 6);
+            expect(["A1", "A2"].map((id) => positions[id] !== undefined)).toEqual([open, open]);
+            if (elapsed > 0) expectDifferent({ ...positions["A"]!, zoom: 1 }, { ...position, zoom: 1 });
+          }
+        }
+        return current;
+      },
+      expected: (before, after) => anchoredViewport(before.camera.viewport, displayedPositions(after)["A"]!, screenPoint(before.camera.viewport, displayedPositions(before)["A"]!)),
+    });
+  }
+  for (const modifier of ["metaKey", "ctrlKey", "altKey"] as const) {
+    for (const pressed of [...keys.map(([key]) => key), "F", "Z"] satisfies ViewKey[]) {
+      cases.push({ input: `${modifier}＋${pressed}`, before: "manual", after: "manual", start: () => run(inMode("manual"), clickNode("A")), apply: (m) => run(m, key(pressed, { [modifier]: true })), expected: unchanged });
+    }
+    cases.push({ input: `${modifier}＋Esc`, before: "manual", after: "manual", start: () => inMode("manual"), apply: (m) => run(m, Message.PressedEscapeKey({ ...mods, [modifier]: true })), expected: unchanged });
+  }
+  // C は親画面で字幕を切り替えるため、実際の親のキー経路を通す。
+  const parentKey = (surface: MapSurfaceModel, key: "?" | "C"): MapSurfaceModel => {
+    const initial = Meeting.update(Meeting.init(false), MeetingMessage.GotLiveFeedMessage({ message: LiveFeedMessage.ReceivedLiveFrame({ frame: { type: "snapshot", snapshot: surface.snapshot }, receivedAt: 0 }) })).model;
+    const session = Option.getOrThrow(initial.session);
+    const parent = { ...initial, session: Option.some({ ...session, mapSurface: surface }) };
+    const result = Meeting.update(parent, MeetingMessage.PressedKey({ key, ...mods })).model;
+    const next = Option.getOrThrow(result.session);
+    if (key === "?") expect(next.keyList.isOpen).toBe(true);
+    else expect(next.sessionLayout.captionsHidden).toBe(!session.sessionLayout.captionsHidden);
+    return { ...surface, ...next.mapSurface };
+  };
+  for (const mode of modes) {
+    for (const key of ["?", "C"] as const) cases.push({ input: key, before: mode, after: mode, start: () => inMode(mode), apply: (m) => parentKey(m, key), expected: unchanged });
+  }
+  for (const key of ["?", "C"] as const) {
+    cases.push({
+      input: `開閉の途中の ${key}`,
+      before: "manual",
+      after: "manual",
+      start: () => run(settle(foldable()), scroll, clickFoldDot("A"), tick(100)),
+      apply: (m) => run(parentKey(m, key), tick(500)),
+      expected: (before, after) => anchoredViewport(before.camera.viewport, displayedPositions(after)["A"]!, screenPoint(before.camera.viewport, displayedPositions(before)["A"]!)),
+    });
+    cases.push({
+      input: `列幅を測る前の ${key}`,
+      before: "manual",
+      after: "manual",
+      start: () => {
+        const initial = withViewport(inMode("manual"), { x: 100, y: 0, zoom: 1 });
+        return run({ ...initial, viewing: { ...initial.viewing, sideHidden: true } }, Message.PressedSideKey(mods));
+      },
+      apply: (m) => run(parentKey(m, key), measure({ width: 500, height: 400 }, {})),
+      expected: (before, after) => shiftIntoView(before.camera.viewport, cameraFocus(before.snapshot)!.ids.map((id) => nodeRect(id, targetsOf(before), dimsOf(before))), sizeOf(after)),
+    });
+  }
+
+  it.each(cases)("$input × $before → $after と期待の viewport", ({ before, after, start, apply, expected }) => {
+    const initial = start();
+    expect(initial.camera.mode).toBe(before);
+    const next = apply(initial);
+    expect(next.camera.mode).toBe(after);
+    expectViewport(next.camera.viewport, expected(initial, next));
+  });
+});
 
 describe("更新後の畳み結果を共有する", () => {
-  afterEach(() => vi.restoreAllMocks());
-
-  it("丸を押して開いた後の畳み結果は、配置と自動の寄せで一度だけ評価する", () => {
+  it("隠れた変更項目を選ぶと、その枝が開き選択先へ寄る", () => {
     const start = settle(foldable());
     expect(displayedPositions(start)["A1"]).toBeUndefined();
-    const evaluated = vi.spyOn(folding, "foldView");
-
-    const after = update(start, clickFoldDot("A")).model;
-    // 操作前の木と folding 内部の評価は、更新後の評価回数に含めない。
-    const updatedCalls = evaluated.mock.calls.filter(([, human, selected]) => human?.opened.has("A") && selected === null);
-
-    expect(after.viewing.humanFolds?.opened.has("A")).toBe(true);
-    expectViewport(after.viewport, focusExpected(after));
-    expect(updatedCalls).toHaveLength(1);
-  });
-
-  it("隠れた変更項目を選んだ後の畳み結果は、配置と選択先への寄せで一度だけ評価する", () => {
-    const start = settle(foldable());
-    expect(displayedPositions(start)["A1"]).toBeUndefined();
-    const evaluated = vi.spyOn(folding, "foldView");
-
     const after = update(start, Message.ClickedChangeItem({ nodeId: "A1" })).model;
-    const updatedCalls = evaluated.mock.calls.filter(([, , selected]) => selected === "A1");
-
+    expect(displayedPositions(after)["A1"]).toBeDefined();
     expect(after.viewing.selection).toEqual({ id: "A1", byKey: false });
-    expectViewport(after.viewport, nodeFocusViewport(nodeRect("A1", targetsOf(after), dimsOf(after)), start.viewport.zoom, SIZE));
-    expect(updatedCalls).toHaveLength(1);
+    expectViewport(after.camera.viewport, nodeFocusViewport(nodeRect("A1", targetsOf(after), dimsOf(after)), start.camera.viewport.zoom, SIZE));
   });
 });
 
 describe("カメラの Model: 欄の初期値と本物の Schema", () => {
   it("初期は viewport (0, 0, 倍率 1)。出来事の履歴で決まる事実は「無い」（Option の None・false）で、idleStamp は有限の数", () => {
     const m = init(tree(), "live", false);
-    expect(m.viewport).toEqual({ x: 0, y: 0, zoom: 1 });
-    expect(Option.isNone(m.placedRound)).toBe(true);
-    expect(Option.isNone(m.keepAnchor)).toBe(true);
-    expect(m.pendingShift).toBe(false);
+    expect(m.camera.viewport).toEqual({ x: 0, y: 0, zoom: 1 });
+    expect(Option.isNone(m.camera.placedRound)).toBe(true);
+    expect(Option.isNone(m.camera.keepAnchor)).toBe(true);
+    expect(m.camera.pendingShift).toBe(false);
     expect(Number.isFinite(m.idleStamp)).toBe(true);
   });
 
@@ -176,11 +295,11 @@ describe("カメラの Model: 欄の初期値と本物の Schema", () => {
     const is = Schema.is(Model);
     const m = init(tree(), "live", false);
     expect(is(m)).toBe(true);
-    expect(is({ ...m, placedRound: Option.some(2), keepAnchor: Option.some({ id: "A", point: { x: 3, y: 4 } }), pendingShift: true })).toBe(true);
-    expect(is({ ...m, placedRound: null })).toBe(false);
-    expect(is({ ...m, keepAnchor: null })).toBe(false);
-    expect(is({ ...m, keepAnchor: Option.some({ id: "A", point: { x: "3", y: 4 } }) })).toBe(false);
-    expect(is({ ...m, pendingShift: "yes" })).toBe(false);
+    expect(is({ ...m, camera: { ...m.camera, placedRound: Option.some(2), keepAnchor: Option.some({ id: "A", point: { x: 3, y: 4 } }), pendingShift: true } })).toBe(true);
+    expect(is({ ...m, camera: { ...m.camera, placedRound: null } })).toBe(false);
+    expect(is({ ...m, camera: { ...m.camera, keepAnchor: null } })).toBe(false);
+    expect(is({ ...m, camera: { ...m.camera, keepAnchor: Option.some({ id: "A", point: { x: "3", y: 4 } }) } })).toBe(false);
+    expect(is({ ...m, camera: { ...m.camera, pendingShift: "yes" } })).toBe(false);
   });
 });
 
@@ -191,13 +310,13 @@ describe("反映で寄せる: 反映（round の変化）を見る状態へ渡�
       update,
       given(start),
       message(scroll),
-      model((m) => expect(m.viewing).toEqual(manualAt("A"))),
+      model((m) => expect(cameraViewOf(m)).toEqual(manualAt("A"))),
       message(changed(tree({ round: 2, currentTopic: "B", lastChanged: "B1" }))),
       model((m) => {
-        expect(m.viewing).toEqual({ mode: "auto" });
+        expect(cameraViewOf(m)).toEqual({ mode: "auto" });
         expect(m.snapshot.currentTopic).toBe("B");
-        expectViewport(m.viewport, focusExpected(m));
-        expectDifferent(m.viewport, start.viewport);
+        expectViewport(m.camera.viewport, focusExpected(m));
+        expectDifferent(m.camera.viewport, start.camera.viewport);
       }),
     );
   });
@@ -208,7 +327,7 @@ describe("反映で寄せる: 反映（round の変化）を見る状態へ渡�
       given(settle(tree())),
       message(scroll),
       message(changed(withSilentNode({ lastChanged: "A3" }))),
-      model((m) => expect(m.viewing).toEqual(manualAt("A"))),
+      model((m) => expect(cameraViewOf(m)).toEqual(manualAt("A"))),
     );
   });
 
@@ -218,7 +337,7 @@ describe("反映で寄せる: 反映（round の変化）を見る状態へ渡�
       given(settle(tree())),
       message(scroll),
       message(changed(tree({ currentTopic: "B" }))),
-      model((m) => expect(m.viewing).toEqual(manualAt("A"))),
+      model((m) => expect(cameraViewOf(m)).toEqual(manualAt("A"))),
     );
   });
 
@@ -250,7 +369,7 @@ describe("反映で寄せる: 反映（round の変化）を見る状態へ渡�
       message(changed(withoutB2)),
       model((m) => {
         expect(m.viewing.selection).toEqual({ id: "B", byKey: false });
-        expect(m.viewing.mode).toBe("manual");
+        expect(m.camera.mode).toBe("manual");
       }),
     );
   });
@@ -269,9 +388,9 @@ describe("反映で寄せる: 反映（round の変化）を見る状態へ渡�
       message(changed(withoutB2)),
       model((m) => {
         expect(m.viewing.selection).toEqual({ id: "B", byKey: false });
-        expect(m.viewing.mode).toBe("auto");
-        expectViewport(m.viewport, focusExpected(m));
-        expectDifferent(m.viewport, start.viewport);
+        expect(m.camera.mode).toBe("auto");
+        expectViewport(m.camera.viewport, focusExpected(m));
+        expectDifferent(m.camera.viewport, start.camera.viewport);
       }),
     );
   });
@@ -280,9 +399,9 @@ describe("反映で寄せる: 反映（round の変化）を見る状態へ渡�
 describe("反映で寄せる: 自動のとき今の議題へ寄せる・今の議題が無ければ全体を収める", () => {
   it("測ると、今の議題（と祖先・子孫）を、倍率 0.75〜1.1 で画面に収める位置になる。全体を収めた位置とは違う", () => {
     const m = settle(tree());
-    expect(m.viewing).toEqual({ mode: "auto" });
-    expectViewport(m.viewport, focusExpected(m));
-    expectDifferent(m.viewport, fitExpected(m));
+    expect(cameraViewOf(m)).toEqual({ mode: "auto" });
+    expectViewport(m.camera.viewport, focusExpected(m));
+    expectDifferent(m.camera.viewport, fitExpected(m));
   });
 
   it("変化の付いた反映（lastChanged あり）で今の議題が変わると、新しい今の議題へ寄る（目標の位置で測る）", () => {
@@ -292,9 +411,9 @@ describe("反映で寄せる: 自動のとき今の議題へ寄せる・今の�
       given(start),
       message(changed(tree({ round: 2, currentTopic: "B", lastChanged: "B3" }))),
       model((m) => {
-        expectViewport(m.viewport, focusExpected(m));
-        expectDifferent(m.viewport, start.viewport);
-        expect(m.viewing).toEqual({ mode: "auto" });
+        expectViewport(m.camera.viewport, focusExpected(m));
+        expectDifferent(m.camera.viewport, start.camera.viewport);
+        expect(cameraViewOf(m)).toEqual({ mode: "auto" });
       }),
     );
   });
@@ -303,25 +422,57 @@ describe("反映で寄せる: 自動のとき今の議題へ寄せる・今の�
     const start = settle(tree());
     // 今の議題の下にノードが増えているので、寄せ直せば寄せ先は変わる（変わらないことで、寄せ直していないと分かる）
     const quiet = update(start, changed(withSilentNode())).model;
-    expect(quiet.viewport).toEqual(start.viewport);
+    expect(quiet.camera.viewport).toEqual(start.camera.viewport);
     const noisy = update(start, changed(withSilentNode({ lastChanged: "A3" }))).model;
-    expectViewport(noisy.viewport, focusExpected(noisy));
-    expectDifferent(noisy.viewport, start.viewport);
+    expectViewport(noisy.camera.viewport, focusExpected(noisy));
+    expectDifferent(noisy.camera.viewport, start.camera.viewport);
   });
 
   it("その round の変更の記録が付いた反映でも寄せ直す", () => {
     const start = settle(tree());
     const m = update(start, changed(withSilentNode({ changes: [{ change: "追加", node: "A3", kind: "論点", text: "A3", round: 2, at: 0 } as Snapshot["changes"][number]] }))).model;
-    expectViewport(m.viewport, focusExpected(m));
-    expectDifferent(m.viewport, start.viewport);
+    expectViewport(m.camera.viewport, focusExpected(m));
+    expectDifferent(m.camera.viewport, start.camera.viewport);
+  });
+
+  it("空の反映の後は測り直し・選択による開閉・自動の Esc でも寄せ直さず、次の変化のある反映で寄る", () => {
+    const start = settle(foldable({ lastChanged: "B1" }));
+    const quiet = snap([...foldable().nodes, node("B2", "B", "論点")], { round: 2, currentTopic: "B", now: 100 });
+    story(
+      update,
+      given(start),
+      message(changed(quiet)),
+      model((m) => expect(m.camera.viewport).toEqual(start.camera.viewport)),
+      message(measure(SIZE, { B: 200 })),
+      model((m) => {
+        expectDifferent(focusExpected(m), start.camera.viewport);
+        expect(m.camera.viewport).toEqual(start.camera.viewport);
+      }),
+      message(clickNode("A1")),
+      model((m) => {
+        expect(shownOf(m).map((n) => n.id)).toContain("A1");
+        expect(m.camera.viewport).toEqual(start.camera.viewport);
+      }),
+      message(Message.PressedEscapeKey(mods)),
+      model((m) => {
+        expect(m.camera.mode).toBe("auto");
+        expect(shownOf(m).map((n) => n.id)).not.toContain("A1");
+        expect(m.camera.viewport).toEqual(start.camera.viewport);
+      }),
+      message(changed({ ...quiet, round: 3, lastChanged: "B2" })),
+      model((m) => {
+        expectViewport(m.camera.viewport, focusExpected(m));
+        expectDifferent(m.camera.viewport, start.camera.viewport);
+      }),
+    );
   });
 
   it("同じ round の測り直し（実寸が届いた）では、変化が無くても寄せ直す", () => {
     const start = settle(tree());
     const m = update(start, measure(SIZE, { A: 200 })).model;
     expect(heightsOf(m)["A"]).toBe(200);
-    expectViewport(m.viewport, focusExpected(m));
-    expectDifferent(m.viewport, start.viewport);
+    expectViewport(m.camera.viewport, focusExpected(m));
+    expectDifferent(m.camera.viewport, start.camera.viewport);
   });
 
   it("寄せ先の箱は、畳まれて見えないノードを、それを隠している畳んだノードに置き換えて測る（位置の無い ID を原点で測らない）", () => {
@@ -334,7 +485,7 @@ describe("反映で寄せる: 自動のとき今の議題へ寄せる・今の�
     const view = viewOf(m)!;
     expect(view.shownAs["C1"]).toBe("C");
     expect(cameraFocus(m.snapshot)!.ids).toContain("C1");
-    expectViewport(m.viewport, focusExpected(m));
+    expectViewport(m.camera.viewport, focusExpected(m));
   });
 
   it("今の議題が無い反映では、全体を収める（ふだんは下限 0.5）。今の議題が戻った反映は、変化が無くても寄せる", () => {
@@ -344,25 +495,25 @@ describe("反映で寄せる: 自動のとき今の議題へ寄せる・今の�
       given(start),
       message(changed(snap(baseNodes(), { round: 2 }))),
       model((m) => {
-        expectViewport(m.viewport, fitExpected(m));
-        expect(m.viewing).toEqual({ mode: "auto" });
+        expectViewport(m.camera.viewport, fitExpected(m));
+        expect(cameraViewOf(m)).toEqual({ mode: "auto" });
       }),
       message(changed(tree({ round: 3 }))),
-      model((m) => expectViewport(m.viewport, focusExpected(m))),
+      model((m) => expectViewport(m.camera.viewport, focusExpected(m))),
     );
   });
 
   it("撮影（still）は今の議題があっても全体を収め、下限は 0.02（大きなマップも収める）", () => {
     const m = settle(tree(), "still", SMALL);
-    expectViewport(m.viewport, fitExpected(m));
-    expect(m.viewport.zoom).toBeLessThan(0.5);
-    expect(m.viewing).toEqual({ mode: "auto" });
+    expectViewport(m.camera.viewport, fitExpected(m));
+    expect(m.camera.viewport.zoom).toBeLessThan(0.5);
+    expect(cameraViewOf(m)).toEqual({ mode: "auto" });
   });
 
   it("今の議題が無いとき、ふだん（live）の全体の収め方は倍率 0.5 で止まる", () => {
     const m = settle(snap(baseNodes()), "live", SMALL);
-    expect(m.viewport.zoom).toBe(0.5);
-    expectViewport(m.viewport, fitExpected(m));
+    expect(m.camera.viewport.zoom).toBe(0.5);
+    expectViewport(m.camera.viewport, fitExpected(m));
   });
 
   it("今の議題が無いと、補間のフレームごとに、そのときの（補間中の）位置で全体を収め直し、補間が終わると目標の位置で収める", () => {
@@ -375,16 +526,16 @@ describe("反映で寄せる: 自動のとき今の議題へ寄せる・今の�
         expect(Option.isSome(m.motion)).toBe(true);
         // この入力は、補間中の位置で収めた値が、目標の位置で収めた値と違うものでなければ検証にならない
         expectDifferent(fitExpected(m, displayedPositions(m)), fitExpected(m));
-        expectViewport(m.viewport, fitExpected(m, displayedPositions(m)));
+        expectViewport(m.camera.viewport, fitExpected(m, displayedPositions(m)));
       }),
       message(tick(100)),
-      model((m) => expectViewport(m.viewport, fitExpected(m, displayedPositions(m)))),
+      model((m) => expectViewport(m.camera.viewport, fitExpected(m, displayedPositions(m)))),
       message(tick(150)),
-      model((m) => expectViewport(m.viewport, fitExpected(m, displayedPositions(m)))),
+      model((m) => expectViewport(m.camera.viewport, fitExpected(m, displayedPositions(m)))),
       message(tick(500)),
       model((m) => {
         expect(Option.isNone(m.motion)).toBe(true);
-        expectViewport(m.viewport, fitExpected(m));
+        expectViewport(m.camera.viewport, fitExpected(m));
       }),
     );
   });
@@ -397,7 +548,7 @@ describe("反映で寄せる: 自動のとき今の議題へ寄せる・今の�
       message(changed(withSilentNode({ lastChanged: "A3" }))),
       model((m) => expect(Option.isSome(m.motion)).toBe(true)),
       message(tick(100)),
-      model((m) => expectViewport(m.viewport, focusExpected(m))),
+      model((m) => expectViewport(m.camera.viewport, focusExpected(m))),
     );
   });
 });
@@ -414,25 +565,27 @@ describe("人が動かすと止まる: パン・ズームで見る状態の user
     ["空いたところのドラッグ", [press, Message.MovedPointer({ clientX: 130, clientY: 90, buttons: 1 })]],
   ];
 
-  it.each(moves)("%s: 見る状態が manual（今の議題を覚える）になり、続く同じ今の議題の反映・実測・補間では viewport を動かさない", (_name, inputs) => {
-    const start = settle(tree());
-    const moved = run(start, ...inputs);
-    expect(moved.viewing).toEqual(manualAt("A"));
-    expectDifferent(moved.viewport, start.viewport);
-    // 今の議題の下にノードが増えた反映と、実寸の変化で、自動のままなら寄せ先が変わる
-    story(
-      update,
-      given(moved),
-      message(changed(withSilentNode({ lastChanged: "A3" }))),
-      model((m) => {
-        expect(m.viewport).toEqual(moved.viewport);
-        expect(m.viewing).toEqual(manualAt("A"));
-      }),
-      message(measure(SIZE, { A: 200, A1: 120 })),
-      model((m) => expect(m.viewport).toEqual(moved.viewport)),
-      message(tick(100)),
-      model((m) => expect(m.viewport).toEqual(moved.viewport)),
-    );
+  it("パンとズームの各入力経路は手動になり、続く同じ議題の反映・実測・補間で viewport を動かさない", () => {
+    for (const [name, inputs] of moves) {
+      const start = settle(tree());
+      const moved = run(start, ...inputs);
+      expect(cameraViewOf(moved), name).toEqual(manualAt("A"));
+      expectDifferent(moved.camera.viewport, start.camera.viewport);
+      // 今の議題の下にノードが増えた反映と、実寸の変化で、自動のままなら寄せ先が変わる
+      story(
+        update,
+        given(moved),
+        message(changed(withSilentNode({ lastChanged: "A3" }))),
+        model((m) => {
+          expect(m.camera.viewport).toEqual(moved.camera.viewport);
+          expect(cameraViewOf(m)).toEqual(manualAt("A"));
+        }),
+        message(measure(SIZE, { A: 200, A1: 120 })),
+        model((m) => expect(m.camera.viewport).toEqual(moved.camera.viewport)),
+        message(tick(100)),
+        model((m) => expect(m.camera.viewport).toEqual(moved.camera.viewport)),
+      );
+    }
   });
 
   it("押しただけ（動かしていない）では、自動のカメラを止めない", () => {
@@ -440,27 +593,27 @@ describe("人が動かすと止まる: パン・ズームで見る状態の user
       update,
       given(settle(tree())),
       message(press),
-      model((m) => expect(m.viewing).toEqual({ mode: "auto" })),
+      model((m) => expect(cameraViewOf(m)).toEqual({ mode: "auto" })),
     );
   });
 
   it("still は人のパン・ズームを受けず、見る状態も変えない", () => {
     const start = settle(tree(), "still");
     const m = run(start, scroll, wheel({ ctrlKey: true, deltaY: -100, ...POINT }), press, Message.MovedPointer({ clientX: 130, clientY: 90, buttons: 1 }));
-    expect(m.viewport).toEqual(start.viewport);
-    expect(m.viewing).toEqual({ mode: "auto" });
+    expect(m.camera.viewport).toEqual(start.camera.viewport);
+    expect(cameraViewOf(m)).toEqual({ mode: "auto" });
   });
 
   it("全体を見ていて 0.5 未満の倍率から動かすと、人の倍率の範囲（0.5）に収めてから manual になる", () => {
     const overview = run(settle(tree(), "live", SMALL), key("F"));
-    expect(overview.viewport.zoom).toBeLessThan(0.5);
+    expect(overview.camera.viewport.zoom).toBeLessThan(0.5);
     story(
       update,
       given(overview),
       message(scroll),
       model((m) => {
-        expect(m.viewing).toEqual(manualAt("A"));
-        expect(m.viewport.zoom).toBeCloseTo(0.5, 9);
+        expect(cameraViewOf(m)).toEqual(manualAt("A"));
+        expect(m.camera.viewport.zoom).toBeCloseTo(0.5, 9);
       }),
     );
   });
@@ -468,9 +621,9 @@ describe("人が動かすと止まる: パン・ズームで見る状態の user
   it("0.5 以上の倍率からは、倍率を変えない（スクロールは平行移動だけ）", () => {
     const start = settle(tree());
     const m = update(start, scroll).model;
-    expect(m.viewport.zoom).toBe(start.viewport.zoom);
-    expect(m.viewport.x).toBeCloseTo(start.viewport.x - 20, 9);
-    expect(m.viewport.y).toBeCloseTo(start.viewport.y - 50, 9);
+    expect(m.camera.viewport.zoom).toBe(start.camera.viewport.zoom);
+    expect(m.camera.viewport.x).toBeCloseTo(start.camera.viewport.x - 20, 9);
+    expect(m.camera.viewport.y).toBeCloseTo(start.camera.viewport.y - 50, 9);
   });
 });
 
@@ -484,19 +637,19 @@ describe("全体を見て、もう一度で変わったところへ寄る", () =
       update,
       given(start),
       message(scroll),
-      model((m) => expect(m.viewing).toEqual(manualAt("A"))),
+      model((m) => expect(cameraViewOf(m)).toEqual(manualAt("A"))),
       message(key("F")),
       model((m) => {
-        expect(m.viewing.mode).toBe("overview");
-        expectViewport(m.viewport, overviewExpected(m));
+        expect(m.camera.mode).toBe("overview");
+        expectViewport(m.camera.viewport, overviewExpected(m));
       }),
       message(key("F")),
       model((m) => {
-        expect(m.viewing).toEqual({ mode: "diff", topic: "A" });
-        expectViewport(m.viewport, changedExpected(m));
+        expect(cameraViewOf(m)).toEqual({ mode: "diff", topic: "A" });
+        expectViewport(m.camera.viewport, changedExpected(m));
         // 止めていた位置でも、自動のカメラが寄る今の議題でもない
-        expectDifferent(m.viewport, update(start, scroll).model.viewport);
-        expectDifferent(m.viewport, focusExpected(m));
+        expectDifferent(m.camera.viewport, update(start, scroll).model.camera.viewport);
+        expectDifferent(m.camera.viewport, focusExpected(m));
       }),
     );
   });
@@ -506,12 +659,12 @@ describe("全体を見て、もう一度で変わったところへ寄る", () =
       update,
       given(outside()),
       message(key("F")),
-      model((m) => expect(m.viewing.mode).toBe("overview")),
+      model((m) => expect(m.camera.mode).toBe("overview")),
       message(key("F")),
       model((m) => {
-        expect(m.viewing).toEqual({ mode: "diff", topic: "A" });
-        expectViewport(m.viewport, changedExpected(m));
-        expectDifferent(m.viewport, focusExpected(m));
+        expect(cameraViewOf(m)).toEqual({ mode: "diff", topic: "A" });
+        expectViewport(m.camera.viewport, changedExpected(m));
+        expectDifferent(m.camera.viewport, focusExpected(m));
       }),
     );
   });
@@ -520,24 +673,24 @@ describe("全体を見て、もう一度で変わったところへ寄る", () =
     const m = run(settle(withChanges(["A1", "B1"])), key("F"), key("F"));
     const target = targetsOf(m);
     const dims = dimsOf(m);
-    expect(m.viewing).toEqual({ mode: "diff", topic: "A" });
+    expect(cameraViewOf(m)).toEqual({ mode: "diff", topic: "A" });
     for (const id of ["A1", "B1"]) {
       const r = nodeRect(id, target, dims);
-      const left = r.x * m.viewport.zoom + m.viewport.x;
-      const top = r.y * m.viewport.zoom + m.viewport.y;
+      const left = r.x * m.camera.viewport.zoom + m.camera.viewport.x;
+      const top = r.y * m.camera.viewport.zoom + m.camera.viewport.y;
       expect(left).toBeGreaterThanOrEqual(0);
       expect(top).toBeGreaterThanOrEqual(0);
-      expect(left + r.width * m.viewport.zoom).toBeLessThanOrEqual(SIZE.width);
-      expect(top + r.height * m.viewport.zoom).toBeLessThanOrEqual(SIZE.height);
+      expect(left + r.width * m.camera.viewport.zoom).toBeLessThanOrEqual(SIZE.width);
+      expect(top + r.height * m.camera.viewport.zoom).toBeLessThanOrEqual(SIZE.height);
     }
   });
 
   it("人の下限 0.5 でも収まらないとき、倍率は 0.5 で、最後に変わったノード（lastChanged）が画面の中央に来る", () => {
     const m = run(settle(withChanges(["A1", "B3"]), "live", SMALL), key("F"), key("F"));
     const b3 = nodeRect("B3", targetsOf(m), dimsOf(m));
-    expect(m.viewing).toEqual({ mode: "diff", topic: "A" });
-    expect(m.viewport.zoom).toBeCloseTo(USER_MIN_ZOOM, 6);
-    const at = screenPoint(m.viewport, { x: b3.x + b3.width / 2, y: b3.y + b3.height / 2 });
+    expect(cameraViewOf(m)).toEqual({ mode: "diff", topic: "A" });
+    expect(m.camera.viewport.zoom).toBeCloseTo(USER_MIN_ZOOM, 6);
+    const at = screenPoint(m.camera.viewport, { x: b3.x + b3.width / 2, y: b3.y + b3.height / 2 });
     expect(at.x).toBeCloseTo(SMALL.width / 2, 6);
     expect(at.y).toBeCloseTo(SMALL.height / 2, 6);
   });
@@ -547,25 +700,25 @@ describe("全体を見て、もう一度で変わったところへ寄る", () =
     const m = run(settle(folded), key("F"), key("F"));
     const view = viewOf(m)!;
     expect(view.nodes.map((n) => n.id)).not.toContain("A1");
-    expect(m.viewing).toEqual({ mode: "diff", topic: "B" });
+    expect(cameraViewOf(m)).toEqual({ mode: "diff", topic: "B" });
     const a = nodeRect("A", targetsOf(m), dimsOf(m));
-    expectViewport(m.viewport, focusViewport([a], a, sizeOf(m), USER_MIN_ZOOM));
+    expectViewport(m.camera.viewport, focusViewport([a], a, sizeOf(m), USER_MIN_ZOOM));
   });
 
   it("最後の反映で変わったノードが無いときの F・F は、自動に戻り、今の議題へ寄せ直す。止めていても同じ", () => {
     const quiet = settle(tree());
     for (const start of [quiet, update(quiet, scroll).model]) {
       const m = run(start, key("F"), key("F"));
-      expect(m.viewing).toEqual({ mode: "auto" });
-      expectViewport(m.viewport, focusExpected(m));
+      expect(cameraViewOf(m)).toEqual({ mode: "auto" });
+      expectViewport(m.camera.viewport, focusExpected(m));
     }
   });
 
   it("何もしない反映の後（最後の反映で変わったノードが無い）も、F・F は自動に戻る。前の反映の変化は寄せ先にならない", () => {
     const afterQuiet = run(outside(), changed(withChanges(["B1"], 2, { round: 3, changes: [change("B1", 2)] })));
     const m = run(afterQuiet, key("F"), key("F"));
-    expect(m.viewing).toEqual({ mode: "auto" });
-    expectViewport(m.viewport, focusExpected(m));
+    expect(cameraViewOf(m)).toEqual({ mode: "auto" });
+    expectViewport(m.camera.viewport, focusExpected(m));
   });
 
   it("自動から F・F で戻る前に、変化の無い反映が届いても、自動に戻り、今の議題へ寄せ直す（全体を見ている間の反映を含めた今の寄せ先）", () => {
@@ -573,12 +726,12 @@ describe("全体を見て、もう一度で変わったところへ寄る", () =
       update,
       given(settle(tree())),
       message(key("F")),
-      model((m) => expect(m.viewing.mode).toBe("overview")),
+      model((m) => expect(m.camera.mode).toBe("overview")),
       message(changed(withSilentNode({ lastChanged: "A3" }))),
       message(key("F")),
       model((m) => {
-        expect(m.viewing).toEqual({ mode: "auto" });
-        expectViewport(m.viewport, focusExpected(m));
+        expect(cameraViewOf(m)).toEqual({ mode: "auto" });
+        expectViewport(m.camera.viewport, focusExpected(m));
       }),
     );
   });
@@ -590,9 +743,9 @@ describe("全体を見て、もう一度で変わったところへ寄る", () =
       given(start),
       message(changed(withSilentNode({ lastChanged: "A3" }))),
       model((m) => {
-        expect(m.viewing.mode).toBe("overview");
-        expectViewport(m.viewport, overviewExpected(m));
-        expectDifferent(m.viewport, start.viewport);
+        expect(m.camera.mode).toBe("overview");
+        expectViewport(m.camera.viewport, overviewExpected(m));
+        expectDifferent(m.camera.viewport, start.camera.viewport);
       }),
     );
   });
@@ -604,11 +757,11 @@ describe("全体を見て、もう一度で変わったところへ寄る", () =
       given(start),
       message(measure(SIZE, { B: 400 })),
       model((m) => {
-        expectViewport(m.viewport, overviewExpected(m));
-        expectDifferent(m.viewport, start.viewport);
+        expectViewport(m.camera.viewport, overviewExpected(m));
+        expectDifferent(m.camera.viewport, start.camera.viewport);
       }),
       message(measure({ width: 900, height: 500 }, {})),
-      model((m) => expectViewport(m.viewport, overviewExpected(m))),
+      model((m) => expectViewport(m.camera.viewport, overviewExpected(m))),
     );
   });
 
@@ -619,7 +772,7 @@ describe("全体を見て、もう一度で変わったところへ寄る", () =
       message(scroll),
       message(key("F")),
       message(wheel({ deltaX: 10, deltaY: 10 })),
-      model((m) => expect(m.viewing).toEqual(manualAt("A"))),
+      model((m) => expect(cameraViewOf(m)).toEqual(manualAt("A"))),
     );
   });
 });
@@ -637,8 +790,9 @@ describe("差分を見ている間のカメラ", () => {
         changes: [{ change: "更新", node: "B", kind: "議題", text: "B", round, at: round }],
       });
       const next = changedSnapshot(current, snapshot);
-      expect(next.viewport).toEqual(start.viewport);
+      expect(next.camera.viewport).toEqual(start.camera.viewport);
       expect(next.viewing).toEqual(start.viewing);
+      expect(cameraViewOf(next)).toEqual(cameraViewOf(start));
       expect(next.snapshot).toEqual(snapshot);
       expect(blinkRestartsOf(current, next)).toHaveLength(1);
       current = next;
@@ -648,16 +802,17 @@ describe("差分を見ている間のカメラ", () => {
         expect(received).toEqual(snapshot);
         current = changedSnapshot(current, received);
         expect(current.snapshot).toEqual(snapshot);
-        expect(current.viewport).toEqual(start.viewport);
+        expect(current.camera.viewport).toEqual(start.camera.viewport);
         expect(current.viewing).toEqual(start.viewing);
+        expect(cameraViewOf(current)).toEqual(cameraViewOf(start));
       }
     }
     const overview = run(current, key("F"));
-    expectViewport(overview.viewport, overviewExpected(overview));
-    expect(overview.viewing.mode).toBe("overview");
+    expectViewport(overview.camera.viewport, overviewExpected(overview));
+    expect(overview.camera.mode).toBe("overview");
     const automatic = update(current, Message.PressedEscapeKey({ ...mods })).model;
-    expectViewport(automatic.viewport, focusExpected(automatic));
-    expect(automatic.viewing.mode).toBe("auto");
+    expectViewport(automatic.camera.viewport, focusExpected(automatic));
+    expect(automatic.camera.mode).toBe("auto");
   });
 
   it("印の更新を再受信した後も、同じ round の本文変更を反映して寄せ直す", () => {
@@ -673,38 +828,38 @@ describe("差分を見ている間のカメラ", () => {
     const edited = { ...received, nodes: received.nodes.map((n) => n.id === "B" ? { ...n, text: "研修先の検討" } : n) };
     const next = changedSnapshot(repeated, edited);
     expect(next.snapshot).toEqual(edited);
-    expectViewport(next.viewport, changedExpected(next));
-    expectDifferent(next.viewport, start.viewport);
+    expectViewport(next.camera.viewport, changedExpected(next));
+    expectDifferent(next.camera.viewport, start.camera.viewport);
   });
 
   it("F で全体を見る（overview）。目標の位置で全体を収めた viewport になる", () => {
     const m = run(inDiff(), key("F"));
-    expect(m.viewing).toEqual({ mode: "overview", topic: "A" });
-    expectViewport(m.viewport, overviewExpected(m));
+    expect(cameraViewOf(m)).toEqual({ mode: "overview", topic: "A" });
+    expectViewport(m.camera.viewport, overviewExpected(m));
   });
 
   it("Esc で自動に戻り、今の議題へ寄る", () => {
     const m = update(inDiff(), Message.PressedEscapeKey({ ...mods })).model;
-    expect(m.viewing).toEqual({ mode: "auto" });
-    expectViewport(m.viewport, focusExpected(m));
+    expect(cameraViewOf(m)).toEqual({ mode: "auto" });
+    expectViewport(m.camera.viewport, focusExpected(m));
   });
 
   it("人が動かすと manual になる。スクロールで viewport は動かした分だけ動く", () => {
     const start = inDiff();
     const m = update(start, scroll).model;
-    expect(m.viewing).toEqual(manualAt("A"));
-    expect(m.viewport.zoom).toBe(start.viewport.zoom);
-    expect(m.viewport.x).toBeCloseTo(start.viewport.x - 20, 9);
-    expect(m.viewport.y).toBeCloseTo(start.viewport.y - 50, 9);
+    expect(cameraViewOf(m)).toEqual(manualAt("A"));
+    expect(m.camera.viewport.zoom).toBe(start.camera.viewport.zoom);
+    expect(m.camera.viewport.x).toBeCloseTo(start.camera.viewport.x - 20, 9);
+    expect(m.camera.viewport.y).toBeCloseTo(start.camera.viewport.y - 50, 9);
   });
 
   it("今の議題が同じ反映で変化があれば、新しい反映で変わったノード全部へ寄り直す（diff のまま）", () => {
     const start = inDiff();
     const next = snap(baseNodes(), { round: 3, currentTopic: "A", changes: [change("B1", 2), change("A1", 3), change("B3", 3)], lastChanged: "B3" });
     const m = update(start, changed(next)).model;
-    expect(m.viewing).toEqual({ mode: "diff", topic: "A" });
-    expectViewport(m.viewport, changedExpected(m));
-    expectDifferent(m.viewport, start.viewport);
+    expect(cameraViewOf(m)).toEqual({ mode: "diff", topic: "A" });
+    expectViewport(m.camera.viewport, changedExpected(m));
+    expectDifferent(m.camera.viewport, start.camera.viewport);
     // 前の反映の変化（B1）ではなく、新しい反映の変化（A1・B3）で決まる
     expect(changedFocus(m.snapshot, (id) => id)!.ids.sort()).toEqual(["A1", "B3"]);
   });
@@ -713,32 +868,32 @@ describe("差分を見ている間のカメラ", () => {
     const start = inDiff();
     const quiet = snap(baseNodes(), { round: 3, currentTopic: "A", changes: [change("B1", 2)] });
     const once = update(start, changed(quiet)).model;
-    expect(once.viewing).toEqual({ mode: "diff", topic: "A" });
-    expect(once.viewport).toEqual(start.viewport);
+    expect(cameraViewOf(once)).toEqual({ mode: "diff", topic: "A" });
+    expect(once.camera.viewport).toEqual(start.camera.viewport);
     const twice = update(once, changed({ ...quiet, round: 4 })).model;
-    expect(twice.viewing).toEqual({ mode: "diff", topic: "A" });
-    expect(twice.viewport).toEqual(start.viewport);
+    expect(cameraViewOf(twice)).toEqual({ mode: "diff", topic: "A" });
+    expect(twice.camera.viewport).toEqual(start.camera.viewport);
   });
 
   it("今の議題が変わる反映は、自動に戻り、新しい今の議題へ寄る", () => {
     const next = snap(baseNodes(), { round: 3, currentTopic: "B", changes: [change("B2", 3)], lastChanged: "B2" });
     const m = update(inDiff(), changed(next)).model;
-    expect(m.viewing).toEqual({ mode: "auto" });
-    expectViewport(m.viewport, focusExpected(m));
+    expect(cameraViewOf(m)).toEqual({ mode: "auto" });
+    expectViewport(m.camera.viewport, focusExpected(m));
   });
 
   it("実測（ノードの高さ・画面の大きさ）が届くたびに、変わったノードへ寄せ直す", () => {
     const start = inDiff();
     const m = update(start, measure(SMALL, { B1: 200 })).model;
-    expect(m.viewing).toEqual({ mode: "diff", topic: "A" });
-    expectViewport(m.viewport, changedExpected(m));
-    expectDifferent(m.viewport, start.viewport);
+    expect(cameraViewOf(m)).toEqual({ mode: "diff", topic: "A" });
+    expectViewport(m.camera.viewport, changedExpected(m));
+    expectDifferent(m.camera.viewport, start.camera.viewport);
   });
 });
 
 describe("開閉で位置を保つ: 開閉したノードを同じ画面座標に映し続ける", () => {
   // 開いた A の画面座標。補間中の表示位置で測る
-  const anchorOf = (m: MapSurfaceModel) => screenPoint(m.viewport, displayedPositions(m)["A"]!);
+  const anchorOf = (m: MapSurfaceModel) => screenPoint(m.camera.viewport, displayedPositions(m)["A"]!);
   const expectPointAt = (m: MapSurfaceModel, point: { x: number; y: number }) => {
     const at = anchorOf(m);
     expect(at.x).toBeCloseTo(point.x, 6);
@@ -759,7 +914,7 @@ describe("開閉で位置を保つ: 開閉したノードを同じ画面座標�
       node("B", "root"),
     ], { currentTopic: "B", now: 100 });
     const start = run(settle(snapshot), measure(SIZE, { "run:A": 50 }), tick(500), scroll);
-    const point = screenPoint(start.viewport, displayedPositions(start)["run:A"]!);
+    const point = screenPoint(start.camera.viewport, displayedPositions(start)["run:A"]!);
 
     story(
       update,
@@ -777,8 +932,8 @@ describe("開閉で位置を保つ: 開閉したノードを同じ画面座標�
       model((m) => {
         expect(Option.isNone(m.motion)).toBe(true);
         expectPointAt(m, point);
-        expect(m.viewport.zoom).toBe(start.viewport.zoom);
-        expect(m.viewing.mode).toBe("manual");
+        expect(m.camera.viewport.zoom).toBe(start.camera.viewport.zoom);
+        expect(m.camera.mode).toBe("manual");
       }),
     );
   });
@@ -801,12 +956,12 @@ describe("開閉で位置を保つ: 開閉したノードを同じ画面座標�
       model((m) => {
         expect(Option.isNone(m.motion)).toBe(true);
         expectPointAt(m, point);
-        expect(m.viewport.zoom).toBe(start.viewport.zoom);
-        expect(m.viewing.mode).toBe("manual");
+        expect(m.camera.viewport.zoom).toBe(start.camera.viewport.zoom);
+        expect(m.camera.mode).toBe("manual");
       }),
     );
     const mid = run(afterClick, tick(250));
-    expectDifferent(mid.viewport, afterClick.viewport);
+    expectDifferent(mid.camera.viewport, afterClick.camera.viewport);
   });
 
   it("開いて新しく見えたノードの実寸が届いて配置が動いても、開いたノードを同じ画面座標に合わせ直す", () => {
@@ -828,14 +983,24 @@ describe("開閉で位置を保つ: 開閉したノードを同じ画面座標�
     const moved = update(afterClick, wheel({ deltaX: 20, deltaY: 20 })).model;
     const after = update(moved, tick(100)).model;
     expectDifferent({ ...displayedPositions(after)["A"]!, zoom: 1 }, { ...displayedPositions(moved)["A"]!, zoom: 1 });
-    expect(after.viewport).toEqual(moved.viewport);
+    expect(after.camera.viewport).toEqual(moved.camera.viewport);
   });
 
   it("次のキーの指示でも保持が外れる", () => {
     const { afterClick } = opened();
     const zoomed = update(afterClick, key("=")).model;
     const after = update(zoomed, tick(100)).model;
-    expect(after.viewport).toEqual(zoomed.viewport);
+    expect(after.camera.viewport).toEqual(zoomed.camera.viewport);
+  });
+
+  it("開閉の途中でクリック選択すると保持が外れ、残りの補間で viewport は動かない", () => {
+    const { afterClick } = opened();
+    const halfway = run(afterClick, tick(100));
+    const selected = run(halfway, clickNode("B"));
+    const after = run(selected, tick(100), tick(500));
+    expectDifferent({ ...displayedPositions(selected)["A"]!, zoom: 1 }, { ...displayedPositions(after)["A"]!, zoom: 1 });
+    expect(after.camera.mode).toBe("manual");
+    expect(after.camera.viewport).toEqual(selected.camera.viewport);
   });
 
   it("全体を見ている間の開閉も位置を保つ。保っている間は全体を収め直さず、倍率も変えない", () => {
@@ -846,7 +1011,7 @@ describe("開閉で位置を保つ: 開閉したノードを同じ画面座標�
       given(start),
       message(clickFoldDot("A")),
       model((m) => {
-        expect(m.viewing.mode).toBe("overview");
+        expect(m.camera.mode).toBe("overview");
         expectPointAt(m, point);
       }),
       message(tick(100)),
@@ -855,22 +1020,22 @@ describe("開閉で位置を保つ: 開閉したノードを同じ画面座標�
       message(tick(500)),
       model((m) => {
         expectPointAt(m, point);
-        expect(m.viewport.zoom).toBe(start.viewport.zoom);
+        expect(m.camera.viewport.zoom).toBe(start.camera.viewport.zoom);
       }),
     );
   });
 
   it("自動のときの開閉は位置を保たず、今の議題へ寄せ直す（開いた後の目標の位置で測る）", () => {
     const start = settle(foldable());
-    expectViewport(start.viewport, focusExpected(start));
+    expectViewport(start.camera.viewport, focusExpected(start));
     story(
       update,
       given(start),
       message(clickFoldDot("A")),
       model((m) => {
-        expect(m.viewing.mode).toBe("auto");
-        expectViewport(m.viewport, focusExpected(m));
-        expectDifferent(m.viewport, start.viewport);
+        expect(m.camera.mode).toBe("auto");
+        expectViewport(m.camera.viewport, focusExpected(m));
+        expectDifferent(m.camera.viewport, start.camera.viewport);
       }),
     );
   });
@@ -880,11 +1045,11 @@ describe("列を出してずらす: E で保留を立て、画面の幅が変わ
   const WIDE = { width: 600, height: 400 };
   const NARROW = { width: 500, height: 400 };
   // 今の議題 A（A・A1・A2）の箱が、幅 600 では右に収まらない位置。列を隠している状態（E で出す側）
-  const hiddenColumn = (viewing: ViewingState = { ...manualAt("A"), sideHidden: true }): MapSurfaceModel => ({
-    ...settle(tree()),
-    viewport: { x: 100, y: 0, zoom: 1 },
-    viewing,
-  });
+  const hiddenColumn = (mode: "auto" | "manual" = "manual", sideHidden = true): MapSurfaceModel => {
+    const initial = settle(tree());
+    const base = mode === "manual" ? run(initial, scroll) : initial;
+    return { ...withViewport(base, { x: 100, y: 0, zoom: 1 }), viewing: sideHidden ? { sideHidden: true } : {} };
+  };
   const side = () => Message.PressedSideKey({ ...mods });
   const focusRects = (m: MapSurfaceModel): Rect[] => {
     const focus = cameraFocus(m.snapshot)!;
@@ -893,37 +1058,37 @@ describe("列を出してずらす: E で保留を立て、画面の幅が変わ
 
   it("列を出す（E）だけでは動かさない。幅が変わった測定で、列で切れる分だけ横にずれる（倍率・縦は変えない）", () => {
     const start = hiddenColumn();
-    const expected = shiftIntoView(start.viewport, focusRects(start), NARROW);
-    expectDifferent(expected, start.viewport);
+    const expected = shiftIntoView(start.camera.viewport, focusRects(start), NARROW);
+    expectDifferent(expected, start.camera.viewport);
     story(
       update,
       given(start),
       message(side()),
       model((m) => {
         expect(m.viewing.sideHidden).toBeUndefined();
-        expect(m.viewport).toEqual(start.viewport);
+        expect(m.camera.viewport).toEqual(start.camera.viewport);
       }),
       message(measure(NARROW, {})),
       model((m) => {
-        expectViewport(m.viewport, expected);
-        expect(m.viewport.zoom).toBe(start.viewport.zoom);
-        expect(m.viewport.y).toBe(start.viewport.y);
+        expectViewport(m.camera.viewport, expected);
+        expect(m.camera.viewport.zoom).toBe(start.camera.viewport.zoom);
+        expect(m.camera.viewport.y).toBe(start.camera.viewport.y);
       }),
     );
   });
 
   it("高さだけが変わった測定（同じ幅）では保留のまま。幅が変わった測定で、そのときの画面の大きさでずらす", () => {
     const start = hiddenColumn();
-    const expected = shiftIntoView(start.viewport, focusRects(start), { width: 500, height: 300 });
-    expectDifferent(expected, start.viewport);
+    const expected = shiftIntoView(start.camera.viewport, focusRects(start), { width: 500, height: 300 });
+    expectDifferent(expected, start.camera.viewport);
     story(
       update,
       given(start),
       message(side()),
       message(measure({ width: WIDE.width, height: 300 }, {})),
-      model((m) => expect(m.viewport).toEqual(start.viewport)),
+      model((m) => expect(m.camera.viewport).toEqual(start.camera.viewport)),
       message(measure({ width: 500, height: 300 }, {})),
-      model((m) => expectViewport(m.viewport, expected)),
+      model((m) => expectViewport(m.camera.viewport, expected)),
     );
   });
 
@@ -936,75 +1101,75 @@ describe("列を出してずらす: E で保留を立て、画面の幅が変わ
       message(measure(NARROW, {})),
       model((m) => {
         const after = update(m, measure({ width: 480, height: 400 }, {})).model;
-        expect(after.viewport).toEqual(m.viewport);
+        expect(after.camera.viewport).toEqual(m.camera.viewport);
       }),
     );
   });
 
   it("列を隠したとき（sideHidden になる E）は、幅が変わってもずらさない。保留も残さない", () => {
-    const start = hiddenColumn({ ...manualAt("A") });
+    const start = hiddenColumn("manual", false);
     story(
       update,
       given(start),
       message(side()),
       model((m) => expect(m.viewing.sideHidden).toBe(true)),
       message(measure({ width: 700, height: 400 }, {})),
-      model((m) => expect(m.viewport).toEqual(start.viewport)),
+      model((m) => expect(m.camera.viewport).toEqual(start.camera.viewport)),
       message(measure(NARROW, {})),
-      model((m) => expect(m.viewport).toEqual(start.viewport)),
+      model((m) => expect(m.camera.viewport).toEqual(start.camera.viewport)),
     );
   });
 
   const atWidth = (m: MapSurfaceModel, size: { width: number; height: number }): MapSurfaceModel => ({ ...m, size: Option.some(size) });
 
   it("自動で列を出す（E）後の幅の測定は、寄せ直さず、E の前の viewport を列で切れる分だけずらす（倍率・縦は E の前のまま）", () => {
-    const start = hiddenColumn({ mode: "auto", sideHidden: true });
-    expect(Option.isSome(start.placedRound)).toBe(true);
-    const expected = shiftIntoView(start.viewport, focusRects(start), NARROW);
-    expectDifferent(expected, start.viewport);
+    const start = hiddenColumn("auto");
+    expect(Option.isSome(start.camera.placedRound)).toBe(true);
+    const expected = shiftIntoView(start.camera.viewport, focusRects(start), NARROW);
+    expectDifferent(expected, start.camera.viewport);
     // 前提: 寄せ直すと別の viewport になる
-    expectDifferent(focusExpected(atWidth(start, NARROW)), start.viewport);
+    expectDifferent(focusExpected(atWidth(start, NARROW)), start.camera.viewport);
     story(
       update,
       given(start),
       message(side()),
       message(measure(NARROW, {})),
       model((m) => {
-        expect(m.viewing.mode).toBe("auto");
-        expectViewport(m.viewport, expected);
-        expect(m.viewport.zoom).toBe(start.viewport.zoom);
-        expect(m.viewport.y).toBe(start.viewport.y);
+        expect(m.camera.mode).toBe("auto");
+        expectViewport(m.camera.viewport, expected);
+        expect(m.camera.viewport.zoom).toBe(start.camera.viewport.zoom);
+        expect(m.camera.viewport.y).toBe(start.camera.viewport.y);
       }),
     );
   });
 
   it("全体を見ている間に列を出す（E）後の幅の測定も、収め直さず、E の前の viewport をずらすだけ（overview のまま）", () => {
     const base = run(settle(tree()), key("F"));
-    const start: MapSurfaceModel = { ...base, viewport: { x: 100, y: 0, zoom: 1 }, viewing: { ...base.viewing, sideHidden: true } };
-    const expected = shiftIntoView(start.viewport, focusRects(start), NARROW);
-    expectDifferent(expected, start.viewport);
+    const start: MapSurfaceModel = { ...withViewport(base, { x: 100, y: 0, zoom: 1 }), viewing: { ...base.viewing, sideHidden: true } };
+    const expected = shiftIntoView(start.camera.viewport, focusRects(start), NARROW);
+    expectDifferent(expected, start.camera.viewport);
     // 前提: 収め直すと別の viewport になる
-    expectDifferent(overviewExpected(atWidth(start, NARROW)), start.viewport);
+    expectDifferent(overviewExpected(atWidth(start, NARROW)), start.camera.viewport);
     story(
       update,
       given(start),
       message(side()),
       message(measure(NARROW, {})),
       model((m) => {
-        expect(m.viewing.mode).toBe("overview");
-        expectViewport(m.viewport, expected);
-        expect(m.viewport.zoom).toBe(start.viewport.zoom);
-        expect(m.viewport.y).toBe(start.viewport.y);
+        expect(m.camera.mode).toBe("overview");
+        expectViewport(m.camera.viewport, expected);
+        expect(m.camera.viewport.zoom).toBe(start.camera.viewport.zoom);
+        expect(m.camera.viewport.y).toBe(start.camera.viewport.y);
       }),
     );
   });
 
   it("自動でも全体を見ていても、列を隠す（E）後の幅の測定は viewport を変えず、保留も残さない", () => {
     const base = run(settle(tree()), key("F"));
-    const starts: MapSurfaceModel[] = [hiddenColumn({ mode: "auto" }), { ...base, viewport: { x: 100, y: 0, zoom: 1 }, viewing: { ...base.viewing } }];
+    const starts: MapSurfaceModel[] = [hiddenColumn("auto", false), withViewport(base, { x: 100, y: 0, zoom: 1 })];
     const wide = { width: 700, height: 400 };
-    expectDifferent(focusExpected(atWidth(starts[0]!, wide)), starts[0]!.viewport);
-    expectDifferent(overviewExpected(atWidth(starts[1]!, wide)), starts[1]!.viewport);
+    expectDifferent(focusExpected(atWidth(starts[0]!, wide)), starts[0]!.camera.viewport);
+    expectDifferent(overviewExpected(atWidth(starts[1]!, wide)), starts[1]!.camera.viewport);
     for (const start of starts) {
       story(
         update,
@@ -1013,20 +1178,20 @@ describe("列を出してずらす: E で保留を立て、画面の幅が変わ
         message(measure(wide, {})),
         model((m) => {
           expect(m.viewing.sideHidden).toBe(true);
-          expect(m.viewport).toEqual(start.viewport);
-          expect(m.pendingShift).toBe(false);
+          expect(m.camera.viewport).toEqual(start.camera.viewport);
+          expect(m.camera.pendingShift).toBe(false);
         }),
       );
     }
   });
 
   it("E は寄せ直しも収め直しもしない（自動でも全体を見ていても viewport はそのまま）", () => {
-    const auto = { ...settle(tree()), viewport: { x: 5, y: 7, zoom: 1 } };
-    expect(update(auto, side()).model.viewport).toEqual({ x: 5, y: 7, zoom: 1 });
+    const auto = withViewport(settle(tree()), { x: 5, y: 7, zoom: 1 });
+    expect(update(auto, side()).model.camera.viewport).toEqual({ x: 5, y: 7, zoom: 1 });
     const overview = { ...run(settle(tree()), key("F")) };
-    const kept = update({ ...overview, viewport: { x: 5, y: 7, zoom: 1 } }, side()).model;
-    expect(kept.viewport).toEqual({ x: 5, y: 7, zoom: 1 });
-    expect(kept.viewing.mode).toBe("overview");
+    const kept = update(withViewport(overview, { x: 5, y: 7, zoom: 1 }), side()).model;
+    expect(kept.camera.viewport).toEqual({ x: 5, y: 7, zoom: 1 });
+    expect(kept.camera.mode).toBe("overview");
   });
 
   it("E の後に別の指示（キーでのズーム）があると保留は消え、幅が変わってもずらさない", () => {
@@ -1038,7 +1203,23 @@ describe("列を出してずらす: E で保留を立て、画面の幅が変わ
       message(key("=")),
       model((m) => {
         const after = update(m, measure(NARROW, {})).model;
-        expect(after.viewport).toEqual(m.viewport);
+        expect(after.camera.viewport).toEqual(m.camera.viewport);
+      }),
+    );
+  });
+
+  it("E の後にクリック選択すると保留は消え、幅が変わってもずらさない", () => {
+    const start = hiddenColumn();
+    expectDifferent(shiftIntoView(start.camera.viewport, focusRects(start), NARROW), start.camera.viewport);
+    story(
+      update,
+      given(start),
+      message(side()),
+      message(clickNode("A")),
+      message(measure(NARROW, {})),
+      model((m) => {
+        expect(m.camera.mode).toBe("manual");
+        expect(m.camera.viewport).toEqual(start.camera.viewport);
       }),
     );
   });
@@ -1050,7 +1231,7 @@ describe("列を出してずらす: E で保留を立て、画面の幅が変わ
       given(start),
       message(side()),
       message(measure(NARROW, {})),
-      model((m) => expect(m.viewport).toEqual(start.viewport)),
+      model((m) => expect(m.camera.viewport).toEqual(start.camera.viewport)),
     );
   });
 });
@@ -1059,75 +1240,59 @@ describe("キーの指示: その場で適用する（seq を介さない）", (
   const start = settle(tree());
   const size = SIZE;
 
-  const clamped = (cur: Viewport) => zoomAroundCenter(cur, clampUserZoom(cur.zoom), size);
-  it.each<readonly [string, ViewKey, (cur: Viewport) => Viewport]>([
-    ["=（1.25 倍）", "=", (cur) => zoomAroundCenter(cur, clampUserZoom(cur.zoom * 1.25), size)],
-    ["-（1/1.25 倍）", "-", (cur) => zoomAroundCenter(cur, clampUserZoom(cur.zoom / 1.25), size)],
-    ["0（倍率 1）", "0", (cur) => zoomAroundCenter(cur, clampUserZoom(1), size)],
-    ["Shift＋→", "Shift+ArrowRight", (cur) => panViewport(clamped(cur), { dx: 1, dy: 0 }, size)],
-    ["Shift＋←", "Shift+ArrowLeft", (cur) => panViewport(clamped(cur), { dx: -1, dy: 0 }, size)],
-    ["Shift＋↑", "Shift+ArrowUp", (cur) => panViewport(clamped(cur), { dx: 0, dy: -1 }, size)],
-    ["Shift＋↓", "Shift+ArrowDown", (cur) => panViewport(clamped(cur), { dx: 0, dy: 1 }, size)],
-  ])("%s: 1 つの Message で viewport が camera.ts の値になり、見る状態は manual になる", (_name, pressed, expectedOf) => {
-    const m = update(start, key(pressed)).model;
-    expect(m.viewing).toEqual(manualAt("A"));
-    expectViewport(m.viewport, expectedOf(start.viewport));
-    expectDifferent(m.viewport, start.viewport);
-  });
-
   it("Z: 選んだノードとその子孫が収まる位置へ寄る（fitSubtree）。選んでいなければ何も起きない", () => {
     const shown = shownOf(start);
     const expected = subtreeViewport("A", { ids: shown.map((n) => n.id), parents: Object.fromEntries(shown.map((n) => [n.id, n.parent])) }, targetsOf(start), dimsOf(start), size);
     const selected = update(start, clickNode("A")).model;
     const m = update(selected, key("Z")).model;
-    expect(m.viewing.mode).toBe("manual");
-    expectViewport(m.viewport, expected);
-    expectDifferent(m.viewport, selected.viewport);
+    expect(m.camera.mode).toBe("manual");
+    expectViewport(m.camera.viewport, expected);
+    expectDifferent(m.camera.viewport, selected.camera.viewport);
     const none = update(start, key("Z")).model;
-    expect(none.viewport).toEqual(start.viewport);
-    expect(none.viewing).toEqual({ mode: "auto" });
+    expect(none.camera.viewport).toEqual(start.camera.viewport);
+    expect(cameraViewOf(none)).toEqual({ mode: "auto" });
   });
 
   it("矢印: 選択を移し、移り先が画面の外なら最小限ずらして入れる（revealNode）", () => {
-    const offscreen = { ...update(start, clickNode("A")).model, viewport: { x: 200, y: 0, zoom: 1 } };
+    const offscreen = withViewport(update(start, clickNode("A")).model, { x: 200, y: 0, zoom: 1 });
     const m = update(offscreen, Message.PressedArrowKey({ dir: "right", ...mods })).model;
     expect(m.viewing.selection).toEqual({ id: "A1", byKey: true });
-    expect(m.viewing.mode).toBe("manual");
-    const expected = revealViewport(zoomAroundCenter(offscreen.viewport, clampUserZoom(offscreen.viewport.zoom), size), nodeRect("A1", targetsOf(start), dimsOf(start)), size);
-    expectViewport(m.viewport, expected);
-    expectDifferent(m.viewport, offscreen.viewport);
+    expect(m.camera.mode).toBe("manual");
+    const expected = revealViewport(zoomAroundCenter(offscreen.camera.viewport, clampUserZoom(offscreen.camera.viewport.zoom), size), nodeRect("A1", targetsOf(start), dimsOf(start)), size);
+    expectViewport(m.camera.viewport, expected);
+    expectDifferent(m.camera.viewport, offscreen.camera.viewport);
   });
 
   it("全体を見ていて 0.5 未満の倍率から、キーのパン・矢印に移るときは、人の倍率の範囲（0.5）に収めてから動かす", () => {
     const overview = run(settle(tree(), "live", SMALL), key("F"));
-    expect(overview.viewport.zoom).toBeLessThan(0.5);
+    expect(overview.camera.viewport.zoom).toBeLessThan(0.5);
     const panned = update(overview, key("Shift+ArrowRight")).model;
-    expectViewport(panned.viewport, panViewport(zoomAroundCenter(overview.viewport, 0.5, SMALL), { dx: 1, dy: 0 }, SMALL));
+    expectViewport(panned.camera.viewport, panViewport(zoomAroundCenter(overview.camera.viewport, 0.5, SMALL), { dx: 1, dy: 0 }, SMALL));
     const selected = update(overview, clickNode("A")).model;
     const revealed = update(selected, Message.PressedArrowKey({ dir: "right", ...mods })).model;
-    expect(revealed.viewport.zoom).toBeCloseTo(0.5, 9);
+    expect(revealed.camera.viewport.zoom).toBeCloseTo(0.5, 9);
   });
 
   it("Esc: 止めた状態から自動に戻り、今の議題へ寄せ直す（refocus）", () => {
     const moved = update(start, scroll).model;
     const m = update(moved, Message.PressedEscapeKey({ ...mods })).model;
-    expect(m.viewing).toEqual({ mode: "auto" });
-    expectViewport(m.viewport, focusExpected(m));
-    expectDifferent(m.viewport, moved.viewport);
+    expect(cameraViewOf(m)).toEqual({ mode: "auto" });
+    expectViewport(m.camera.viewport, focusExpected(m));
+    expectDifferent(m.camera.viewport, moved.camera.viewport);
   });
 
   it("修飾キー付き（⌘＋=）は何もしない", () => {
     const m = update(start, key("=", { metaKey: true })).model;
-    expect(m.viewport).toEqual(start.viewport);
-    expect(m.viewing).toEqual({ mode: "auto" });
+    expect(m.camera.viewport).toEqual(start.camera.viewport);
+    expect(cameraViewOf(m)).toEqual({ mode: "auto" });
   });
 
   it("still ではキーで動かさない", () => {
     const still = settle(tree(), "still");
     for (const input of [key("="), key("F"), key("Shift+ArrowRight"), Message.PressedEscapeKey({ ...mods })]) {
       const m = update(still, input).model;
-      expect(m.viewport).toEqual(still.viewport);
-      expect(m.viewing).toEqual({ mode: "auto" });
+      expect(m.camera.viewport).toEqual(still.camera.viewport);
+      expect(cameraViewOf(m)).toEqual({ mode: "auto" });
     }
   });
 
@@ -1135,34 +1300,34 @@ describe("キーの指示: その場で適用する（seq を介さない）", (
     const unmeasured = init(tree(), "live", false);
     for (const input of [key("="), key("0"), key("Shift+ArrowRight"), Message.PressedEscapeKey({ ...mods })]) {
       const m = update(unmeasured, input).model;
-      expect(m.viewport).toEqual(unmeasured.viewport);
-      expect(m.pendingShift).toBe(false);
-      expect(Option.isNone(m.keepAnchor)).toBe(true);
+      expect(m.camera.viewport).toEqual(unmeasured.camera.viewport);
+      expect(m.camera.pendingShift).toBe(false);
+      expect(Option.isNone(m.camera.keepAnchor)).toBe(true);
     }
     const shifted = update(unmeasured, Message.PressedSideKey({ ...mods })).model;
-    expect(shifted.viewport).toEqual(unmeasured.viewport);
-    expect(shifted.pendingShift).toBe(true);
-    expect(update(shifted, key("=")).model.pendingShift).toBe(false);
+    expect(shifted.camera.viewport).toEqual(unmeasured.camera.viewport);
+    expect(shifted.camera.pendingShift).toBe(true);
+    expect(update(shifted, key("=")).model.camera.pendingShift).toBe(false);
   });
 
   it("live と見返し（review）のどちらでも同じように動く", () => {
     const review = settle(tree(), "review");
-    expectViewport(update(review, key("=")).model.viewport, zoomAroundCenter(review.viewport, clampUserZoom(review.viewport.zoom * 1.25), size));
-    expect(update(review, key("=")).model.viewing).toEqual(manualAt("A"));
+    expectViewport(update(review, key("=")).model.camera.viewport, zoomAroundCenter(review.camera.viewport, clampUserZoom(review.camera.viewport.zoom * 1.25), size));
+    expect(cameraViewOf(update(review, key("=")).model)).toEqual(manualAt("A"));
   });
 });
 
 describe("縁の点を押したら寄る", () => {
   it("今の倍率のまま、目標の位置と高さで測ったノードの中心が画面の中央に来る（キーでズームした後の倍率を使う）", () => {
     const zoomed = run(settle(tree()), key("="));
-    expect(zoomed.viewport.zoom).not.toBe(1);
+    expect(zoomed.camera.viewport.zoom).not.toBe(1);
     story(
       update,
       given(zoomed),
       message(Message.ClickedEdgeDot({ nodeId: "B3" })),
       model((m) => {
-        expectViewport(m.viewport, nodeFocusViewport(nodeRect("B3", targetsOf(m), dimsOf(m)), zoomed.viewport.zoom, SIZE));
-        expect(m.viewing).toEqual(manualAt("A"));
+        expectViewport(m.camera.viewport, nodeFocusViewport(nodeRect("B3", targetsOf(m), dimsOf(m)), zoomed.camera.viewport.zoom, SIZE));
+        expect(cameraViewOf(m)).toEqual(manualAt("A"));
       }),
     );
   });
@@ -1170,7 +1335,7 @@ describe("縁の点を押したら寄る", () => {
   it("消えたノードの点では動かさない", () => {
     const zoomed = run(settle(tree()), key("="));
     const m = update(zoomed, Message.ClickedEdgeDot({ nodeId: "gone" })).model;
-    expect(m.viewport).toEqual(zoomed.viewport);
+    expect(m.camera.viewport).toEqual(zoomed.camera.viewport);
   });
 });
 
@@ -1179,15 +1344,15 @@ describe("見返しで触らずに 10 秒たつと自動に戻る", () => {
 
   it("見返しの manual で時間が経つと、自動に戻り、今の議題へ寄せ直す", () => {
     const moved = run(settle(tree(), "review"), scroll);
-    expect(moved.viewing).toEqual(manualAt("A"));
+    expect(cameraViewOf(moved)).toEqual(manualAt("A"));
     story(
       update,
       given(moved),
       message(idle()),
       model((m) => {
-        expect(m.viewing).toEqual({ mode: "auto" });
-        expectViewport(m.viewport, focusExpected(m));
-        expectDifferent(m.viewport, moved.viewport);
+        expect(cameraViewOf(m)).toEqual({ mode: "auto" });
+        expectViewport(m.camera.viewport, focusExpected(m));
+        expectDifferent(m.camera.viewport, moved.camera.viewport);
       }),
     );
   });
@@ -1195,22 +1360,22 @@ describe("見返しで触らずに 10 秒たつと自動に戻る", () => {
   it("ライブでは、時間が経っても止めたまま", () => {
     const moved = run(settle(tree(), "live"), scroll);
     const m = update(moved, idle()).model;
-    expect(m.viewing).toEqual(manualAt("A"));
-    expect(m.viewport).toEqual(moved.viewport);
+    expect(cameraViewOf(m)).toEqual(manualAt("A"));
+    expect(m.camera.viewport).toEqual(moved.camera.viewport);
   });
 
   it("見返しでも、自動のとき・全体を見ているときは変わらない", () => {
     const auto = settle(tree(), "review");
-    expect(update(auto, idle()).model.viewing).toEqual({ mode: "auto" });
-    expect(update(auto, idle()).model.viewport).toEqual(auto.viewport);
+    expect(cameraViewOf(update(auto, idle()).model)).toEqual({ mode: "auto" });
+    expect(update(auto, idle()).model.camera.viewport).toEqual(auto.camera.viewport);
     const overview = run(auto, key("F"));
-    expect(update(overview, idle()).model.viewing.mode).toBe("overview");
-    expect(update(overview, idle()).model.viewport).toEqual(overview.viewport);
+    expect(update(overview, idle()).model.camera.mode).toBe("overview");
+    expect(update(overview, idle()).model.camera.viewport).toEqual(overview.camera.viewport);
   });
 
   it("still は時間では何も起こさない", () => {
     const still = settle(tree(), "still");
-    expect(update(still, idle()).model.viewport).toEqual(still.viewport);
+    expect(update(still, idle()).model.camera.viewport).toEqual(still.camera.viewport);
   });
 
   it("見る状態を動かす出来事（スクロール・キー・丸）のたびに idleStamp が変わり（10 秒を計り直す）、E・選択では変わらない", () => {
@@ -1230,19 +1395,19 @@ describe("見返しで触らずに 10 秒たつと自動に戻る", () => {
 
   it("見返しの manual で不存在 ID の変更項目を選んでも待機を計り直さず、有効な対象なら寄せて計り直す", () => {
     const before = run(settle(tree(), "review"), scroll);
-    expect(before.viewing.mode).toBe("manual");
+    expect(before.camera.mode).toBe("manual");
     const selected = update(before, clickNode("B")).model;
     expect(selected.idleStamp).toBe(before.idleStamp);
     for (const nodeId of ["gone", "B"]) {
       const after = update(before, Message.ClickedChangeItem({ nodeId })).model;
       expect(after.viewing.selection).toEqual({ id: nodeId, byKey: false });
-      expect(after.viewing.mode).toBe("manual");
+      expect(after.camera.mode).toBe("manual");
       if (nodeId === "gone") {
-        expect(after.viewport).toEqual(before.viewport);
+        expect(after.camera.viewport).toEqual(before.camera.viewport);
         expect(after.idleStamp).toBe(selected.idleStamp);
       } else {
-        expectViewport(after.viewport, nodeFocusViewport(nodeRect("B", targetsOf(after), dimsOf(after)), before.viewport.zoom, SIZE));
-        expectDifferent(after.viewport, before.viewport);
+        expectViewport(after.camera.viewport, nodeFocusViewport(nodeRect("B", targetsOf(after), dimsOf(after)), before.camera.viewport.zoom, SIZE));
+        expectDifferent(after.camera.viewport, before.camera.viewport);
         expect(after.idleStamp).toBe(before.idleStamp + 1);
       }
     }

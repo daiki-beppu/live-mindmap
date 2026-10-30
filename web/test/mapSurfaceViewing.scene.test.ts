@@ -5,7 +5,7 @@ import type { Snapshot, SnapshotNode } from "../../server/src/core/index.ts";
 import { init, Model, update, view } from "../src/app/mapSurface/main.ts";
 import { Message } from "../src/app/mapSurface/message.ts";
 import { ObserveMapSurface } from "../src/app/mapSurface/mount.ts";
-import { edgeDots, nodeFocusViewport, nodeRect } from "../src/camera.ts";
+import { initialCamera, edgeDots, nodeFocusViewport, nodeRect } from "../src/camera.ts";
 import { foldView } from "../src/folding.ts";
 import { layout } from "../src/layout.ts";
 import { INITIAL_VIEWING, type ViewingState } from "../src/viewing.ts";
@@ -94,7 +94,7 @@ describe("mapSurface の Scene: ノード本体の click で選ぶ", () => {
   it("選んだ状態は viewing から描く: 選択を持つ Model では、その選択のノードだけが選ばれた見た目になる（選んだ畳んだ議題も選ばれた見た目）", () => {
     scene(
       app,
-      given(measuredModel(single(), "live", { mode: "auto", selection: { id: "A", byKey: false } })),
+      given(measuredModel(single(), "live", { selection: { id: "A", byKey: false } })),
       expectScene(mapNodeOf("A")).toHaveClass("map-node--selected"),
       expectScene(mapNodeOf("A")).toHaveClass("map-node--folded"),
       expectScene(bodyButtonOf("A")).toHaveAttr("aria-pressed", "true"),
@@ -120,7 +120,7 @@ describe("mapSurface の Scene: ノード本体の click で選ぶ", () => {
     const positions = layout(shown.nodes, HEIGHTS);
     scene(
       app,
-      given(measuredModel(single(), "live", { mode: "auto", selection: { id: "A1", byKey: false } })),
+      given(measuredModel(single(), "live", { selection: { id: "A1", byKey: false } })),
       expectScene(wrapperOf("A1")).toExist(),
       expectScene(mapNodeOf("A1")).toHaveClass("map-node--selected"),
       expectScene(bodyButtonOf("A1")).toHaveAttr("aria-pressed", "true"),
@@ -143,7 +143,7 @@ describe("mapSurface の Scene: ノード本体の click で選ぶ", () => {
   it("still は選択を描かない（viewing に選択があっても、選ばれた見た目にならない）", () => {
     scene(
       app,
-      given(measuredModel(single(), "still", { mode: "auto", selection: { id: "B", byKey: false } })),
+      given(measuredModel(single(), "still", { selection: { id: "B", byKey: false } })),
       expectScene(mapNodeOf("B")).not.toHaveClass("map-node--selected"),
       expectScene(bodyButtonOf("B")).toHaveAttr("aria-pressed", "false"),
       mounted,
@@ -210,7 +210,7 @@ describe("mapSurface の Scene: 隠れた数の丸で開く・小さな丸で畳
   it("人が開いたノードにだけ「畳む」の小さな丸が付く。今の議題とその祖先・議題でも論点でもないノードには付かない", () => {
     scene(
       app,
-      given(measuredModel(single(), "live", { mode: "auto", humanFolds: foldingActions(single(), [{ type: "toggle", id: "A" }]).human })),
+      given(measuredModel(single(), "live", { humanFolds: foldingActions(single(), [{ type: "toggle", id: "A" }]).human })),
       expectScene(foldDotOf("A")).toExist(),
       expectScene(foldDotOf("B")).toBeAbsent(),
       expectScene(foldDotOf("root")).toBeAbsent(),
@@ -223,7 +223,7 @@ describe("mapSurface の Scene: 隠れた数の丸で開く・小さな丸で畳
   it("人が開いていないノードに「畳む」の小さな丸は無い（開いているだけでは付かない）", () => {
     scene(
       app,
-      given(measuredModel(single(), "live", { mode: "auto", humanFolds: foldingActions(single(), [{ type: "toggle", id: "A" }]).human })),
+      given(measuredModel(single(), "live", { humanFolds: foldingActions(single(), [{ type: "toggle", id: "A" }]).human })),
       expectScene(foldDotOf("B")).toBeAbsent(),
       expectScene(foldDotOf("A1")).toBeAbsent(),
       mounted,
@@ -237,7 +237,7 @@ describe("mapSurface の Scene: 隠れた数の丸で開く・小さな丸で畳
         measuredModel(
           snap([node("root", null, "会議"), node("T", "root", "議題"), node("T1", "T", "論点", { pointStatus: "未決" }), node("B", "root", "議題")], { currentTopic: "B", now: 100 }),
           "live",
-          { mode: "auto", humanFolds: foldingActions(snap([node("root", null, "会議"), node("T", "root", "議題"), node("T1", "T", "論点"), node("B", "root", "議題")], { currentTopic: "B" }), [{ type: "toggle", id: "T" }]).human },
+          { humanFolds: foldingActions(snap([node("root", null, "会議"), node("T", "root", "議題"), node("T1", "T", "論点"), node("B", "root", "議題")], { currentTopic: "B" }), [{ type: "toggle", id: "T" }]).human },
         ),
       ),
       expectScene(mapNodeOf("T")).toHaveClass("map-node--folded"),
@@ -250,7 +250,7 @@ describe("mapSurface の Scene: 隠れた数の丸で開く・小さな丸で畳
   it("still は畳まないので、丸は付かない（viewing に人が開いた集合があっても）", () => {
     scene(
       app,
-      given(measuredModel(single(), "still", { mode: "auto", humanFolds: foldingActions(single(), [{ type: "toggle", id: "A" }]).human })),
+      given(measuredModel(single(), "still", { humanFolds: foldingActions(single(), [{ type: "toggle", id: "A" }]).human })),
       expectScene(wrapperOf("A1")).toExist(),
       tap((simulation) => {
         expect(findAll(simulation.html, "button.map-node__count--pressable")).toHaveLength(0);
@@ -288,12 +288,12 @@ describe("mapSurface の Scene: まとめのノード（議題 N 件）の丸で
 describe("mapSurface の Scene: 縁の点（画面の外で変わったノード）", () => {
   // A は畳まれ、中の論点 A1 が今回変わった → 点滅するのは見せている A。画面の外へパンして、A を画面の外に出す
   const changed = (): Snapshot => single({ changes: [{ change: "追加", node: "A1", kind: "論点", text: "A1", round: 3, at: 0 } as Snapshot["changes"][number]] });
-  const panned = (viewing: ViewingState, mode: MapSurfaceModel["mode"] = "live", size = true): MapSurfaceModel => ({
-    ...measuredModel(changed(), mode, viewing),
-    viewport: { x: -3000, y: 0, zoom: 1 },
+  const panned = (cameraMode: MapSurfaceModel["camera"]["mode"], mode: MapSurfaceModel["mode"] = "live", size = true): MapSurfaceModel => ({
+    ...measuredModel(changed(), mode),
+    camera: { ...initialCamera(), mode: cameraMode, topic: cameraMode === "auto" ? undefined : "B", viewport: { x: -3000, y: 0, zoom: 1 } },
     ...(size ? {} : { size: Option.none<{ width: number; height: number }>() }),
   });
-  const MANUAL: ViewingState = { mode: "manual", topic: "B" };
+  const MANUAL = "manual";
   const dotsOf = (html: VNode) => findAll(html, "button.edge-dot");
 
   // 期待する点: 画面に映っている viewport（DOM の transform）と、目標の位置・高さから、edgeDots が返す値
@@ -308,7 +308,7 @@ describe("mapSurface の Scene: 縁の点（画面の外で変わったノード
   it("自動のカメラのときは出ない", () => {
     scene(
       app,
-      given(panned(INITIAL_VIEWING)),
+      given(panned("auto")),
       tap((simulation) => expect(dotsOf(simulation.html)).toHaveLength(0)),
       mounted,
     );
@@ -338,7 +338,7 @@ describe("mapSurface の Scene: 縁の点（画面の外で変わったノード
   it("全体を見ている（overview）間も出る", () => {
     scene(
       app,
-      given(panned({ mode: "overview", topic: "B" })),
+      given(panned("overview")),
       tap((simulation) => expect(dotsOf(simulation.html)).toHaveLength(expectedDots(simulation.html).length)),
       mounted,
     );
@@ -347,7 +347,7 @@ describe("mapSurface の Scene: 縁の点（画面の外で変わったノード
   it("画面に映っているノードの点は出ない（パンしていなければ、変わった A は画面の中）", () => {
     scene(
       app,
-      given({ ...panned(MANUAL), viewport: { x: 0, y: 0, zoom: 1 } }),
+      given({ ...panned(MANUAL), camera: { ...panned(MANUAL).camera, viewport: { x: 0, y: 0, zoom: 1 } } }),
       tap((simulation) => expect(dotsOf(simulation.html)).toHaveLength(0)),
       mounted,
     );

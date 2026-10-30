@@ -31,7 +31,6 @@ const stateOf = (snapshot: Snapshot, selectedId: string | null = null) => {
     targets: Object.fromEntries(shown.map((n, i) => [n.id, { x: 0, y: i * 50 }])),
     parents: Object.fromEntries(shown.map((n) => [n.id, n.parent])),
     fold: null,
-    changed: [],
     currentTopic: snapshot.currentTopic,
   };
   return { tree, snapshot, selectedId };
@@ -140,8 +139,7 @@ describe("relocations: 見えている木から消えたノードの移り先", 
       targets: Object.fromEntries(shown.map((n, i) => [n.id, { x: 0, y: i * 50 }])),
       parents: Object.fromEntries(shown.map((n) => [n.id, n.parent])),
       fold: null,
-      changed: [],
-      currentTopic: b.currentTopic,
+        currentTopic: b.currentTopic,
     };
     expect(hiddenTree.ids).not.toContain("P2");
     const after = snap([root, node("A", "root", "議題", ["r1"]), node("P1", "A", "論点", ["r1"]), node("B", "root", "議題", ["r3"])], 5, "B");

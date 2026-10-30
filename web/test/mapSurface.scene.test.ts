@@ -373,7 +373,7 @@ describe("mapSurface の Scene: 畳み（foldView）は live だけ", () => {
       expectScene(wrapperOf("n2")).toBeAbsent(),
       Subscription.emit(Message.ChangedSnapshot({ snapshot: resumed })),
       expectScene(wrapperOf("n2")).toExist(),
-      tap(({ html }) => expectNumbers(viewportTransform(html), [expected.viewport.x, expected.viewport.y, expected.viewport.zoom])));
+      tap(({ html }) => expectNumbers(viewportTransform(html), [expected.camera.viewport.x, expected.camera.viewport.y, expected.camera.viewport.zoom])));
   });
 
   it("関係づけ更新と同時の独立したcloseを通常更新として表示する", () => {

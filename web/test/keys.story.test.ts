@@ -87,7 +87,7 @@ describe("? でキーの一覧を開閉する（背景を止めない）", () =>
   it("開いたまま、マップの操作（wheel・ノードを押す）が効き、一覧は閉じない", () => {
     const opened = plainUpdate(measured(plainContext, plainUpdate), keyOf("?")).model;
     const wheeled = plainUpdate(opened, surface(MapSurfaceMessage.WheeledMapSurface({ x: 0, y: 0, deltaX: 0, deltaY: 100, deltaMode: 0, shiftKey: false, ctrlKey: false, metaKey: false, timeStamp: 0 }))).model;
-    expect(wheeled.mapSurface.viewing.mode).toBe("manual");
+    expect(wheeled.mapSurface.camera.mode).toBe("manual");
     expect(wheeled.keyList.isOpen).toBe(true);
     const pressed = plainUpdate(wheeled, surface(MapSurfaceMessage.PressedMapSurface({ clientX: 100, clientY: 100, button: 0, ctrlKey: false, insideNoPan: false }))).model;
     expect(pressed.keyList.isOpen).toBe(true);
@@ -208,10 +208,10 @@ describe("倍率・位置・ノードを選ぶキーは、表示面の Pressed*K
 
   it("F で全体を見て、もう一度の F で変わったところを見る。もう一度で全体に戻る（同じ Model の上の続き）", () => {
     const overview = plainUpdate(start, keyOf("F")).model;
-    expect(overview.mapSurface.viewing.mode).toBe("overview");
+    expect(overview.mapSurface.camera.mode).toBe("overview");
     const diff = plainUpdate(overview, keyOf("F")).model;
-    expect(diff.mapSurface.viewing.mode).toBe("diff");
-    expect(plainUpdate(diff, keyOf("F")).model.mapSurface.viewing.mode).toBe("overview");
+    expect(diff.mapSurface.camera.mode).toBe("diff");
+    expect(plainUpdate(diff, keyOf("F")).model.mapSurface.camera.mode).toBe("overview");
   });
 
   it("修飾キーは載せたまま表示面へ渡す（⌘・Ctrl・Option 付きの = と矢印）", () => {
@@ -302,7 +302,7 @@ describe.each([
     MapSurface.update(
       MapSurface.update(MapSurface.init(snapshotAt(context.timeline, time), "review", context.isMac), MapSurfaceMessage.MeasuredMapSurface({ width: 800, height: 600, nodeHeights: NODE_HEIGHTS })).model,
       MapSurfaceMessage.TickedAnimationFrame({ deltaMs: 500 }),
-    ).model.viewport;
+    ).model.camera.viewport;
   const wheeled = (model: ReturnType<typeof stateAt>) =>
     update(model, surface(MapSurfaceMessage.WheeledMapSurface({ x: 0, y: 0, deltaX: 40, deltaY: 100, deltaMode: 0, shiftKey: false, ctrlKey: false, metaKey: false, timeStamp: 0 }))).model;
   const startsOf = (time: number) => {
@@ -312,18 +312,18 @@ describe.each([
   };
   const expectAutoAt = (result: ReturnType<Update>, before: ReturnType<typeof stateAt>, label: string) => {
     const expected = autoViewportAt(result.model.playback.time);
-    expect(result.model.mapSurface.viewing.mode, label).toBe("auto");
+    expect(result.model.mapSurface.camera.mode, label).toBe("auto");
     // 全体を見る状態の viewport は、自動の位置と同じになることがある。押す前と違うことを確かめるのは manual だけ
-    if (before.mapSurface.viewing.mode === "manual") expect(before.mapSurface.viewport, label).not.toEqual(expected);
+    if (before.mapSurface.camera.mode === "manual") expect(before.mapSurface.camera.viewport, label).not.toEqual(expected);
     // 補間が終わった（Tick 500 の後の）viewport が、自動の位置になる
     const settled = update(result.model, surface(MapSurfaceMessage.TickedAnimationFrame({ deltaMs: 500 }))).model;
     expect(Option.isNone(settled.mapSurface.motion), label).toBe(true);
-    for (const axis of ["x", "y", "zoom"] as const) expect(settled.mapSurface.viewport[axis], `${label} ${axis}`).toBeCloseTo(expected[axis], 9);
+    for (const axis of ["x", "y", "zoom"] as const) expect(settled.mapSurface.camera.viewport[axis], `${label} ${axis}`).toBeCloseTo(expected[axis], 9);
   };
 
   it.each(["Space", "K", "J", "L", ",", ".", "Home", "End"])("%s: manual・overview・diff から自動に戻り、viewport は移動後の時刻の自動の位置になる", (id) => {
     for (const [name, before] of startsOf(100)) {
-      expect(before.mapSurface.viewing.mode).toBe(name);
+      expect(before.mapSurface.camera.mode).toBe(name);
       expectAutoAt(update(before, keyOf(id)), before, `${id} ${name}`);
     }
   });
@@ -387,16 +387,16 @@ describe("日本語入力がオンのとき・押したままの繰り返し: �
   it("変換中（key が Process）の F で全体を見る状態になり、もう一度の F で変わったところを見る状態になる", async () => {
     const f = { key: "Process", code: "KeyF", isComposing: true };
     const once = await viaStream([f]);
-    expect(once.model.mapSurface.viewing.mode).toBe("overview");
+    expect(once.model.mapSurface.camera.mode).toBe("overview");
     expect(once.model).toEqual(direct(keyOf("F")));
     const twice = await viaStream([f, f]);
-    expect(twice.model.mapSurface.viewing.mode).toBe("diff");
+    expect(twice.model.mapSurface.camera.mode).toBe("diff");
     expect(twice.model).toEqual(direct(keyOf("F"), keyOf("F")));
   });
 
   it("全角の ＝（拡大）と、変換中の Process の Equal は、半角の = と同じ結果になる", async () => {
     const expected = direct(keyOf("="));
-    expect(expected.mapSurface.viewing).not.toEqual(start.mapSurface.viewing);
+    expect(expected.mapSurface.camera).not.toEqual(start.mapSurface.camera);
     expect((await viaStream([{ key: "＝", code: "Equal" }])).model).toEqual(expected);
     expect((await viaStream([{ key: "Process", code: "Equal", isComposing: true }])).model).toEqual(expected);
   });
@@ -412,7 +412,7 @@ describe("日本語入力がオンのとき・押したままの繰り返し: �
     expect(three.messages).toHaveLength(3);
     expect(three.model).toEqual(direct(keyOf("="), keyOf("="), keyOf("=")));
     const one = await viaStream([held]);
-    expect(three.model.mapSurface.viewport).not.toEqual(one.model.mapSurface.viewport);
+    expect(three.model.mapSurface.camera.viewport).not.toEqual(one.model.mapSurface.camera.viewport);
   });
 
   it("押したままの矢印も、1 回ごとに選択が動く（繰り返し 2 回 = 矢印を 2 回押した結果）", async () => {

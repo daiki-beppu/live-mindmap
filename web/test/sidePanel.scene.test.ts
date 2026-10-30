@@ -57,7 +57,7 @@ const mounted = Mount.resolve(ObserveMapSurface, Message.MeasuredMapSurface({ ..
 const clickedNode = (nodeId: string) => Mount.resolve(ObserveMapSurface, Message.ClickedNodeButton({ nodeId, clientX: 0, clientY: 0 }));
 const nodeButton = (nodeId: string) => expectScene(selector(`[data-node-id="${nodeId}"] button.map-node__button`)).toExist();
 // 議題 A を開いた見る状態（論点・案・課題・TODO がマップに描かれる）
-const opened = (): ViewingState => ({ mode: "auto", humanFolds: foldingActions(snap(), [{ type: "toggle", id: "A" }]).human });
+const opened = (): ViewingState => ({ humanFolds: foldingActions(snap(), [{ type: "toggle", id: "A" }]).human });
 const toggleSide = (isOpen: boolean) => Subscription.emit(Message.ToggledSide({ isOpen }));
 
 const EVIDENCE = selector("section.evidence");
@@ -191,7 +191,7 @@ describe("sidePanel の Scene: 根拠のパネル（選択と連動して今と�
   it("選んだ状態で始まる Model（viewing.selection）でも、その選択の根拠が出る", () => {
     scene(
       app,
-      given(modelOf(snap(), { mode: "auto", selection: { id: "A1", byKey: false } })),
+      given(modelOf(snap(), { selection: { id: "A1", byKey: false } })),
       mounted,
       expectScene(selector("section.evidence p.evidence__text")).toHaveText("面接は何回か"),
       tap((s) => expect(textOf(evidenceOf(s.html), ".evidence__time")).toEqual(["01:05〜01:11", "02:05〜02:10"])),
@@ -202,7 +202,7 @@ describe("sidePanel の Scene: 根拠のパネル（選択と連動して今と�
     const without = snap().nodes.filter((n) => n.id !== "A2");
     scene(
       app,
-      given(modelOf(snap(), { mode: "auto", selection: { id: "A2", byKey: false } })),
+      given(modelOf(snap(), { selection: { id: "A2", byKey: false } })),
       mounted,
       expectScene(selector("section.evidence p.evidence__text")).toHaveText("<b>2 回</b>"),
       Subscription.emit(Message.ChangedSnapshot({ snapshot: { ...snap(), nodes: without } })),
@@ -241,7 +241,7 @@ describe("sidePanel の Scene: 根拠のパネル（選択と連動して今と�
     const bundled: Snapshot = { nodes: bundledNodes, round: 3, changes: [], remarks: REMARKS, currentTopic: "B", now: 100 };
     scene(
       app,
-      given(modelOf(bundled, { mode: "auto", selection: { id: "run:A", byKey: false } })),
+      given(modelOf(bundled, { selection: { id: "run:A", byKey: false } })),
       mounted,
       expectScene(selector("section.evidence p.evidence__empty")).toHaveText(EMPTY_NO_REMARKS),
       expectScene(selector("section.evidence .evidence__kind")).toHaveText("議題"),
@@ -342,7 +342,7 @@ describe("sidePanel の Scene: 変わったことの項目を押すと、その�
   it("別のノードを選んでいても、項目を押すとそのノードへ移る（前に選んだノードは選ばれた見た目でなくなる）", () => {
     scene(
       app,
-      given(modelOf(snap(one("B", "議題", "報告")), { mode: "auto", selection: { id: "A1", byKey: false } })),
+      given(modelOf(snap(one("B", "議題", "報告")), { selection: { id: "A1", byKey: false } })),
       mounted,
       expectScene(selector("section.evidence p.evidence__text")).toHaveText("面接は何回か"),
       click(CHANGE_BUTTON),
@@ -579,7 +579,7 @@ describe("sidePanel の Scene: 右の列の出す・隠す（Disclosure の pane
   it("隠した状態の viewing（sideHidden）で始まる Model では、最初から .side を描かない。出すと現れる", () => {
     scene(
       app,
-      given(modelOf(snap(), { mode: "auto", sideHidden: true })),
+      given(modelOf(snap(), { sideHidden: true })),
       mounted,
       expectScene(selector(".side")).toBeAbsent(),
       expectScene(EVIDENCE).toBeAbsent(),

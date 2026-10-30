@@ -33,10 +33,10 @@ describe("見返しの 10 秒のタイマー: 開く条件と計り直し", () =
     const auto = measured(init(context));
     expect(subscriptions.idle.modelToDependencies(auto).isWaiting).toBe(false);
     const manual = update(auto, wheel(100)).model;
-    expect(manual.mapSurface.viewing.mode).toBe("manual");
+    expect(manual.mapSurface.camera.mode).toBe("manual");
     expect(subscriptions.idle.modelToDependencies(manual).isWaiting).toBe(true);
     const overview = update(auto, surface(MapSurfaceMessage.PressedViewKey({ key: "F", metaKey: false, ctrlKey: false, altKey: false }))).model;
-    expect(overview.mapSurface.viewing.mode).toBe("overview");
+    expect(overview.mapSurface.camera.mode).toBe("overview");
     expect(subscriptions.idle.modelToDependencies(overview).isWaiting).toBe(false);
   });
 
@@ -58,13 +58,13 @@ describe("見返しの 10 秒のタイマー: キーの一覧の開閉での計�
   const depsOf = (m: Model) => subscriptions.idle.modelToDependencies(m);
   const manual = (): Model => {
     const m = update(measured(init(context)), wheel(100)).model;
-    expect(m.mapSurface.viewing.mode).toBe("manual");
+    expect(m.mapSurface.camera.mode).toBe("manual");
     return m;
   };
   // mode・viewport・選択・見る状態は変わらない
   const expectSameViewing = (after: Model, before: Model) => {
     expect(after.mapSurface.viewing).toEqual(before.mapSurface.viewing);
-    expect(after.mapSurface.viewport).toEqual(before.mapSurface.viewport);
+    expect(after.mapSurface.camera.viewport).toEqual(before.mapSurface.camera.viewport);
   };
 
   it("? で開くと依存が変わり（待つ状態は保つ）、mode・viewport・選択は変わらない", () => {
@@ -118,7 +118,7 @@ describe("見返しの 10 秒のタイマー: キーの一覧の開閉での計�
     const opened = update(before, key("?")).model;
     // 開閉前の依存の待ちは作り直され、開閉後の依存の待ちが 10,000ms で ElapsedIdleTime を出す
     const afterIdle = update(opened, idleMessage()).model;
-    expect(afterIdle.mapSurface.viewing.mode).toBe("auto");
+    expect(afterIdle.mapSurface.camera.mode).toBe("auto");
     expect(depsOf(opened).isWaiting).toBe(true);
     expect(depsOf(opened)).not.toEqual(depsOf(before));
   });

@@ -34,11 +34,8 @@ export const Model = Schema.Struct({
     scrollAxisLock: MapSurface.Model.fields.scrollAxisLock,
     motion: MapSurface.Model.fields.motion,
     viewing: MapSurface.Model.fields.viewing,
+    camera: MapSurface.Model.fields.camera,
     gestureScale: MapSurface.Model.fields.gestureScale,
-    viewport: MapSurface.Model.fields.viewport,
-    placedRound: MapSurface.Model.fields.placedRound,
-    keepAnchor: MapSurface.Model.fields.keepAnchor,
-    pendingShift: MapSurface.Model.fields.pendingShift,
     idleStamp: MapSurface.Model.fields.idleStamp,
   }),
   seekSlider: Slider.Model,
@@ -291,8 +288,8 @@ export const makeUpdate = (context: Context) => {
   };
   return (model: Model, message: Message): Return => {
     const result = updateOwn(model, message);
-    const { mode } = result.model.mapSurface.viewing;
-    if (mode === model.mapSurface.viewing.mode) return withBlinkRestart(model, result);
+    const { mode } = result.model.mapSurface.camera;
+    if (mode === model.mapSurface.camera.mode) return withBlinkRestart(model, result);
     return withBlinkRestart(model, Update.combine(model, [() => result, (next: Model) => foldViewingMode(next, mode)]));
   };
 };
