@@ -35,10 +35,16 @@ actionlint runs as its own workflow (`.github/workflows/actionlint.yml`) on PRs 
 
 ### When main goes red
 
-When the `check` that runs on a push to `main` goes red, recover by hand. This is a manual procedure and is not automated:
+When the `check` that runs on a push to `main` goes red, the dotfiles guide (案内役) recovers it on its own ([ADR 0026](../adr/0026-verify-main-after-merge-without-strict.md)):
+
+1. It re-runs the failed jobs once.
+2. If the re-run fails again, it starts a main-fix session in a worktree cut from `main`. That session opens a fix PR against `main` and reserves its auto-merge.
+3. If main-fix cannot fix it, hits its attempt limit, or stops without a result, the guide sends a decision request to Discord.
+
+A person answers the decision request (for example, whether to revert the PR that caused it). When the guide is not running, recover by hand:
 
 1. Re-run the failed jobs once (re-run failed jobs only, one time).
 2. If the re-run passes, treat the failure as a flake: open a bug issue and fix-forward. Do not revert.
 3. If the re-run fails again, treat it as real breakage: revert the PR that caused it.
 
-Do not stop the takt skill's `align-behind.mjs`, which runs resident on a local machine and brings BEHIND PRs up to date with `main`, while `main` is red. A PR it aligns runs only the jobs chosen by its changed paths, so only a PR that touches the broken path fails and stops there; other PRs keep passing. It does not align a reserved PR that conflicts with `main` (DIRTY); it comments on that PR once per head instead, and the author rebases onto `origin/main` and pushes.
+`main`'s ruleset does not require a PR to be up to date with `main`, so a reserved PR merges while `main` is red. CI chooses jobs by changed paths, so only a PR that touches the broken path fails; other PRs keep passing.
