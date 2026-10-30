@@ -29,13 +29,12 @@ export function cameraFocus(snapshot: Snapshot): { ids: string[]; center: string
   return { ids: [...ids], center: snapshot.lastChanged ?? topic };
 }
 
-export function changedFocus(snapshot: Snapshot, shownAs: Readonly<Record<string, string>>): { ids: string[]; center: string } | null {
+export function changedFocus(snapshot: Snapshot, shownIdOf: (id: string) => string): { ids: string[]; center: string } | null {
   const present = new Set(snapshot.nodes.map((n) => n.id));
   const changed = [...changedNodeIds(snapshot)].filter((id) => present.has(id));
   if (changed.length === 0) return null;
-  const shownId = (id: string) => shownAs[id] ?? id;
-  const ids = [...new Set(changed.map(shownId))];
-  const last = snapshot.lastChanged !== undefined ? shownId(snapshot.lastChanged) : ids[ids.length - 1]!;
+  const ids = [...new Set(changed.map(shownIdOf))];
+  const last = snapshot.lastChanged !== undefined ? shownIdOf(snapshot.lastChanged) : ids[ids.length - 1]!;
   return { ids, center: last };
 }
 

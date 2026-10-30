@@ -129,8 +129,28 @@ export const init = (snapshot: Snapshot, mode: Model["mode"], isMac: boolean): M
 
 const MOTION_DURATION_MS = 500;
 
-const foldViewOf = (model: Model): FoldView | null => {
-  if (model.mode === "still") return null;
+type Size = { width: number; height: number };
+type Focus = NonNullable<ReturnType<typeof cameraFocus>>;
+type Seen = {
+  size: Model["size"];
+  targets: Record<string, Position>;
+  positions: Record<string, Position>;
+  dims: Record<string, { height: number }>;
+  ids: string[];
+  parents: Record<string, string | null>;
+  shownIdOf: (id: string) => string;
+  focus: Focus | null;
+  changed: Focus | null;
+  selection: ViewingState["selection"];
+};
+
+const positionsOf = (motion: Model["motion"], target: Record<string, Position>): Record<string, Position> =>
+  Option.match(motion, {
+    onNone: () => target,
+    onSome: ({ start, elapsedMs }) => interpolate(Object.fromEntries(HashMap.toEntries(start)), target, elapsedMs / MOTION_DURATION_MS),
+  });
+
+const surfaceOf = (model: Model) => {
   const context = model.foldingContext;
   const snapshot = {
     ...model.snapshot,
@@ -142,134 +162,135 @@ const foldViewOf = (model: Model): FoldView | null => {
       talkStatus: Option.getOrUndefined(context.talkStatus[node.id] ?? Option.none()),
     })),
   };
-  return foldView(snapshot, model.viewing.humanFolds, model.viewing.selection?.id ?? null);
-};
-const shownNodesOf = (model: Model): SnapshotNode[] => foldViewOf(model)?.nodes ?? model.snapshot.nodes;
-const layoutHeightsOf = (model: Model): Record<string, number> => Object.fromEntries(HashMap.toEntries(model.nodeHeights).map(([id, height]) => [id, Math.round(height)]));
-const drawnHeightOf = (model: Model, id: string): number => Option.getOrThrow(HashMap.get(model.nodeHeights, id));
-const dimsOf = (model: Model): Record<string, { height: number }> => Object.fromEntries(Object.entries(layoutHeightsOf(model)).map(([id, height]) => [id, { height }]));
-const targetOf = (model: Model): Record<string, Position> => layout(shownNodesOf(model), layoutHeightsOf(model));
-
-const treeOf = (model: Model, view: FoldView | null = foldViewOf(model)): VisibleTree => {
+  const view = model.mode === "still" ? null : foldView(snapshot, model.viewing.humanFolds, model.viewing.selection?.id ?? null);
   const shown = view?.nodes ?? model.snapshot.nodes;
-  return {
-    ids: shown.map((n) => n.id),
-    targets: layout(shown, layoutHeightsOf(model)),
-    parents: Object.fromEntries(shown.map((n) => [n.id, n.parent])),
+  const heights = Object.fromEntries(HashMap.toEntries(model.nodeHeights).map(([id, height]) => [id, Math.round(height)]));
+  const targets = layout(shown, heights);
+  const ids = shown.map((node) => node.id);
+  const parents = Object.fromEntries(shown.map((node) => [node.id, node.parent]));
+  const shownIdOf = (id: string): string => keepTargetOf(view, id);
+  const focus = cameraFocus(model.snapshot);
+  const changed = changedFocus(model.snapshot, shownIdOf);
+  const tree: VisibleTree = {
+    ids,
+    targets,
+    parents,
     fold: view,
-    changed: changedFocus(model.snapshot, view?.shownAs ?? {})?.ids ?? [],
+    changed: changed?.ids ?? [],
     currentTopic: model.snapshot.currentTopic,
   };
+  const seen: Seen = {
+    size: model.size,
+    targets,
+    positions: positionsOf(model.motion, targets),
+    dims: Object.fromEntries(Object.entries(heights).map(([id, height]) => [id, { height }])),
+    ids,
+    parents,
+    shownIdOf,
+    focus: focus === null ? null : { ids: [...new Set(focus.ids.map(shownIdOf))], center: shownIdOf(focus.center) },
+    changed,
+    selection: model.viewing.selection,
+  };
+  return { view, shown, tree, seen };
 };
+type Surface = ReturnType<typeof surfaceOf>;
 
-export const displayedPositions = (model: Model): Record<string, Position> => {
-  const target = targetOf(model);
-  return Option.match(model.motion, {
-    onNone: () => target,
-    onSome: ({ start, elapsedMs }) => interpolate(Object.fromEntries(HashMap.toEntries(start)), target, elapsedMs / MOTION_DURATION_MS),
-  });
-};
+const drawnHeightOf = (model: Model, id: string): number => Option.getOrThrow(HashMap.get(model.nodeHeights, id));
+
+export const displayedPositions = (model: Model): Record<string, Position> => surfaceOf(model).seen.positions;
 
 const samePositions = (a: Record<string, Position>, b: Record<string, Position>): boolean => {
   const ids = Object.keys(a);
   return ids.length === Object.keys(b).length && ids.every((id) => b[id] !== undefined && a[id]!.x === b[id].x && a[id]!.y === b[id].y);
 };
 
-const followTarget = (before: Model, after: Model): Model => {
+const followTarget = (before: Model, after: Model, previous: Seen, surface: Surface): Model => {
   if (after.mode === "still") return after;
-  const target = targetOf(after);
-  if (samePositions(targetOf(before), target)) return after;
-  const shown = HashMap.size(before.nodeHeights) === 0 ? {} : displayedPositions(before);
-  const start = startPositions(shownNodesOf(after), shown, target);
+  const target = surface.seen.targets;
+  if (samePositions(previous.targets, target)) return after;
+  const shown = HashMap.size(before.nodeHeights) === 0 ? {} : previous.positions;
+  const start = startPositions(surface.shown, shown, target);
   return modifyFields(after, {
     motion: () => (samePositions(start, target) ? Option.none() : Option.some({ start: HashMap.fromIterable(Object.entries(start)), elapsedMs: 0 })),
   });
 };
 
-type Size = { width: number; height: number };
+const seenAfterMotion = (model: Model, seen: Seen): Seen => ({ ...seen, positions: positionsOf(model.motion, seen.targets) });
 
 const setViewport = (model: Model, viewport: Viewport): Model => modifyFields(model, { viewport: () => viewport });
 
 const minZoomOf = (model: Model): number => (model.mode === "still" ? OVERVIEW_MIN_ZOOM : USER_MIN_ZOOM);
 
-const fittedOf = (model: Model, size: Size): Viewport => {
-  const heights = layoutHeightsOf(model);
-  const positions = displayedPositions(model);
-  const rects = shownNodesOf(model)
-    .filter((n) => HashMap.has(model.nodeHeights, n.id))
-    .map((n): Rect => ({ x: positions[n.id]!.x, y: positions[n.id]!.y, width: NODE_WIDTH, height: heights[n.id]! }));
+const fittedOf = (model: Model, seen: Seen, size: Size): Viewport => {
+  const rects = seen.ids
+    .filter((id) => seen.dims[id] !== undefined)
+    .map((id) => nodeRect(id, seen.positions, seen.dims));
   return fitViewport(rects, size, minZoomOf(model), USER_MAX_ZOOM) ?? IDENTITY;
 };
 
 export const fitsAllOf = (model: Model): Option.Option<boolean> => {
-  if (Option.isNone(model.size)) return Option.none();
-  const { width, height } = model.size.value;
-  const shown = shownNodesOf(model);
-  if (!shown.every((n) => HashMap.has(model.nodeHeights, n.id))) return Option.none();
-  if (shown.length === 0) return Option.some(true);
-  const heights = layoutHeightsOf(model);
-  const positions = displayedPositions(model);
+  const { seen } = surfaceOf(model);
+  if (Option.isNone(seen.size)) return Option.none();
+  const { width, height } = seen.size.value;
+  if (!seen.ids.every((id) => seen.dims[id] !== undefined)) return Option.none();
+  if (seen.ids.length === 0) return Option.some(true);
+  const positions = seen.positions;
   const { x, y, zoom } = model.viewport;
-  const left = Math.min(...shown.map((n) => positions[n.id]!.x));
-  const top = Math.min(...shown.map((n) => positions[n.id]!.y));
-  const right = Math.max(...shown.map((n) => positions[n.id]!.x + NODE_WIDTH));
-  const bottom = Math.max(...shown.map((n) => positions[n.id]!.y + heights[n.id]!));
+  const left = Math.min(...seen.ids.map((id) => positions[id]!.x));
+  const top = Math.min(...seen.ids.map((id) => positions[id]!.y));
+  const right = Math.max(...seen.ids.map((id) => positions[id]!.x + NODE_WIDTH));
+  const bottom = Math.max(...seen.ids.map((id) => positions[id]!.y + seen.dims[id]!.height));
   return Option.some(left * zoom + x >= 0 && top * zoom + y >= 0 && right * zoom + x <= width && bottom * zoom + y <= height);
 };
 
-const focusBoxesOf = (model: Model, focus: { ids: string[]; center: string }): { rects: Rect[]; center: Rect } => {
-  const shownAs = foldViewOf(model)?.shownAs ?? {};
-  const shownId = (id: string) => shownAs[id] ?? id;
-  const target = targetOf(model);
-  const dims = dimsOf(model);
-  return { rects: [...new Set(focus.ids.map(shownId))].map((id) => nodeRect(id, target, dims)), center: nodeRect(shownId(focus.center), target, dims) };
-};
+const focusBoxesOf = (seen: Seen, focus: Focus): { rects: Rect[]; center: Rect } =>
+  ({ rects: focus.ids.map((id) => nodeRect(id, seen.targets, seen.dims)), center: nodeRect(focus.center, seen.targets, seen.dims) });
 
-const diffCamera = (model: Model, size: Size): Model => {
+const diffCamera = (model: Model, seen: Seen, size: Size): Model => {
   if (Option.isSome(model.keepAnchor)) return model;
-  const changed = changedFocus(model.snapshot, foldViewOf(model)?.shownAs ?? {});
+  const changed = seen.changed;
   if (changed === null) return model;
-  const boxes = focusBoxesOf(model, changed);
+  const boxes = focusBoxesOf(seen, changed);
   return setViewport(model, focusViewport(boxes.rects, boxes.center, size, USER_MIN_ZOOM));
 };
 
-const autoCamera = (model: Model): Model => {
-  if (Option.isNone(model.size)) return model;
-  const size = model.size.value;
-  if (model.mode === "still") return setViewport(model, fittedOf(model, size));
+const autoCamera = (model: Model, seen: Seen): Model => {
+  if (Option.isNone(seen.size)) return model;
+  const size = seen.size.value;
+  if (model.mode === "still") return setViewport(model, fittedOf(model, seen, size));
   if (model.viewing.mode === "manual") return model;
   if (model.viewing.mode === "overview") {
     if (Option.isSome(model.keepAnchor)) return model;
-    const viewport = overviewViewport(treeOf(model).ids, targetOf(model), dimsOf(model), size);
+    const viewport = overviewViewport(seen.ids, seen.targets, seen.dims, size);
     return viewport === null ? model : setViewport(model, viewport);
   }
-  if (model.viewing.mode === "diff") return diffCamera(model, size);
-  const focus = cameraFocus(model.snapshot);
-  if (focus === null) return setViewport(modifyFields(model, { placedRound: () => Option.none() }), fittedOf(model, size));
+  if (model.viewing.mode === "diff") return diffCamera(model, seen, size);
+  const focus = seen.focus;
+  if (focus === null) return setViewport(modifyFields(model, { placedRound: () => Option.none() }), fittedOf(model, seen, size));
   if (!shouldMoveCamera(model.snapshot, Option.getOrNull(model.placedRound))) return model;
-  const boxes = focusBoxesOf(model, focus);
+  const boxes = focusBoxesOf(seen, focus);
   return setViewport(modifyFields(model, { placedRound: () => Option.some(model.snapshot.round) }), focusViewport(boxes.rects, boxes.center, size));
 };
 
-const reanchor = (model: Model): Model =>
+const reanchor = (model: Model, seen: Seen): Model =>
   Option.match(model.keepAnchor, {
     onNone: () => model,
     onSome: ({ id, point }) => {
-      const at = displayedPositions(model)[id];
+      const at = seen.positions[id];
       return at === undefined ? model : setViewport(model, anchoredViewport(model.viewport, at, point));
     },
   });
 
-const applyPendingShift = (before: Model, after: Model): Model => {
-  if (!after.pendingShift || Option.isNone(after.size)) return after;
-  const size = after.size.value;
+const applyPendingShift = (before: Model, after: Model, seen: Seen): Model => {
+  if (!after.pendingShift || Option.isNone(seen.size)) return after;
+  const size = seen.size.value;
   if (Option.isSome(before.size) && before.size.value.width === size.width) return after;
   const settled = modifyFields(after, { pendingShift: () => false });
-  const focus = after.mode === "still" || after.viewing.sideHidden ? null : cameraFocus(after.snapshot);
-  return focus === null ? settled : setViewport(settled, shiftIntoView(after.viewport, focusBoxesOf(after, focus).rects, size));
+  const focus = after.mode === "still" || after.viewing.sideHidden ? null : seen.focus;
+  return focus === null ? settled : setViewport(settled, shiftIntoView(after.viewport, focusBoxesOf(seen, focus).rects, size));
 };
 
-type CommandContext = { size: Size; previous: Model };
+type CommandContext = { size: Size; previous: Seen; seen: Seen };
 type CommandStep = (model: Model, context: CommandContext) => Model;
 
 const clampedViewport = (viewport: Viewport, size: Size): Viewport => zoomAroundCenter(viewport, clampUserZoom(viewport.zoom), size);
@@ -286,36 +307,42 @@ const commandStepOf = Match.type<CameraCommand>().pipe(
     zoomBy: ({ factor }) => (model, { size }) => setViewport(model, zoomAroundCenter(model.viewport, clampUserZoom(model.viewport.zoom * factor), size)),
     zoomTo: ({ zoom }) => (model, { size }) => setViewport(model, zoomAroundCenter(model.viewport, clampUserZoom(zoom), size)),
     pan: ({ dx, dy }) => (model, { size }) => setViewport(model, panViewport(clampedViewport(model.viewport, size), { dx, dy }, size)),
-    focusNode: ({ id }) => (model, { size }) => setViewport(model, nodeFocusViewport(nodeRect(id, targetOf(model), dimsOf(model)), model.viewport.zoom, size)),
-    revealNode: ({ id }) => (model, { size }) => setViewport(model, revealViewport(clampedViewport(model.viewport, size), nodeRect(id, targetOf(model), dimsOf(model)), size)),
-    fitSubtree: ({ id }) => (model, { size }) => setViewport(model, subtreeViewport(id, treeOf(model), targetOf(model), dimsOf(model), size)),
-    keepNode: ({ id }) => (model, { previous }) => {
-      const at = displayedPositions(previous)[id] ?? displayedPositions(model)[id];
-      return at === undefined ? model : modifyFields(model, { keepAnchor: () => Option.some({ id: keepTargetOf(foldViewOf(model), id), point: screenPoint(model.viewport, at) }) });
+    focusNode: ({ id }) => (model, { size, seen }) => setViewport(model, nodeFocusViewport(nodeRect(id, seen.targets, seen.dims), model.viewport.zoom, size)),
+    revealNode: ({ id }) => (model, { size, seen }) => setViewport(model, revealViewport(clampedViewport(model.viewport, size), nodeRect(id, seen.targets, seen.dims), size)),
+    fitSubtree: ({ id }) => (model, { size, seen }) => setViewport(model, subtreeViewport(id, seen, seen.targets, seen.dims, size)),
+    keepNode: ({ id }) => (model, { previous, seen }) => {
+      const at = previous.positions[id] ?? seen.positions[id];
+      return at === undefined ? model : modifyFields(model, { keepAnchor: () => Option.some({ id: seen.shownIdOf(id), point: screenPoint(model.viewport, at) }) });
     },
   }),
 );
 
-const applyCommand = (model: Model, command: CameraCommand, previous: Model): Model => {
+const applyCommand = (model: Model, command: CameraCommand, previous: Seen, seen: Seen): Model => {
   const reset = modifyFields(model, { pendingShift: () => command.type === "shiftIntoView", keepAnchor: () => Option.none() });
-  if (Option.isNone(model.size)) return reset;
-  return commandStepOf(command)(reset, { size: model.size.value, previous });
+  if (Option.isNone(seen.size)) return reset;
+  return commandStepOf(command)(reset, { size: seen.size.value, previous, seen });
 };
 
 const keepsIdleTimer = (event: ViewingEvent): boolean => event.type === "side" || event.type === "select" || event.type === "deselect";
 
-const applyViewing = (model: Model, event: ViewingEvent, previous: Model = model): Model => {
-  const { state, camera, preserveIdleTimer } = reduceViewing(model.viewing, event, treeOf(model), model.mode === "review" ? "review" : "live");
+type PreviousSurface = { model: Model; surface: Surface };
+
+const applyViewing = (model: Model, event: ViewingEvent, previous: PreviousSurface = { model, surface: surfaceOf(model) }, current: Surface = previous.surface): Model => {
+  const { state, camera, preserveIdleTimer } = reduceViewing(model.viewing, event, current.tree, model.mode === "review" ? "review" : "live");
   const reduced = modifyFields(model, { viewing: () => state, idleStamp: (stamp) => (preserveIdleTimer || keepsIdleTimer(event) ? stamp : stamp + 1) });
   if (model.mode === "still") return reduced;
-  const followed = followTarget(previous, reduced);
-  const commanded = applyCommand(followed, camera, previous);
-  return reanchor(camera.type === "shiftIntoView" || camera.type === "keepNode" ? commanded : autoCamera(commanded));
+  const surface = state.humanFolds === model.viewing.humanFolds && state.selection?.id === model.viewing.selection?.id
+    ? { ...current, seen: { ...current.seen, selection: state.selection } }
+    : surfaceOf(reduced);
+  const followed = followTarget(previous.model, reduced, previous.surface.seen, surface);
+  const seen = seenAfterMotion(followed, surface.seen);
+  const commanded = applyCommand(followed, camera, previous.surface.seen, seen);
+  return reanchor(camera.type === "shiftIntoView" || camera.type === "keepNode" ? commanded : autoCamera(commanded, seen), seen);
 };
 
-const reflectionOf = (before: Model, after: Model): ViewingEvent | null => {
-  if (after.mode === "still" || before.snapshot.round === after.snapshot.round) return null;
-  const replaced = relocations({ tree: treeOf(before), snapshot: before.snapshot, selectedId: before.viewing.selection?.id ?? null }, { tree: treeOf(after), snapshot: after.snapshot });
+const reflectionOf = (before: PreviousSurface, after: Model, surface: Surface): ViewingEvent | null => {
+  if (after.mode === "still" || before.model.snapshot.round === after.snapshot.round) return null;
+  const replaced = relocations({ tree: before.surface.tree, snapshot: before.model.snapshot, selectedId: before.model.viewing.selection?.id ?? null }, { tree: surface.tree, snapshot: after.snapshot });
   return { type: "reflect", replaced };
 };
 
@@ -338,9 +365,10 @@ const panBy = (model: Model, x: number, y: number): Model => movedByUser(model, 
 const zoomBy = (model: Model, point: { x: number; y: number }, factor: number): Model => movedByUser(model, zoomAtPoint(model.viewport, point, factor));
 
 const followDisplayed = (model: Model): Model => {
-  const follows = model.mode !== "still" && model.viewing.mode === "auto" && cameraFocus(model.snapshot) === null;
-  const anchored = reanchor(model);
-  return follows ? autoCamera(anchored) : anchored;
+  const { seen } = surfaceOf(model);
+  const follows = model.mode !== "still" && model.viewing.mode === "auto" && seen.focus === null;
+  const anchored = reanchor(model, seen);
+  return follows ? autoCamera(anchored, seen) : anchored;
 };
 
 const pressed = (model: Model, event: ViewingEvent): Return => ({ model: model.mode === "still" ? model : applyViewing(model, event) });
@@ -356,15 +384,17 @@ export const toggledKeyList = (model: Model): Model => update(model, Message.Tog
 
 export const blinkRestartsOf = (before: Model, after: Model): ReadonlyArray<ReturnType<typeof RestartBlink>> => {
   if (after.mode === "still" || Option.isNone(after.size) || before.snapshot.round === after.snapshot.round) return [];
-  return (foldViewOf(after)?.blink.size ?? 0) > 0 ? [RestartBlink()] : [];
+  return (surfaceOf(after).view?.blink.size ?? 0) > 0 ? [RestartBlink()] : [];
 };
 
 export const changedSnapshot = (model: Model, snapshot: Snapshot): Model => update(model, Message.ChangedSnapshot({ snapshot })).model;
 
 export const movedTime = (model: Model): Model => update(model, Message.MovedTime()).model;
 
-const clickedNode = (model: Model, nodeId: string): Return =>
-  foldViewOf(model)?.openness[nodeId]?.state === "bundle" ? { model } : { model: applyViewing(model, { type: "select", id: nodeId }), outMessage: OutMessage.SelectedNode({ nodeId }) };
+const clickedNode = (model: Model, nodeId: string): Return => {
+  const surface = surfaceOf(model);
+  return surface.view?.openness[nodeId]?.state === "bundle" ? { model } : { model: applyViewing(model, { type: "select", id: nodeId }, { model, surface }), outMessage: OutMessage.SelectedNode({ nodeId }) };
+};
 
 export const update = (model: Model, message: Message): Return =>
   Message.match<Return>(message, {
@@ -378,16 +408,24 @@ export const update = (model: Model, message: Message): Return =>
         Option.isNone(model.size) ||
         (!settlesShift && (model.size.value.width !== width || model.size.value.height !== height)) ||
         Object.entries(nodeHeights).some(([id, nodeHeight]) => Option.getOrUndefined(HashMap.get(model.nodeHeights, id)) !== nodeHeight);
-      const followed = followTarget(model, measured);
-      return { model: applyPendingShift(model, reanchor(changed ? autoCamera(followed) : followed)) };
+      const previous = surfaceOf(model);
+      const surface = surfaceOf(measured);
+      const followed = followTarget(model, measured, previous.seen, surface);
+      const seen = seenAfterMotion(followed, surface.seen);
+      return { model: applyPendingShift(model, reanchor(changed ? autoCamera(followed, seen) : followed, seen), seen) };
     },
     ChangedSnapshot: ({ snapshot }) => {
       const replaced = modifyFields(model, { snapshot: () => snapshot });
       const unchangedWhileHeld = sameNodes(model.snapshot.nodes, snapshot.nodes) && !sameFoldingContext(model.foldingContext, foldingContextOf(model.snapshot));
       if (model.mode === "live" && (changedOnlyCriteria(model.snapshot, snapshot) || unchangedWhileHeld)) return { model: replaced };
       const refreshed = modifyFields(replaced, { foldingContext: () => foldingContextOf(snapshot) });
-      const reflection = reflectionOf(model, refreshed);
-      return { model: reflection === null ? reanchor(autoCamera(followTarget(model, refreshed))) : applyViewing(refreshed, reflection, model) };
+      const previous = { model, surface: surfaceOf(model) };
+      const surface = surfaceOf(refreshed);
+      const reflection = reflectionOf(previous, refreshed, surface);
+      if (reflection !== null) return { model: applyViewing(refreshed, reflection, previous, surface) };
+      const followed = followTarget(model, refreshed, previous.surface.seen, surface);
+      const seen = seenAfterMotion(followed, surface.seen);
+      return { model: reanchor(autoCamera(followed, seen), seen) };
     },
     MovedTime: () => (model.viewing.mode === "auto" ? { model } : pressed(model, { type: "timeMoved" })),
     PressedViewKey: ({ key, metaKey, ctrlKey, altKey }) => pressed(model, { type: "key", key, meta: metaKey, ctrl: ctrlKey, alt: altKey }),
@@ -512,11 +550,9 @@ function nodeBody(h: H, node: SnapshotNode, view: FoldView | null, selected: boo
 }
 
 export const view = Submodel.defineView<Model, Message, { readonly notice: () => Html | null }>((model, slots, h): Html => {
-  const view_ = foldViewOf(model);
-  const tree = view_ === null ? null : treeOf(model, view_);
-  const selectedId = view_ === null ? null : (model.viewing.selection?.id ?? null);
-  const shown = view_?.nodes ?? model.snapshot.nodes;
-  const positions = displayedPositions(model);
+  const { view: view_, tree, shown, seen } = surfaceOf(model);
+  const selectedId = view_ === null ? null : (seen.selection?.id ?? null);
+  const positions = seen.positions;
   const measured = shown.filter((n) => HashMap.has(model.nodeHeights, n.id));
   const viewport = model.viewport;
 
@@ -540,7 +576,7 @@ export const view = Submodel.defineView<Model, Message, { readonly notice: () =>
   );
 
   const dots =
-    view_ === null || tree === null || model.viewing.mode === "auto"
+    view_ === null || model.viewing.mode === "auto"
       ? []
       : Option.match(model.size, {
           onNone: () => [],
@@ -548,7 +584,7 @@ export const view = Submodel.defineView<Model, Message, { readonly notice: () =>
             edgeDots(
               tree.ids.filter((id) => view_.blink.has(id) && HashMap.has(model.nodeHeights, id)),
               tree.targets,
-              dimsOf(model),
+              seen.dims,
               viewport,
               size,
             ),
