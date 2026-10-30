@@ -1,6 +1,6 @@
 # takt の run
 
-takt でチケットを実装させるとき、その run の報告を読むとき、run が層を「未実証」で返したときに読む文書。takt の作業場所で検査の層を通すための前提と、run の報告に出る失敗の読み方を書く。マージと main の修復の流れは [ADR 0026](../adr/0026-verify-main-after-merge-without-strict.md) にある。
+takt でチケットを実装させるとき、その run の報告を読むとき、run が層を「未実証」で返したときに読む文書。takt の作業場所で検査の層を通すための前提と、run の報告に出る失敗の読み方を書く。マージと main の修復の流れは [ADR 0026](../adr/0026-verify-main-after-merge-without-strict.md) と [マージと main の修復](merge-and-main-repair.md) にある。
 
 - 用語: 無し
 - ADR: [0026 main の ruleset は strict を必須にせず、main の push の CI を案内役が見張って直す](../adr/0026-verify-main-after-merge-without-strict.md)
@@ -152,6 +152,18 @@ env HOME="$PWD/.takt/issue-1657-cli/home" \
 
 ライブの保存・restore の後・標準出力の 3 つで JSON 全体が一致し、`log.jsonl` は変わらなかった。会議の中身を読まずに、コマンドの端から端までを確かめられる。CLI の手の確かめを完了条件に入れるときは、この形（合成のセッション、`HOME` と `LIVE_MINDMAP_SESSIONS` を run の中に分ける、比較の結果をファイルに残す）を本文に書いておく。
 
+## blocked by の blocker は、実装の PR がマージされてから閉じる。takt-sequence は blocker が閉じた 20 秒後に後の子を始める
+
+takt-sequence は blocked by が外れた issue から取るので、blocker を閉じることがそのまま「次を始めてよい」の合図になる。[#1704](https://github.com/daiki-beppu/live-mindmap/issues/1704) は「dotfiles#407 の実装がマージされてから ruleset の strict を外す」として #407 を blocked by に置いていた。#407 は実装の PR も子の issue も無いまま 10/28 22:11:06 に閉じられ、#1704 の run は 22:11:26 に始まった。実装の PR（dotfiles#420・#422・#423・#424）が作られたのは 23:00 からだった。
+
+run は、計画の段が前提を「#407 が閉じていること」でなく「実装のマージと、案内役が main の `check` を読めること」に置いていたので、実装の段が #407 の子の数と timeline を API で読み直し、ruleset を書き換えずに返した。ただ、それは計画の段の読み方に助けられただけだ。「この実装が入ってから」を blocked by で表すなら、blocker は実装の PR がマージされてから閉じる。子を持つ仕様の issue は、子がすべて閉じてから閉じる。後から振り返るときも、「今は入っている」を「閉じた時点でも入っていた」と読み替えない（#407 には翌朝「開き直したのは誤りだった」と書いたが、開き直した 22:16 には PR はまだ 1 本も無かった）。
+
+## run に ABORT を頼んでも、自動の再投入は止まらない。人が引き取るなら、タスクを列から外す
+
+takt は ABORT で終わったタスクを自動で再投入する（上限 2 回）。再投入の側からは、人の指示による ABORT も、要件が足りずに止まった ABORT も、同じ `Workflow aborted by step transition` に見える。#1704 は人が引き取ることにして、22:24:30 に「PR を作らずに ABORT して終わること」と run に送った。1 本目は 22:25:32 に ABORT し、2 本目（22:25:35〜）と 3 本目（22:27:19〜）がそれぞれ再計画の段で同じ指示を読んで、約 2 分で同じ ABORT を出した（`attempt":2,"maxAttempts":2`）。
+
+指示は `context/task/order.md` の「追加の指示」に残るので、再投入の run も従いはする。それでも、ABORT の指示は run を 1 本止めるだけで、タスクは終わらない。人が引き取るときは、run に ABORT を頼むのと合わせて、タスクを列から外す。
+
 ## 出典
 
 - チケット [#1287](https://github.com/daiki-beppu/live-mindmap/issues/1287)、[PR #1292](https://github.com/daiki-beppu/live-mindmap/pull/1292)
@@ -170,3 +182,4 @@ env HOME="$PWD/.takt/issue-1657-cli/home" \
 - 仕様 [#1612](https://github.com/daiki-beppu/live-mindmap/issues/1612) の子 [#1624](https://github.com/daiki-beppu/live-mindmap/issues/1624)・[PR #1641](https://github.com/daiki-beppu/live-mindmap/pull/1641)、[#1625](https://github.com/daiki-beppu/live-mindmap/issues/1625)・[PR #1644](https://github.com/daiki-beppu/live-mindmap/pull/1644) の takt の run（`20261026-170454-issue-1624-no-no-wo-tabuwo-shi-q0xe0t`・`20261026-185815-issue-1625-karanosesshonno-hel-hdfs52`）の trace と reports、[録画を読む経路を 1 本にしたとき](../devlog/2026-10-27.md#recorded-relay-one-path)
 - 仕様 [#1611](https://github.com/daiki-beppu/live-mindmap/issues/1611) の子 [#1628](https://github.com/daiki-beppu/live-mindmap/issues/1628)・[PR #1668](https://github.com/daiki-beppu/live-mindmap/pull/1668) の takt の run（`20261026-221216-issue-1628-cli-play-to-cli-eva-vgx5ew`・`20261026-224854-issue-1628-cli-play-to-cli-eva-6vpoxw`・`20261026-225131-issue-1628-cli-play-to-cli-eva-0y5ej7`・`20261027-035023-issue-1628-cli-play-to-cli-eva-ne56xj`）の trace と reports、PR のレビューの run（`20261027-042106-merge-pr-1668-8k68gv`・`20261027-044534-merge-pr-1668-1-q4glf1`）、[開始前の確かめを入口の表 1 つにまとめたとき](../devlog/2026-10-27.md#startup-checks-module)
 - 仕様 [#1638](https://github.com/daiki-beppu/live-mindmap/issues/1638) の子 [#1652](https://github.com/daiki-beppu/live-mindmap/issues/1652)・[#1653](https://github.com/daiki-beppu/live-mindmap/issues/1653)・[#1654](https://github.com/daiki-beppu/live-mindmap/issues/1654)（[PR #1674](https://github.com/daiki-beppu/live-mindmap/pull/1674)）の takt の run（`20261027-084931-issue-1653-raibu-session-no-wo-66bcbk`・`20261027-101629-issue-1654-pushscreen-wo-scree-7q88my`）の計画、PR のレビューの run（`20261027-104833-merge-pr-1674-j8t7cz`）の裁定、[共有画面の持ち越しを 1 つのキューにしたとき](../devlog/2026-10-27.md#screen-queue)
+- 仕様 [#1682](https://github.com/daiki-beppu/live-mindmap/issues/1682) の子 [#1704](https://github.com/daiki-beppu/live-mindmap/issues/1704) の takt の run（`20261028-131126-issue-1704-main-no-ruleset-no-7pe7g3`・`20261028-132535-issue-1704-main-no-ruleset-no-zd3ch2`・`20261028-132719-issue-1704-main-no-ruleset-no-sbh9j5`）の trace と reports、dotfiles#407 の timeline、[main の ruleset の strict を外したとき](../devlog/2026-10-30.md#drop-strict)
