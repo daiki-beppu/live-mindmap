@@ -16,13 +16,37 @@ What the commands in `AGENTS.md` → Checks do, how tests are layered, and how C
 - **helper**: set by the Suite type-name suffix (`…Tests` unit, `…ITTests` light IT, `…HeavyTests` heavy IT (the definition above)); file names carry the same suffix. The helper's `typecheck` runs `scripts/checkTestLayers.ts` (after `build-apm`, before `swift build`), which fails when a unit file (any `.swift` not ending in `ITTests.swift` or `HeavyTests.swift`) contains `WebRTCEchoCanceller(`, `SpeechAnalyzerTranscriber(`, `SortformerSpeakerDiarizer(`, `FileManager.default.temporaryDirectory` or `WebSocketServer(port:`. Each helper script runs `pnpm typecheck` once, then `swift test --skip-build` with a `--skip`/`--filter` on that suffix.
 - **Everywhere**: `pnpm test:it:heavy` runs the heavy ITs and `pnpm test:it:all` runs light and heavy in one go, excluding the external tests below.
 
-Tests that fetch real dependencies (`deps:install` or `npm ci`) use `*.external.test.ts` in server. They meet the heavy definition above but run separately in project `external`, excluded from `unit`, `it`, and `heavy`. Run `pnpm test:external` from the repository root or `pnpm --dir server test:external`. Each test keeps its 180-second timeout. CI runs them only for PRs that change `server/managed-deps/**`, `server/scripts/install-managed-deps.ts`, or `server/src/managedDeps.ts`, including Markdown under managed-deps. Other PRs and pushes to main skip them.
+Tests that fetch real dependencies (`deps:install` or `npm ci`) use `*.external.test.ts` in server. They meet the heavy definition above but run separately in project `external`, excluded from `unit`, `it`, and `heavy`. Run `pnpm test:external` from the repository root or `pnpm --dir server test:external`. Each test keeps its 180-second timeout. CI runs them for PRs that change `server/managed-deps/**`, `server/scripts/install-managed-deps.ts`, or `server/src/managedDeps.ts`, including Markdown under managed-deps, and for every Nightly and Weekly run. Other PRs and pushes to main skip them.
 
 Heavy ITs need the managed Chromium. Install it with `pnpm cli install chromium` (needs the resident server); `LIVE_MINDMAP_DEPS` changes where it goes. Stop a resident server you started with `pnpm cli server stop` (it targets the port in `LIVE_MINDMAP_PORT`), never with `pkill` or another name pattern. Without the server (development, CI), use `pnpm --filter @live-mindmap/server deps:install chromium`. A heavy IT that starts the CLI against the real managed dependencies also needs the managed Claude SDK: `pnpm --filter @live-mindmap/server deps:install claude` (`LIVE_MINDMAP_DEPS` changes where it goes, as for Chromium).
 
 ## CI
 
-CI (`.github/workflows/check.yml`) chooses tests from the PR's changed paths in `changes`, then calls `.github/workflows/tests.yml`. That reusable workflow owns the five parallel test-job definitions and their timeouts. The caller retains the PR/main-push triggers, concurrency, and required `check` job. Nightly and Weekly can call the same definitions; this extraction adds no scheduled triggers.
+CI (`.github/workflows/check.yml`) chooses tests from the PR's changed paths in `changes`, then calls `.github/workflows/tests.yml`. That reusable workflow owns the five parallel test-job definitions and their timeouts. The caller retains the PR/main-push triggers, concurrency, and required `check` job. Nightly and Weekly call the same reusable workflow from separate callers.
+
+### 段
+
+段は、結果を決めるもの（コード・外部の取得・キャッシュ）による分類で、テストの層（unit・light・heavy の境界）とは別の軸である。
+
+| テストの性質 | PR | main への push | Nightly | Weekly |
+|---|---|---|---|---|
+| コードだけで結果が決まる（typecheck・fallow・unit・light IT・heavy IT・e2e の replay） | 全件 | 全件 | 全件 | 全件・キャッシュなし |
+| helper（Swift の unit・IT・heavy IT） | helper などのパスに当たるときだけ | 同じくパスで振り分ける | 全件 | 全件・キャッシュなし |
+| テスト自身が外部から取得する（本物の `deps:install`・`npm ci`・Playwright の導入） | 管理する依存のパスに当たるときだけ | 走らせない | 走らせる | 走らせる |
+| キャッシュで隠れる準備（APM のビルド、話者モデルの取得、管理する Chromium・Claude の導入） | キャッシュを使う | キャッシュを使い、保存する | キャッシュを使う | キャッシュを使わず、保存もしない |
+
+この表は仕様の振り分け規則を示す。現行の `check.yml` は main への push では helper を常時実行する。PR のコード検査は変更パスで選択し、docs-only PR などでは省略する。既存の `check` の選択規則は保持する。
+
+各段の起動条件：
+
+- PR: `check.yml` の `pull_request`。変更パスでジョブを選択する。
+- main への push: `check.yml` の `push`（`branches: [main]`）。external 以外を実行する。
+- Nightly: `nightly.yml` の `schedule`、毎日18:17 UTC（03:17 JST）、または `workflow_dispatch`。全件を実行し、準備キャッシュは復元するが保存しない。
+- Weekly: `weekly.yml` の `schedule`、毎週日曜19:17 UTC（月曜04:17 JST）、または `workflow_dispatch`。Nightly と同じ全件を、準備キャッシュの復元も保存もせずに実行する。
+
+schedule は既定ブランチ（main）の最新コミットを対象とする。両 workflow は必須チェックに追加せず、PR のマージを止めない。Weekly でもコミット済みの E2E replay cache は使い、`--strict-cache` を保持する。
+
+### 共通ジョブとキャッシュ
 
 All six `workflow_call` inputs are required Booleans:
 
@@ -42,7 +66,7 @@ The resulting test selection remains:
 - The `ts` job runs typecheck of server, web and e2e, plus unit and light ITs of server and web, together, then runs fallow last with `--format github-annotations --fail-on-issues` (without the flag, annotations alone exit 0 even with issues).
 - The `heavy` job runs every `--project heavy` IT of server and web (a `package` matrix) split per test (grouped by `file:line`) across 1 runner for server and 2 runners for web, with new heavy ITs picked up automatically.
 - The `e2e` job (also gated by the `ts` output, so helper-only PRs skip it) runs `pnpm --filter @live-mindmap/e2e test:e2e` (all targets) in one runner: `--strict-cache` replays the committed cache only and `--retries 0` disables the CI default retry, no credentials (`E2E_OAUTH_CREDENTIALS`, `*_API_KEY`, `secrets.*`) are passed, and a step that cannot be replayed (`REPLAY_STALE`, a recorded mismatch) fails the job.
-- The `external` job restores the managed Chromium and Claude caches, runs `deps:install` for both, then runs `pnpm test:external`. Its condition uses the `changes` job's `external` output.
+- The `external` job restores the managed Chromium and Claude caches when enabled, runs `deps:install` for both, then runs `pnpm test:external`. Its condition uses the caller's `run-external` input: the `changes` job's `external` output for PR/main push, and `true` for Nightly and Weekly.
 - The `heavy`, `external`, and `e2e` jobs install Chromium.
 
 The reusable workflow's `results` job uses `always()` and depends on all five test jobs. It transfers their results as compact JSON through a step output, job output, and workflow output; it does not decide whether the required check passes.
