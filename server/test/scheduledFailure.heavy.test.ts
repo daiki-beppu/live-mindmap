@@ -83,9 +83,9 @@ if (args[0] === "run" && args[1] === "view") {
 } else fail("unexpected gh call: " + JSON.stringify(args));
 `;
 
-const withGitHub = <T>(issues: Issue[], test: (fixture: ReturnType<typeof githubFixture>) => T): T => {
+const withGitHub = <T>(issues: Issue[], useFixture: (fixture: ReturnType<typeof githubFixture>) => T): T => {
   const dir = mkdtempSync(join(tmpdir(), "scheduled-failure-"));
-  try { return test(githubFixture(dir, issues)); }
+  try { return useFixture(githubFixture(dir, issues)); }
   finally { rmSync(dir, { recursive: true, force: true }); }
 };
 
