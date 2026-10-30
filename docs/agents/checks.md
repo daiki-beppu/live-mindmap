@@ -46,6 +46,20 @@ CI (`.github/workflows/check.yml`) chooses tests from the PR's changed paths in 
 
 schedule は既定ブランチ（main）の最新コミットを対象とする。両 workflow は必須チェックに追加せず、PR のマージを止めない。Weekly でもコミット済みの E2E replay cache は使い、`--strict-cache` を保持する。
 
+#### 定期段が落ちたとき
+
+Nightly・Weekly は schedule の run が失敗すると、段ごとの固定題名（`Nightly の CI が落ちている`・`Weekly の CI が落ちている`）の open な bug issue を探す。なければ bug・needs-triage で作成し、あれば同じ issue にコメントする。本文とコメントには run の URL・SHA・落ちたジョブ名が入る。workflow_dispatch では通知せず、次の run が通っても自動では閉じない。Discord・takt には自動転送せず、ready-for-agent も付けない。通知は repo を watch している本人へ GitHub から届く。
+
+通知の issue を開いた人かエージェントは、次の手順で対応する。
+
+1. 落ちたジョブだけを1回流し直す。
+2. 通れば、flake か外部の一時的な障害として原因を issue に書く。テストの揺れなら bug として直す。原因を書いた人が issue を閉じる。
+3. 再び落ちれば、本物の壊れとして直す。コードで直すものだけ、人かエージェントが ready-for-agent を付ける。
+
+「When main goes red」の「落ちたジョブだけを1回流し直し、通れば flake として bug の issue を立てて直す」手順は PR にも適用する。止まった・揺れたテストを自動でリトライしたり隔離したりしない。Vitest の retry は0、E2E の `--retries 0` を保持する。
+
+通知スクリプトは手元でも `bash scripts/report-scheduled-failure.sh <repository> <title> <run-url> <sha> <failed-jobs>` で実行できる。失敗ジョブが複数なら、最後の引数に改行区切りの一覧を渡す。試すときは本番と異なる題名を使い、試行 issue は最後に手動で閉じる。`gh` の認証と `jq` が必要。
+
 ### 共通ジョブとキャッシュ
 
 All six `workflow_call` inputs are required Booleans:

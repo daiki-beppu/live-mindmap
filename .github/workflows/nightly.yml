@@ -7,6 +7,8 @@ on:
 
 jobs:
   tests:
+    permissions:
+      contents: read
     uses: ./.github/workflows/tests.yml
     with:
       run-ts: true
@@ -15,3 +17,24 @@ jobs:
       restore-caches: true
       save-shared-caches: false
       save-main-caches: false
+
+  notify-failure:
+    needs: [tests]
+    if: failure() && github.event_name == 'schedule'
+    runs-on: ubuntu-slim
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Report failed jobs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TITLE: Nightly の CI が落ちている
+        run: |
+          failed_jobs=$(gh run view "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" --attempt "$GITHUB_RUN_ATTEMPT" --json jobs --jq '.jobs[] | select(.conclusion == "failure" or .conclusion == "timed_out") | .name')
+          bash scripts/report-scheduled-failure.sh "$GITHUB_REPOSITORY" "$TITLE" "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" "$GITHUB_SHA" "$failed_jobs"
