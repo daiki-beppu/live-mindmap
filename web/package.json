@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "prototype:supplement": "vite --port 5198 --open /prototype-supplement.html",
     "build": "vite build",
     "test": "vitest run --project unit",
     "test:it": "vitest run --project it",

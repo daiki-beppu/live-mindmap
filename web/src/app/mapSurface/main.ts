@@ -43,6 +43,7 @@ import { type ArrowDir, type CameraCommand, INITIAL_VIEWING, reduceViewing, View
 import { RestartBlink } from "./command.ts";
 import { Message, OutMessage } from "./message.ts";
 import { ObserveMapSurface } from "./mount.ts";
+import { isSupplementNode, supplementOf, supplementOfNode, supplementVariant, withSupplementNodes } from "./prototypeSupplement.ts";
 
 const FoldingContext = Schema.Struct({
   currentTopic: Schema.Option(Schema.String),
@@ -106,7 +107,8 @@ export type Model = typeof Model.Type;
 
 const IDENTITY: Viewport = { x: 0, y: 0, zoom: 1 };
 
-export const init = (snapshot: Snapshot, mode: Model["mode"], isMac: boolean): Model => ({
+export const init = (received: Snapshot, mode: Model["mode"], isMac: boolean): Model => initWith(withSupplementNodes(received), mode, isMac);
+const initWith = (snapshot: Snapshot, mode: Model["mode"], isMac: boolean): Model => ({
   mode,
   snapshot,
   foldingContext: foldingContextOf(snapshot),
@@ -429,7 +431,8 @@ export const update = (model: Model, message: Message): Return =>
       const seen = seenAfterMotion(followed, surface.seen);
       return { model: applyPendingShift(model, reanchor(changed ? autoCamera(followed, seen) : followed, seen), seen) };
     },
-    ChangedSnapshot: ({ snapshot }) => {
+    ChangedSnapshot: ({ snapshot: received }) => {
+      const snapshot = withSupplementNodes(received);
       const replaced = modifyFields(model, { snapshot: () => snapshot });
       const unchangedWhileHeld = sameNodes(model.snapshot.nodes, snapshot.nodes) && !sameFoldingContext(model.foldingContext, foldingContextOf(model.snapshot));
       if (model.mode === "live" && (changedOnlyCriteria(model.snapshot, snapshot) || unchangedWhileHeld)) return { model: replaced };
@@ -549,10 +552,13 @@ function nodeBody(h: H, node: SnapshotNode, view: FoldView | null, selected: boo
   const fold = openness?.state === "folded" || openness?.state === "bundle" ? openness : null;
   const mark = markOf(node);
   const person = personLine(node, speakerNames);
+  const variant = supplementVariant();
+  const supplement = variant === "A" ? undefined : supplementOf(node);
+  const asNode = supplementOfNode(node);
   return h.div(
     [
       h.Class(
-        classes("map-node", node.kind === "案" && node.planStatus === "却下" && "map-node--rejected", node.kind === "議題" && node.digression === true && "map-node--digression", fold !== null && "map-node--folded", selected && "map-node--selected", view?.blink.has(node.id) === true && "map-node--blink", "nopan"),
+        classes("map-node", isSupplementNode(node) && `proto-sup-node proto-sup-node--${asNode?.source}`, supplement !== undefined && variant === "D" && "proto-sup-marked", node.kind === "案" && node.planStatus === "却下" && "map-node--rejected", node.kind === "議題" && node.digression === true && "map-node--digression", fold !== null && "map-node--folded", selected && "map-node--selected", view?.blink.has(node.id) === true && "map-node--blink", "nopan"),
       ),
       h.Style({ "--kind-color": KIND_COLOR[node.kind] }),
     ],
@@ -561,8 +567,11 @@ function nodeBody(h: H, node: SnapshotNode, view: FoldView | null, selected: boo
         [h.Type("button"), h.Class(MAP_NODE_BUTTON_CLASS), h.AriaPressed(String(selected)), ...digressionDescription(h, node, openness)],
         [mark === null ? null : h.span([h.Class("map-node__mark")], [mark]), h.span([h.Class("map-node__text")], [node.text]), person === null ? null : h.span([h.Class("map-node__person text-[12px] text-gray-500")], [person]),
           criteriaView(h, node, criteria),
-          fold?.hint ? h.span([h.Class("map-node__hint")], [fold.hint]) : null],
+          fold?.hint ? h.span([h.Class("map-node__hint")], [fold.hint]) : null,
+          supplement !== undefined && variant === "B" ? h.span([h.Class(`proto-sup-inline proto-sup--${supplement.source}`)], [`${supplement.label}: ${supplement.text}`]) : null],
       ),
+      supplement !== undefined && variant === "C" ? h.span([h.Class(`proto-sup-margin proto-sup--${supplement.source}`), h.AriaHidden(true)], [`${supplement.label}: ${supplement.text}`]) : null,
+      supplement !== undefined && variant === "D" ? h.span([h.Class("proto-sup-data"), h.DataAttribute("sup-label", supplement.label), h.DataAttribute("sup-source", supplement.source), h.Hidden(true)], [supplement.text]) : null,
       fold === null
         ? null
         : h.button([h.Type("button"), h.Class(`map-node__count ${FOLD_DOT_CLASSES[0]}`), h.AriaLabel("開く"), h.OnClick(Message.ClickedFoldDot({ nodeId: node.id }))], [String(fold.hidden)]),

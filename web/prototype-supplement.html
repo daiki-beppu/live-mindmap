@@ -1,0 +1,77 @@
+<!doctype html>
+<!-- PROTOTYPE（issue #1738、使い捨て。main には入れない）: 見返しの画面に、補足の見せ方の 4 案を出す。
+     ?variant=A|B|C|D で案を選ぶ。Alt+← → でも切り替わる。素材は合成会議（#1605 で作った採用面接の会議）の記録 -->
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>prototype: 補足の見せ方</title>
+    <style>
+      html, body, #root { height: 100%; margin: 0; }
+      .proto-bar { position: fixed; left: 50%; top: 8px; transform: translateX(-50%); z-index: 1000; display: flex; gap: 8px; align-items: center; padding: 4px 10px; border-radius: 999px; background: #111; color: #fff; font: 13px system-ui; box-shadow: 0 2px 8px rgb(0 0 0 / 0.3); }
+      .proto-bar button { background: #333; color: #fff; border: 0; border-radius: 999px; padding: 2px 10px; cursor: pointer; font: inherit; }
+      /* 案 D の脇の欄（右の列の代わり。マップの上には重ねない位置に固定） */
+      .proto-side { position: fixed; right: 0; top: 0; width: 300px; height: 279px; box-sizing: border-box; overflow: auto; z-index: 900; font: 13px/1.45 system-ui; color: #374151; background: #fff; border-left: 1px solid #e5e7eb; padding: 16px 12px; }
+      .proto-side h2 { font-size: 14px; font-weight: 600; color: #111827; margin: 0 0 10px; }
+      .proto-side .item { margin: 0 0 10px; }
+      .proto-side .on { color: #111827; }
+      .proto-side .label { color: #6b7280; font-size: 12px; }
+      .proto-side .outside { color: #9ca3af; font-style: italic; }
+      .proto-side .item.selected .on { text-decoration: underline; }
+    </style>
+    <script>
+      // main.ts は読み込み時に埋め込みのログを読むので、モジュールより先に同期で差し込む
+      const xhr = new XMLHttpRequest();
+      xhr.open("GET", "/prototype-supplement-data.json", false);
+      xhr.send();
+      const el = document.createElement("script");
+      el.type = "application/json";
+      el.id = "live-mindmap-review-log";
+      el.textContent = xhr.responseText;
+      document.head.appendChild(el);
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <div class="proto-bar" id="proto-bar"></div>
+    <script>
+      const VARIANTS = {
+        A: "ノードの種別（子のノードとして木に足す）",
+        B: "ノードの中に添える（本文の下の行）",
+        C: "ノードの脇に添える（枠の外の注記、配置は変えない）",
+        D: "印だけ付けて、脇の欄で読む",
+      };
+      const params = new URLSearchParams(location.search);
+      const keys = Object.keys(VARIANTS);
+      const go = (variant) => { const p = new URLSearchParams(location.search); p.set("variant", variant); location.search = p.toString(); };
+      const current = params.get("variant") ?? "A";
+      if (!params.has("variant")) go("A");
+      const bar = document.getElementById("proto-bar");
+      const btn = (label, onClick) => { const b = document.createElement("button"); b.textContent = label; b.onclick = onClick; bar.appendChild(b); };
+      const step = (d) => go(keys[(keys.indexOf(current) + d + keys.length) % keys.length]);
+      btn("←", () => step(-1));
+      bar.appendChild(Object.assign(document.createElement("span"), { textContent: `${current}（${VARIANTS[current]}）` }));
+      btn("→", () => step(1));
+      addEventListener("keydown", (e) => {
+        if (e.target.closest?.("input, textarea, [contenteditable]")) return;
+        if (e.key === "ArrowLeft" && e.altKey) step(-1);
+        if (e.key === "ArrowRight" && e.altKey) step(1);
+      });
+      if (current === "D") {
+        // 画面に出ているノードの補足を集めて、脇の欄に並べる。選んだノードの補足に下線を引く
+        const side = Object.assign(document.createElement("aside"), { className: "proto-side" });
+        document.body.appendChild(side);
+        const render = () => {
+          const items = [...document.querySelectorAll(".proto-sup-data")].map((d) => {
+            const node = d.closest(".map-node");
+            return { on: node?.querySelector(".map-node__text")?.textContent ?? "", label: d.dataset.supLabel, source: d.dataset.supSource, text: d.textContent, selected: node?.classList.contains("map-node--selected") };
+          });
+          const html = `<h2>補足 <span class="label">（右の列に足す節の代わり）</span></h2>` + items.map((i) => `<div class="item${i.selected ? " selected" : ""}"><div class="on">${i.on}</div><div class="${i.source === "outside" ? "outside" : ""}"><span class="label">${i.label}</span> ${i.text}</div></div>`).join("");
+          if (side.innerHTML !== html) side.innerHTML = html;
+        };
+        setInterval(render, 300);
+      }
+    </script>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

@@ -8,6 +8,7 @@ import { AUDIO_RATE, initialPlayback, PlaybackState, playbackReducer, type Playb
 import { reviewKeyEvent, type ReviewKeyAction } from "../../reviewKeys.ts";
 import { displayBubbles, settledCaptions } from "../../captions.ts";
 import { captionBubblesAt, snapshotAt, topicNameOf } from "../../reviewTimeline.ts";
+import { withSupplementNodes } from "../mapSurface/prototypeSupplement.ts";
 import { initKeyList, keyListFolds, keyListView } from "../keys/keyList.ts";
 import type { KeyId } from "../keys/table.ts";
 import * as MapSurface from "../mapSurface/main.ts";
@@ -96,7 +97,7 @@ export const init = (context: Context, flags: Flags = WIDE): Model => {
   };
 };
 
-export const snapshotOf = (context: Context, model: Model): Snapshot => snapshotAt(context.timeline, model.playback.time);
+export const snapshotOf = (context: Context, model: Model): Snapshot => withSupplementNodes(snapshotAt(context.timeline, model.playback.time));
 
 export const surfaceOf = (context: Context, model: Model): MapSurface.Model => ({ mode: "review", snapshot: snapshotOf(context, model), speakerNames: context.timeline.speakerNames, ...model.mapSurface });
 
