@@ -5,10 +5,15 @@ on:
   push:
     branches: [main]
 
+concurrency:
+  group: ${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
 jobs:
   # 変更したパスで走らせるジョブを選ぶ。main への push は全部走らせる
   changes:
     runs-on: ubuntu-slim
+    timeout-minutes: 5
     permissions:
       pull-requests: read
     outputs:
@@ -40,13 +45,19 @@ jobs:
     if: needs.changes.outputs.ts == 'true'
     runs-on: ubuntu-24.04
     name: ts (typecheck・unit・IT)
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
-      - uses: pnpm/setup@v3
+      - uses: actions/setup-node@v7
+        timeout-minutes: 5
         with:
-          runtime: node@24
+          node-version: 24
+      - uses: pnpm/setup@v3
+        timeout-minutes: 5
+        with:
           install: false
       - run: pnpm install --frozen-lockfile
+        timeout-minutes: 5
       # ルートの pnpm typecheck は helper の swift build まで走るので、TS のパッケージに絞る（server の typecheck は点検 script も走らせる）。
       # e2e は server のソースを import して層を組むので、型で層の渡し忘れを拾う（#640 は CI の e2e まで気付けなかった）
       - run: pnpm --filter @live-mindmap/server --filter @live-mindmap/web --filter @live-mindmap/e2e typecheck
@@ -62,6 +73,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.ts == 'true'
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
@@ -80,23 +92,32 @@ jobs:
       - uses: actions/checkout@v7
       # ジョブの env では runner.temp を使えないので、ステップで管理ディレクトリの置き場所を決める
       - run: echo "LIVE_MINDMAP_DEPS=$RUNNER_TEMP/deps" >> "$GITHUB_ENV"
-      - uses: pnpm/setup@v3
+      - uses: actions/setup-node@v7
+        timeout-minutes: 5
         with:
-          runtime: node@24
+          node-version: 24
+      - uses: pnpm/setup@v3
+        timeout-minutes: 5
+        with:
           install: false
       - run: pnpm install --frozen-lockfile
+        timeout-minutes: 5
       - id: chromium-cache
         uses: actions/cache/restore@v6
+        timeout-minutes: 5
         with:
           path: ${{ env.LIVE_MINDMAP_DEPS }}/chromium
           key: managed-chromium-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('server/managed-deps/chromium/package-lock.json') }}
       - run: pnpm --filter @live-mindmap/server deps:install chromium
+        timeout-minutes: 5
       - id: claude-cache
         uses: actions/cache/restore@v6
+        timeout-minutes: 5
         with:
           path: ${{ env.LIVE_MINDMAP_DEPS }}/claude
           key: managed-claude-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('server/managed-deps/claude/package-lock.json') }}
       - run: pnpm --filter @live-mindmap/server deps:install claude
+        timeout-minutes: 5
       - if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.claude-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v6
         with:
@@ -133,16 +154,23 @@ jobs:
     needs: changes
     if: needs.changes.outputs.ts == 'true'
     runs-on: ubuntu-24.04
+    timeout-minutes: 5
     env:
       E2E_TELEMETRY_DISABLED: "1"
     steps:
       - uses: actions/checkout@v7
-      - uses: pnpm/setup@v3
+      - uses: actions/setup-node@v7
+        timeout-minutes: 5
         with:
-          runtime: node@24
+          node-version: 24
+      - uses: pnpm/setup@v3
+        timeout-minutes: 5
+        with:
           install: false
       - run: pnpm install --frozen-lockfile
+        timeout-minutes: 5
       - uses: actions/cache@v6
+        timeout-minutes: 5
         with:
           path: ~/.cache/ms-playwright
           key: e2e-playwright-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
@@ -154,45 +182,53 @@ jobs:
     # ヘルパーは SpeechAnalyzer を使うので macOS 26 の SDK が要る
     runs-on: macos-26
     # 通常は 5 分ほどで終わる。テストが止まったときに macOS の枠を占め続けず、ログを残して落とす
-    timeout-minutes: 30
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
       # WebRTC AEC3 のライブラリ。キャッシュが外れたときだけ uv を入れてビルドする
       - id: apm
         uses: actions/cache@v6
+        timeout-minutes: 5
         with:
           path: helper/.deps/webrtc-apm
           key: webrtc-apm-${{ runner.os }}-${{ hashFiles('helper/scripts/build-webrtc-apm.sh') }}
       - if: steps.apm.outputs.cache-hit != 'true'
         uses: astral-sh/setup-uv@v10.2.0
+        timeout-minutes: 5
         with:
           enable-cache: false
       - if: steps.apm.outputs.cache-hit != 'true'
         run: bash helper/scripts/build-webrtc-apm.sh
+        timeout-minutes: 5
       - id: swift
         run: echo "version=$(swift --version 2>&1 | shasum | cut -c1-12)" >> "$GITHUB_OUTPUT"
       # PR で保存したキャッシュは他の PR から使えないので、保存は main の push だけ
       - id: build-cache
         uses: actions/cache/restore@v6
+        timeout-minutes: 5
         with:
           path: helper/.build
           key: helper-build-${{ runner.os }}-${{ steps.swift.outputs.version }}-${{ hashFiles('helper/Package.swift', 'helper/Sources/**', 'helper/Tests/**', 'helper/scripts/build-webrtc-apm.sh', 'helper/Package.resolved') }}
           restore-keys: helper-build-${{ runner.os }}-${{ steps.swift.outputs.version }}-
       # checkout で mtime が変わるので、中身のハッシュで比べて変わっていないファイルはコンパイルしない
       - run: swift build --build-tests -Xswiftc -enable-incremental-file-hashing
+        timeout-minutes: 10
         working-directory: helper
       # helper の package.json の test は Command Line Tools のパスを渡す（手元に Xcode が無い前提）。
       # ランナーには Xcode があるので swift test をそのまま使う。
       # 層の選び方は helper/package.json の test・test:it・test:it:heavy と同じ
       - name: unit
+        timeout-minutes: 5
         run: swift test --skip-build --skip 'ITTests/|HeavyTests/'
         working-directory: helper
       - name: IT
+        timeout-minutes: 5
         run: swift test --skip-build --filter 'ITTests/'
         working-directory: helper
       # 話者分離（Sortformer）と、混入の検出（WeSpeaker）のモデル。セットアップの段で前もって取得する（会議の中では取りに行かない）。キャッシュが外れたときだけ取得する
       - id: speaker-models
         uses: actions/cache@v6
+        timeout-minutes: 5
         with:
           path: |
             ~/Library/Application Support/FluidAudio/Models/sortformer
@@ -200,7 +236,9 @@ jobs:
           key: speaker-models-${{ runner.os }}-${{ hashFiles('helper/Package.resolved', 'helper/scripts/fetch-speaker-models.sh') }}
       - if: steps.speaker-models.outputs.cache-hit != 'true'
         run: bash helper/scripts/fetch-speaker-models.sh
+        timeout-minutes: 5
       - name: heavy IT
+        timeout-minutes: 5
         run: swift test --skip-build --filter 'HeavyTests/'
         working-directory: helper
       - if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.build-cache.outputs.cache-hit != 'true'
@@ -215,6 +253,7 @@ jobs:
     if: always()
     needs: [changes, ts, heavy, e2e, helper]
     runs-on: ubuntu-slim
+    timeout-minutes: 5
     steps:
       # success か skipped 以外（failure・cancelled・runner を取れずに終わったときの値・空など）が 1 つでもあれば落とす
       - env:

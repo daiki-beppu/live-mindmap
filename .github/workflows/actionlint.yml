@@ -13,7 +13,9 @@ jobs:
   # 版は固定する。上げるときは下の 2 か所（script の tag と引数）を揃える。shellcheck は ubuntu-24.04 に入っているものを actionlint が使う
   actionlint:
     runs-on: ubuntu-24.04
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v7
       - run: bash <(curl -sSfL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.12/scripts/download-actionlint.bash) 1.7.12 "$RUNNER_TEMP"
+        timeout-minutes: 5
       - run: '"$RUNNER_TEMP/actionlint" -color'

@@ -33,6 +33,12 @@ CI (`.github/workflows/check.yml`) runs the same checks split into parallel jobs
 
 actionlint runs as its own workflow (`.github/workflows/actionlint.yml`) on PRs and main pushes that change `.github/**`, so it still reports red when `check.yml` fails to load and no `check` jobs run. It is not a required check.
 
+Job timeouts are about three times the normal p90 duration, rounded up to a multiple of 5 minutes, with a minimum of 5 minutes. The current limits are 5 minutes for `changes`, `check`, `e2e`, and `actionlint`, 10 minutes for `ts` and each `heavy` runner, and 20 minutes for `helper`. The `actionlint` limit uses the minimum because its p90 has not been measured.
+
+External setup, dependency installation, cache restoration, the APM build, and speaker-model downloads each have a 5-minute step timeout. The helper's `swift build --build-tests` has a 10-minute timeout, and each `swift test` step has a 5-minute timeout. A step timeout does not extend the job timeout.
+
+The `check` workflow uses concurrency group `${{ github.head_ref || github.run_id }}` with `cancel-in-progress: true`. A new push to the same PR cancels its older run. Pushes to `main` use separate run IDs and do not cancel each other. The cancelled run's final `check` still uses `always()` and fails for cancelled dependencies. That failure belongs to the older head SHA, so it does not block merging the new head.
+
 ### When main goes red
 
 When the `check` that runs on a push to `main` goes red, the dotfiles guide (案内役) recovers it on its own ([ADR 0026](../adr/0026-verify-main-after-merge-without-strict.md)):
