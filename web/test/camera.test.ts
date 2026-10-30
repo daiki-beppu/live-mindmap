@@ -151,30 +151,32 @@ describe("focusViewport: 倍率と中心", () => {
   });
 });
 
+const shownIdOf = (shownAs: Readonly<Record<string, string>>) => (id: string): string => shownAs[id] ?? id;
+
 describe("changedFocus: 最後の反映で変わったノードの寄せ先", () => {
   it("今の議題の外（Z）と中（D2）が両方変わったら、両方が入る。今の議題の祖先などは足さない", () => {
-    const focus = changedFocus(snap({ round: 2, changes: [change("D2", 2), change("Z", 2)] }), {})!;
+    const focus = changedFocus(snap({ round: 2, changes: [change("D2", 2), change("Z", 2)] }), (id) => id)!;
     expect(new Set(focus.ids)).toEqual(new Set(["D2", "Z"]));
   });
 
   it("最後の 1 回の反映（現在の round）で変わったノードだけ。それより前の round の変化は入らない", () => {
-    const focus = changedFocus(snap({ round: 3, changes: [change("Z", 1), change("A", 2), change("D1", 3)] }), {})!;
+    const focus = changedFocus(snap({ round: 3, changes: [change("Z", 1), change("A", 2), change("D1", 3)] }), (id) => id)!;
     expect(focus.ids).toEqual(["D1"]);
   });
 
   it("最後の反映で変わったノードが無いとき（何もしない反映）は null", () => {
-    expect(changedFocus(snap({ round: 2, changes: [change("D1", 1)] }), {})).toBeNull();
-    expect(changedFocus(snap({ round: 1, changes: [] }), {})).toBeNull();
+    expect(changedFocus(snap({ round: 2, changes: [change("D1", 1)] }), (id) => id)).toBeNull();
+    expect(changedFocus(snap({ round: 1, changes: [] }), (id) => id)).toBeNull();
   });
 
   it("ノードに無い id は寄せ先に入れない。残りが無ければ null", () => {
-    expect(changedFocus(snap({ round: 2, changes: [change("gone", 2), change("D1", 2)] }), {})!.ids).toEqual(["D1"]);
-    expect(changedFocus(snap({ round: 2, changes: [change("gone", 2)] }), {})).toBeNull();
+    expect(changedFocus(snap({ round: 2, changes: [change("gone", 2), change("D1", 2)] }), (id) => id)!.ids).toEqual(["D1"]);
+    expect(changedFocus(snap({ round: 2, changes: [change("gone", 2)] }), (id) => id)).toBeNull();
   });
 
   it("畳みで隠れたノードは、畳みを解かず、見えている代わりのノード（shownAs）で置き換える。同じ代わりは 1 つにまとめる", () => {
     const shownAs = { D1: "D", D2: "D", B: "run:X" };
-    const focus = changedFocus(snap({ round: 2, changes: [change("D1", 2), change("D2", 2), change("B", 2), change("Z", 2)] }), shownAs)!;
+    const focus = changedFocus(snap({ round: 2, changes: [change("D1", 2), change("D2", 2), change("B", 2), change("Z", 2)] }), shownIdOf(shownAs))!;
     expect([...focus.ids].sort()).toEqual(["D", "Z", "run:X"]);
     expect(focus.ids).not.toContain("D1");
     expect(focus.ids).not.toContain("D2");
@@ -183,18 +185,18 @@ describe("changedFocus: 最後の反映で変わったノードの寄せ先", ()
 
   it("中心は、最後に変わったノード（lastChanged）。変化が今の議題の外でもよい。隠れていれば見えている代わりのノード", () => {
     const changes = [change("D1", 2), change("Z", 2)];
-    expect(changedFocus(snap({ round: 2, changes, lastChanged: "Z" }), {})!.center).toBe("Z");
-    expect(changedFocus(snap({ round: 2, changes, lastChanged: "D1" }), {})!.center).toBe("D1");
-    expect(changedFocus(snap({ round: 2, changes: [change("D2", 2), change("Z", 2)], lastChanged: "D2" }), { D2: "D" })!.center).toBe("D");
+    expect(changedFocus(snap({ round: 2, changes, lastChanged: "Z" }), (id) => id)!.center).toBe("Z");
+    expect(changedFocus(snap({ round: 2, changes, lastChanged: "D1" }), (id) => id)!.center).toBe("D1");
+    expect(changedFocus(snap({ round: 2, changes: [change("D2", 2), change("Z", 2)], lastChanged: "D2" }), shownIdOf({ D2: "D" }))!.center).toBe("D");
   });
 
   it("lastChanged が無いときの中心は、寄せ先の中のノード", () => {
-    const focus = changedFocus(snap({ round: 2, changes: [change("D1", 2), change("Z", 2)] }), {})!;
+    const focus = changedFocus(snap({ round: 2, changes: [change("D1", 2), change("Z", 2)] }), (id) => id)!;
     expect(focus.ids).toContain(focus.center);
   });
 
   it("lastChanged が今の反映の変化に入っていなくても、中心は lastChanged。寄せ先には足さない", () => {
-    const focus = changedFocus(snap({ round: 2, changes: [change("D1", 2), change("Z", 2)], lastChanged: "A" }), {})!;
+    const focus = changedFocus(snap({ round: 2, changes: [change("D1", 2), change("Z", 2)], lastChanged: "A" }), (id) => id)!;
     expect(focus.center).toBe("A");
     expect(focus.ids).not.toContain("A");
   });
@@ -203,7 +205,7 @@ describe("changedFocus: 最後の反映で変わったノードの寄せ先", ()
     const s = snap({ round: 2, changes: [change("D1", 2), change("Z", 2)], lastChanged: "Z" });
     const shownAs = { D1: "D" };
     const frozenSnap = JSON.stringify(s);
-    changedFocus(s, shownAs);
+    changedFocus(s, shownIdOf(shownAs));
     expect(JSON.stringify(s)).toBe(frozenSnap);
     expect(shownAs).toEqual({ D1: "D" });
   });
@@ -212,7 +214,7 @@ describe("changedFocus: 最後の反映で変わったノードの寄せ先", ()
 describe("changedFocus と focusViewport(USER_MIN_ZOOM): 変わったノード全部が収まる viewport", () => {
   const dims = {};
   const viewportOf = (s: Snapshot, target: Record<string, { x: number; y: number }>, shownAs: Record<string, string> = {}) => {
-    const focus = changedFocus(s, shownAs)!;
+    const focus = changedFocus(s, shownIdOf(shownAs))!;
     const rects = focus.ids.map((id) => nodeRect(id, target, dims));
     return { focus, rects, v: focusViewport(rects, nodeRect(focus.center, target, dims), size, USER_MIN_ZOOM) };
   };

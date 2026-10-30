@@ -24,7 +24,8 @@ import {
   type Rect,
   type Viewport,
 } from "../src/camera.ts";
-import { foldView } from "../src/folding.ts";
+import { foldView, keepTargetOf } from "../src/folding.ts";
+import * as folding from "../src/folding.ts";
 import { layout, NODE_WIDTH } from "../src/layout.ts";
 import { type ViewingState, type ViewKey } from "../src/viewing.ts";
 
@@ -106,7 +107,8 @@ const focusExpected = (m: MapSurfaceModel): Viewport => {
 };
 // 最後の反映で変わったノードへ寄せた位置（下限は人の下限）。見せないノードは、見えている代わりのノードに置き換えて測る
 const changedExpected = (m: MapSurfaceModel): Viewport => {
-  const focus = changedFocus(m.snapshot, viewOf(m)?.shownAs ?? {})!;
+  const view = viewOf(m);
+  const focus = changedFocus(m.snapshot, (id) => keepTargetOf(view, id))!;
   const target = targetsOf(m);
   const dims = dimsOf(m);
   return focusViewport(focus.ids.map((id) => nodeRect(id, target, dims)), nodeRect(focus.center, target, dims), sizeOf(m), USER_MIN_ZOOM);
@@ -128,6 +130,37 @@ const expectViewport = (actual: Viewport, expected: Viewport) => {
 };
 const expectDifferent = (a: Viewport, b: Viewport) => expect(Math.abs(a.x - b.x) + Math.abs(a.y - b.y) + Math.abs(a.zoom - b.zoom)).toBeGreaterThan(1e-3);
 const manualAt = (topic: string | undefined): ViewingState => ({ mode: "manual", topic });
+
+describe("更新後の畳み結果を共有する", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("丸を押して開いた後の畳み結果は、配置と自動の寄せで一度だけ評価する", () => {
+    const start = settle(foldable());
+    expect(displayedPositions(start)["A1"]).toBeUndefined();
+    const evaluated = vi.spyOn(folding, "foldView");
+
+    const after = update(start, clickFoldDot("A")).model;
+    // 操作前の木と folding 内部の評価は、更新後の評価回数に含めない。
+    const updatedCalls = evaluated.mock.calls.filter(([, human, selected]) => human?.opened.has("A") && selected === null);
+
+    expect(after.viewing.humanFolds?.opened.has("A")).toBe(true);
+    expectViewport(after.viewport, focusExpected(after));
+    expect(updatedCalls).toHaveLength(1);
+  });
+
+  it("隠れた変更項目を選んだ後の畳み結果は、配置と選択先への寄せで一度だけ評価する", () => {
+    const start = settle(foldable());
+    expect(displayedPositions(start)["A1"]).toBeUndefined();
+    const evaluated = vi.spyOn(folding, "foldView");
+
+    const after = update(start, Message.ClickedChangeItem({ nodeId: "A1" })).model;
+    const updatedCalls = evaluated.mock.calls.filter(([, , selected]) => selected === "A1");
+
+    expect(after.viewing.selection).toEqual({ id: "A1", byKey: false });
+    expectViewport(after.viewport, nodeFocusViewport(nodeRect("A1", targetsOf(after), dimsOf(after)), start.viewport.zoom, SIZE));
+    expect(updatedCalls).toHaveLength(1);
+  });
+});
 
 describe("カメラの Model: 欄の初期値と本物の Schema", () => {
   it("初期は viewport (0, 0, 倍率 1)。出来事の履歴で決まる事実は「無い」（Option の None・false）で、idleStamp は有限の数", () => {
@@ -673,7 +706,7 @@ describe("差分を見ている間のカメラ", () => {
     expectViewport(m.viewport, changedExpected(m));
     expectDifferent(m.viewport, start.viewport);
     // 前の反映の変化（B1）ではなく、新しい反映の変化（A1・B3）で決まる
-    expect(changedFocus(m.snapshot, {})!.ids.sort()).toEqual(["A1", "B3"]);
+    expect(changedFocus(m.snapshot, (id) => id)!.ids.sort()).toEqual(["A1", "B3"]);
   });
 
   it("今の議題が同じで変化の無い反映は、動かさない（viewport も見る状態もそのまま）。何度届いても", () => {
@@ -716,6 +749,39 @@ describe("開閉で位置を保つ: 開閉したノードを同じ画面座標�
     const point = anchorOf(start);
     return { start, point, afterClick: update(start, clickFoldDot("A")).model };
   };
+
+  it("止めている間にまとめを開くと、先頭の議題が補間中も完了後もまとめの画面座標を保つ", () => {
+    const snapshot = snap([
+      node("root", null, "会議"),
+      node("A", "root", "議題", { talkStatus: "済み" }),
+      node("A1", "A", "論点"),
+      node("A2", "root", "議題", { talkStatus: "済み" }),
+      node("B", "root"),
+    ], { currentTopic: "B", now: 100 });
+    const start = run(settle(snapshot), measure(SIZE, { "run:A": 50 }), tick(500), scroll);
+    const point = screenPoint(start.viewport, displayedPositions(start)["run:A"]!);
+
+    story(
+      update,
+      given(start),
+      message(clickFoldDot("run:A")),
+      model((m) => {
+        expect(m.viewing.selection).toEqual({ id: "A", byKey: false });
+        expect(displayedPositions(m)["run:A"]).toBeUndefined();
+        expect(Option.isSome(m.motion)).toBe(true);
+        expectPointAt(m, point);
+      }),
+      message(tick(250)),
+      model((m) => expectPointAt(m, point)),
+      message(tick(250)),
+      model((m) => {
+        expect(Option.isNone(m.motion)).toBe(true);
+        expectPointAt(m, point);
+        expect(m.viewport.zoom).toBe(start.viewport.zoom);
+        expect(m.viewing.mode).toBe("manual");
+      }),
+    );
+  });
 
   it("止めている間に丸を押すと、開いたノードは補間の途中も終わりも、押す前と同じ画面座標に映る（倍率は変えない）", () => {
     const { start, point, afterClick } = opened();
