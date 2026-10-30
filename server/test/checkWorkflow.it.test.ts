@@ -254,15 +254,15 @@ const filterOutputs = (files: string[], event = "pull_request"): Record<string, 
 
 describe("changes ジョブの振り分け", () => {
   it("helper/package.json だけの変更は ts のジョブを走らせる（swift も走る）", () => {
-    expect(filterOutputs(["helper/package.json"])).toEqual({ ts: "true", swift: "true" });
+    expect(filterOutputs(["helper/package.json"])).toEqual({ ts: "true", swift: "true", external: "false" });
   });
 
   it("helper/Sources の下だけの変更は ts を飛ばし、swift だけ走らせる", () => {
-    expect(filterOutputs(["helper/Sources/Foo.swift"])).toEqual({ ts: "false", swift: "true" });
+    expect(filterOutputs(["helper/Sources/Foo.swift"])).toEqual({ ts: "false", swift: "true", external: "false" });
   });
 
   it("helper/ の package.json 以外のファイルだけの変更は ts を飛ばす", () => {
-    expect(filterOutputs(["helper/scripts/checkTestLayers.ts", "helper/Package.swift"])).toEqual({ ts: "false", swift: "true" });
+    expect(filterOutputs(["helper/scripts/checkTestLayers.ts", "helper/Package.swift"])).toEqual({ ts: "false", swift: "true", external: "false" });
   });
 
   it("入れ子の package.json（helper/Sources/x/package.json）は例外にしない", () => {
@@ -270,7 +270,7 @@ describe("changes ジョブの振り分け", () => {
   });
 
   it("docs だけの変更は ts も swift も飛ばす", () => {
-    expect(filterOutputs(["docs/a.md", "README.md", "LICENSE"])).toEqual({ ts: "false", swift: "false" });
+    expect(filterOutputs(["docs/a.md", "README.md", "LICENSE"])).toEqual({ ts: "false", swift: "false", external: "false" });
   });
 
   it("docs と helper/package.json の変更なら ts が走る", () => {
@@ -278,10 +278,52 @@ describe("changes ジョブの振り分け", () => {
   });
 
   it("server の変更は ts を走らせる", () => {
-    expect(filterOutputs(["server/src/a.ts"])).toEqual({ ts: "true", swift: "false" });
+    expect(filterOutputs(["server/src/a.ts"])).toEqual({ ts: "true", swift: "false", external: "false" });
   });
 
   it("main への push は両方走らせる", () => {
-    expect(filterOutputs([], "push")).toEqual({ ts: "true", swift: "true" });
+    expect(filterOutputs([], "push")).toEqual({ ts: "true", swift: "true", external: "false" });
   });
+});
+
+
+describe("external の CI 実行", () => {
+  it.each([
+    "server/managed-deps/claude/README.md",
+    "server/managed-deps/chromium/package-lock.json",
+    "server/scripts/install-managed-deps.ts",
+    "server/src/managedDeps.ts",
+  ])("PR で %s を変えたら external を有効にする", (path) => {
+    expect(filterOutputs([path]).external).toBe("true");
+  });
+
+  it.each([
+    "docs/server/managed-deps/claude/README.md",
+    "server/managed-deps-other/package.json",
+    "server/src/managedDeps.ts.bak",
+    "server/scripts/install-managed-deps.ts.bak",
+    "server/test/managedDeps.external.test.ts",
+  ])("PR で対象外の %s を変えても external を有効にしない", (path) => {
+    expect(filterOutputs([path]).external).toBe("false");
+  });
+
+  it("他の変更と混在していても対象パスを含む PR は external を有効にする", () => {
+    expect(filterOutputs(["docs/a.md", "server/src/managedDeps.ts", "helper/Package.swift"]).external).toBe("true");
+  });
+
+  it("対象パスを含む main push でも external を有効にしない", () => {
+    expect(filterOutputs(["server/src/managedDeps.ts"], "push")).toEqual({ ts: "true", swift: "true", external: "false" });
+  });
+
+  it("管理依存を導入してから専用のテストコマンドを実行する", () => {
+    const calls = runInlineSteps("external");
+    const chromium = calls.findIndex((args) => args.join(" ") === "--filter @live-mindmap/server deps:install chromium");
+    const claude = calls.findIndex((args) => args.join(" ") === "--filter @live-mindmap/server deps:install claude");
+    const tests = calls.findIndex((args) => args.includes("test:external"));
+    expect(chromium).toBeGreaterThanOrEqual(0);
+    expect(claude).toBeGreaterThanOrEqual(0);
+    expect(tests).toBeGreaterThan(chromium);
+    expect(tests).toBeGreaterThan(claude);
+  });
+
 });
