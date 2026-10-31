@@ -15,7 +15,8 @@ import { join } from "node:path";
 import { setTimeout } from "node:timers/promises";
 
 const [command, ...args] = process.argv.slice(2);
-const stage = command === "pnpm" && args.join(" ") === "install" ? "install"
+if (command === "corepack" && args.join(" ") === "enable") process.exit(0);
+const stage = command === "pnpm" && args.join(" ") === "install --frozen-lockfile" ? "install"
   : command === "swift" && args.join(" ") === "package resolve --package-path helper" ? "resolve"
   : command === "aec3" && args.length === 0 ? "aec3" : undefined;
 if (!stage) {
@@ -63,7 +64,7 @@ async function runBootstrap(failures: readonly Stage[]) {
     for (const path of [bin, home, join(dir, "scripts"), join(dir, "helper/scripts")]) {
       mkdirSync(path, { recursive: true });
     }
-    for (const file of ["package.json", "pnpm-workspace.yaml", "pnpm-lock.yaml"]) {
+    for (const file of [".nvmrc", "package.json", "pnpm-workspace.yaml", "pnpm-lock.yaml", "scripts/setup-deps.sh"]) {
       copyFileSync(join(root, file), join(dir, file));
     }
     // 未実装時も fixture の copy エラーにせず、公開コマンドの失敗を観測する。
@@ -73,6 +74,7 @@ async function runBootstrap(failures: readonly Stage[]) {
     writeFileSync(join(dir, "stage.mjs"), fakeCommand);
     for (const [path, command] of [
       [join(bin, "pnpm"), "pnpm"],
+      [join(bin, "corepack"), "corepack"],
       [join(bin, "swift"), "swift"],
       [join(dir, "helper/scripts/build-webrtc-apm.sh"), "aec3"],
     ] satisfies [string, string][]) {

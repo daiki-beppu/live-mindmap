@@ -50,7 +50,7 @@ Read the [full descriptions in Japanese](README.ja.md#できること).
 Requirements:
 
 - A Mac with macOS 26 or later (local mode needs macOS 27 and Apple Intelligence)
-- Node.js, pnpm, the Swift toolchain (Xcode or Command Line Tools), git, and uv
+- Node.js 26 (specified in `.nvmrc`), pnpm, the Swift toolchain (Xcode or Command Line Tools), git, and uv
 - An Anthropic API key for Claude, or one of the other models
 
 For Claude, set your API key in the terminal that starts the server:
