@@ -202,8 +202,7 @@ export const restoreState = Effect.fnUntraced(function* (events: Iterable<unknow
   };
   let end = 0;
   let observed: { readonly map: MeetingMap; readonly remarks: number; readonly at: number } | undefined;
-  // 入力（地図・発言・時刻）が動いたときだけ観測し直す。同じ入力の観測は冪等なので省いても状態は変わらない。
-  const observe = (map: MeetingMap | undefined, at: number) => {
+  const observeIfInputsMoved = (map: MeetingMap | undefined, at: number) => {
     if (map === undefined || (observed?.map === map && observed.remarks === ledger.remarks.length && observed.at === at)) return;
     discussion = observeDiscussion(discussion, map, ledger.byId, at);
     observed = { map, remarks: ledger.remarks.length, at };
@@ -234,7 +233,7 @@ export const restoreState = Effect.fnUntraced(function* (events: Iterable<unknow
       ledger.known = state.ledger.known;
       ledger.processed = state.ledger.processed;
       replay = { ...replay, explainedTerms: state.explainedTerms, queue, map: state.map, history: state.history, diffUpdate: { status: "running" } };
-      observe(state.map, reflectedAt);
+      observeIfInputsMoved(state.map, reflectedAt);
     } else if (type === "supplement") {
       replay = yield* restoreSupplement(replay, ledger, event, index);
     } else if (type === DiscussionNoticeEvent.fields.type.literal) {
@@ -250,7 +249,7 @@ export const restoreState = Effect.fnUntraced(function* (events: Iterable<unknow
     } else if (type === DiffUpdateResumedEvent.fields.type.literal) {
       replay = { ...replay, diffUpdate: { status: "running" } };
     }
-    observe(replay.map, end);
+    observeIfInputsMoved(replay.map, end);
   }
   const { remarks, processed, known, files } = ledger;
   const { map, history, queue, diffUpdate } = replay;
