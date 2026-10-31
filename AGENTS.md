@@ -31,11 +31,45 @@ Single-context: one root `GLOSSARY.md` + `docs/adr/`. See `docs/agents/domain.md
 - Plans and progress live in issues. Both `README.ja.md`'s `ロードマップ` and `README.md`'s `Roadmap` only link to issues.
 - Do not add CI checks or tests for README synchronization. See `CODING_STANDARDS.md` → `Contracts, not structure`.
 
+### クラウドのセッション
+
+Cursor・Claude cloud・Devin では、この節に従う。環境は各プラットフォームで次のように立ち上がる。
+
+- Cursor は Build。
+- Devin は snapshot。
+- Claude cloud は SessionStart hook。
+
+#### 作業場所と手元専用の道具
+
+Orca の worktree は使わず、プラットフォームが用意したブランチ・コンテナでそのまま作業する。
+
+`orca`・`takt`・`gh-subissues`・`gh stack`・`~/agent-memory` はクラウドにない。takt への投入、map と sub-issue の起票の束ね、Stacked PR、エージェント間の記憶の読み書きはクラウドではしない。
+
+#### PR とマージ
+
+PR は各プラットフォームの仕組みで作る。Claude cloud は組み込みの GitHub ツールか REST の `gh api` を使う。`gh pr`・`gh issue` は GraphQL が拒否されて使えない。Cursor・Devin は各自の GitHub 連携を使う。
+
+クラウドでは `gh pr merge --squash --auto` を実行せず、マージは人に残す。
+
+#### 検証
+
+- 作業前に `bash scripts/setup-deps.sh` を実行する。ブランチの切り替え・pull で lockfile が変わったときも実行し直す。
+- 実装中は `pnpm test:linux`、完了時は `pnpm typecheck:linux` と `pnpm test:it:linux` を実行する。`typecheck:linux` は fallow を含み、問題が1件でもあれば失敗する。
+- ルートの `pnpm typecheck`・`pnpm test`・`pnpm test:it` は helper まで走って失敗するので、クラウドでは使わない。
+- helper の検証・準備である `build-webrtc-apm.sh`・`fetch-speaker-models.sh`・`swift test`、heavy IT、`test:external`、e2e の smoke、Evals、`measure-bootstrap.sh` は実行しない。追加・変更した heavy IT をファイル指定で実行する手順も対象外とする。これらは CI または手元に任せる。CI の helper は macOS で実行する。
+- PR 本文に実行した層と結果を書く。加えて「helper・heavy IT・e2e は流しておらず CI に任せた」と1行で書く。e2e の smoke や Evals が必要な変更では「手元で要る」と書いて人に引き継ぐ。
+
+#### 任意のセットアップ
+
+Claude cloud の UI のセットアップスクリプトに `bash scripts/setup-deps.sh` の1行を置くと、新しいセッションの install を snapshot で省ける。
+
 ### Checks
 
 CI は PR・main push・Nightly・Weekly の段に分かれる。Nightly・Weekly が落ちたら [定期段が落ちたとき](docs/agents/checks.md#定期段が落ちたとき) を読む。
 
 SDK または `playwright-core` の固定版を更新するときは、[Claude の更新手順](server/managed-deps/claude/README.md) または [Chromium の更新手順](server/managed-deps/chromium/README.md) を読む。
+
+Linux のクラウドのセッション（Cursor・Claude cloud・Devin）では、[クラウドのセッション](#クラウドのセッション) の「検証」に従う。
 
 Run before a PR, from the repo root (inside `server/` or `web/`, `pnpm typecheck` skips fallow, and CI fails on it): `bash helper/scripts/build-webrtc-apm.sh` (needs `uv`; a no-op once built), `bash helper/scripts/fetch-speaker-models.sh` (fetches the speaker-diarization models once, needs network on the first run; a no-op once fetched; the helper never fetches them during a session), `pnpm typecheck` (ends with the root `pnpm fallow`: `.fallowrc.json`, 未使用・重複・複雑度。1 件でも落ちる), `pnpm test` while implementing (unit tests of server, web and helper), `pnpm test:it` when done (light integration tests of all three). Run heavy ITs you added or changed by file, e.g. `pnpm --filter @live-mindmap/server exec vitest run test/foo.heavy.test.ts`, and leave the full set to CI. State the layers you ran and their results in the PR body. Before merging, also follow `CODING_STANDARDS.md`. Merge with `gh pr merge --squash --auto` instead of waiting on CI; if the PR then shows `DIRTY`, rebase onto `origin/main` and push; it stays unmerged until you do. A `BEHIND` PR merges once the required `check` passes (ADR 0026).
 
