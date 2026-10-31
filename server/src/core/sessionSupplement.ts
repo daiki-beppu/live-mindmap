@@ -77,7 +77,7 @@ export const makeSessionSupplement = Effect.fnUntraced(function* (
     const result: Pending = { row: { type: "supplement", ...decoded, ...(answer.usage === undefined ? {} : { usage: answer.usage }), ms }, targets: trigger.input.targets };
     const invalid = validateSupplement(result, yield* read);
     if (invalid !== undefined) return yield* new SupplementInvalid({ message: invalid });
-    yield* Ref.update(retained, (s) => ({ ...s, pending: result }));
+    if (decoded.op !== null) yield* Ref.update(retained, (s) => ({ ...s, pending: result }));
   });
   const worker = Effect.forever(Effect.gen(function* () {
     const trigger = yield* Queue.take(triggers);

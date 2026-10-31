@@ -163,6 +163,36 @@ describe("セッションの補足", () => {
     expect(h.frames.at(-1)!.nodes.filter((n) => n.kind === "補足")).toHaveLength(2);
   }));
 
+  it.effect.each(["通常diff", "停止"] as const)("操作なし応答の後も保留を維持し、%sで反映する", (ending) => Effect.gen(function* () {
+    const h = yield* setup();
+    yield* h.step(topic("一"));
+    yield* h.reply(0, add("n1", "SLA"));
+    yield* h.step(topic("二"));
+    yield* h.reply(1, add("n2", "SLO"));
+    yield* h.step(topic("三"));
+    yield* h.reply(2, none);
+    yield* TestClock.adjust(59_999);
+    yield* h.step([]);
+    expect(lines(h.events).filter((e) => e.op !== null)).toHaveLength(1);
+    expect(h.frames.at(-1)!.nodes.filter((n) => n.kind === "補足").map((n) => n.text)).toEqual(["SLAの意味"]);
+    const before = h.frames.length;
+    if (ending === "通常diff") {
+      yield* TestClock.adjust(1);
+      expect(h.frames).toHaveLength(before);
+      yield* h.step([]);
+    } else {
+      yield* h.session.flush;
+    }
+    expect(h.frames).toHaveLength(before + 1);
+    expect(lines(h.events)).toEqual([
+      expect.objectContaining({ op: add("n1", "SLA").op }),
+      expect.objectContaining({ op: add("n2", "SLO").op }),
+    ]);
+    expect(h.events.slice(-2).map((e) => e.type)).toEqual(["diff", "supplement"]);
+    expect(h.frames.at(-1)!.nodes.filter((n) => n.kind === "補足").map((n) => n.text)).toEqual(["SLAの意味", "SLOの意味"]);
+    expect((yield* h.session.snapshot).nodes).toEqual(h.frames.at(-1)!.nodes);
+  }));
+
   it.effect("間隔内に着いた結果は最新1件に置き換え、保留語を次の問い合わせにも渡す", () => Effect.gen(function* () {
     const h = yield* setup();
     yield* h.step(topic("一"));
