@@ -4,7 +4,7 @@ import { foldView, keepTargetOf, refold, type FoldView, type Openness } from "..
 import { foldingActions } from "./foldingActions.ts";
 
 type Extra = Partial<Pick<SnapshotNode, "talkStatus" | "touchedAt" | "pointStatus">>;
-const node = (id: string, parent: string | null, kind: SnapshotNode["kind"] = "議題", extra: Extra = {}): SnapshotNode => ({
+const node = (id: string, parent: string | null, kind: Exclude<SnapshotNode["kind"], "補足"> = "議題", extra: Extra = {}): Exclude<SnapshotNode, { kind: "補足" }> => ({
   id,
   parent,
   kind,
@@ -29,6 +29,27 @@ const snap = (nodes: SnapshotNode[], extra: { currentTopic?: string; now?: numbe
 const ids = (nodes: SnapshotNode[]) => nodes.map((n) => n.id);
 const root = node("root", null, "会議");
 const idsInState = (view: FoldView, state: Openness["state"]) => Object.keys(view.openness).filter((id) => view.openness[id]!.state === state);
+
+describe("foldView: 親に添えた補足", () => {
+  it("親を畳むと補足も隠れ、開くと同じ補足が戻る", () => {
+    const supplement = { id: "s", parent: "A1", kind: "補足", text: "用語の説明", evidence: ["r1"], origin: "会議の外" } satisfies SnapshotNode;
+    const snapshot = snap([root, node("A", "root"), node("A1", "A", "要点"), supplement, node("B", "root")], { currentTopic: "B" });
+    const open = foldView(snapshot, undefined, null);
+    expect(ids(open.nodes)).toContain("s");
+    const folded = foldingActions(snapshot, [{ type: "toggle", id: "A" }]);
+    expect(ids(folded.view.nodes)).toEqual(["root", "A", "B"]);
+    expect(folded.view.shownAs.s).toBe("A");
+    const reopened = foldingActions(snapshot, [{ type: "toggle", id: "A" }], folded.human);
+    expect(reopened.view.nodes.find((n) => n.id === "s")).toEqual(supplement);
+  });
+
+  it("話し中の親に添えた補足は、時間だけが進んでも消えない", () => {
+    const supplement = { id: "s", parent: "A1", kind: "補足", text: "会議での背景", evidence: ["r1"], origin: "会議の中", touchedAt: 0 } satisfies SnapshotNode;
+    const snapshot = snap([root, node("A", "root"), node("A1", "A", "要点"), supplement], { currentTopic: "A", now: 0 });
+    expect(foldView(snapshot, undefined, null).nodes.find((n) => n.id === "s")).toEqual(supplement);
+    expect(foldView({ ...snapshot, now: 100_000 }, undefined, null).nodes.find((n) => n.id === "s")).toEqual(supplement);
+  });
+});
 
 describe("foldView: 見せるノードごとの開閉", () => {
   it("表示 ID と開閉のキーが一致し、まとめ・畳み・開き・固定を返す。隠れた ID は返さない", () => {

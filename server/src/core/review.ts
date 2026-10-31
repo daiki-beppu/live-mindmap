@@ -1,7 +1,7 @@
 import { Effect, Predicate, Schema } from "effect";
 import { DiffUpdatePausedEvent, DiffUpdateResumedEvent } from "./diffUpdate.ts";
 import { DiscussionNoticeEvent } from "./discussionNotice.ts";
-import { DiffEvent, RemarkEvent, restoreState, ScreenEvent, ScreenInputSkippedEvent, snapshotOf, StartEvent } from "./session.ts";
+import { DiffEvent, RemarkEvent, restoreState, ScreenEvent, ScreenInputSkippedEvent, snapshotOf, SupplementEvent, StartEvent } from "./session.ts";
 import type { Snapshot } from "./snapshot.ts";
 
 export const REVIEW_LOG_ELEMENT_ID = "live-mindmap-review-log";
@@ -48,6 +48,7 @@ const decodeScreen = Schema.decodeUnknownSync(ScreenEvent);
 const KEPT_AS_IS: ReadonlySet<unknown> = new Set([
   StartEvent.fields.type.literal,
   DiffEvent.fields.type.literal,
+  SupplementEvent.fields.type.literal,
   ScreenInputSkippedEvent.fields.type.literal,
   DiffUpdatePausedEvent.fields.type.literal,
   DiffUpdateResumedEvent.fields.type.literal,

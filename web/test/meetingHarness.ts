@@ -29,7 +29,7 @@ export { init, update, Message };
 export type Model = ReturnType<typeof init>;
 export type MeetingMessage = typeof Message.Type;
 
-const node = (id: string, parent: string | null, kind: Snapshot["nodes"][number]["kind"], text: string, evidence: string[] = []) => ({ id, parent, kind, text, evidence });
+const node = (id: string, parent: string | null, kind: Exclude<Snapshot["nodes"][number]["kind"], "補足">, text: string, evidence: string[] = []) => ({ id, parent, kind, text, evidence });
 const remark = (id: string, start: number, end: number, text: string) => ({ id, track: "相手" as const, start, end, text });
 
 export const FIRST: Snapshot = {

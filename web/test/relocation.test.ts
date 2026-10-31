@@ -5,7 +5,7 @@ import { relocations } from "../src/relocation.ts";
 import type { VisibleTree } from "../src/viewing.ts";
 import { foldingActions } from "./foldingActions.ts";
 
-const node = (id: string, parent: string | null, kind: SnapshotNode["kind"], evidence: string[], extra: Partial<SnapshotNode> = {}): SnapshotNode => ({
+const node = (id: string, parent: string | null, kind: Exclude<SnapshotNode["kind"], "補足">, evidence: string[], extra: Partial<Exclude<SnapshotNode, { kind: "補足" }>> = {}): Exclude<SnapshotNode, { kind: "補足" }> => ({
   id,
   parent,
   kind,

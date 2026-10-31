@@ -8,7 +8,7 @@ export function topicOf(map: MeetingMap, id: string): string | undefined {
 }
 
 export function lastChangedNode(map: MeetingMap, changeOrder: readonly string[]): string | undefined {
-  return changeOrder.findLast((id) => map.nodes[id] !== undefined);
+  return changeOrder.findLast((id) => map.nodes[id] !== undefined && map.nodes[id]!.kind !== "補足");
 }
 
 export function nextCurrentTopic(map: MeetingMap, lastChanged: string | undefined, previous: string | undefined): string | undefined {

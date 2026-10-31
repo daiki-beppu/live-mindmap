@@ -15,7 +15,7 @@ import { foldingActions } from "./foldingActions.ts";
 
 type MapSurfaceModel = typeof Model.Type;
 
-const node = (id: string, parent: string | null, kind: SnapshotNode["kind"] = "議題", extra: Partial<SnapshotNode> = {}): SnapshotNode => ({ id, parent, kind, text: id, evidence: parent ? ["r1"] : [], ...extra });
+const node = (id: string, parent: string | null, kind: Exclude<SnapshotNode["kind"], "補足"> = "議題", extra: Partial<Exclude<SnapshotNode, { kind: "補足" }>> = {}): Exclude<SnapshotNode, { kind: "補足" }> => ({ id, parent, kind, text: id, evidence: parent ? ["r1"] : [], ...extra });
 const snap = (nodes: SnapshotNode[], extra: Partial<Snapshot> = {}): Snapshot => ({ nodes, round: 3, changes: [], remarks: [], ...extra });
 
 // 済みの議題 A（論点 A1 を持つ）と、話し中の今の議題 B。A は畳まれ、隠れた数の丸を持つ

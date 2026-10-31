@@ -1,7 +1,7 @@
 import { Effect, Result } from "effect";
 import { emptyMap, type MeetingMap } from "./map.ts";
 import { InvalidLogEvent, type LogEvent } from "./session.ts";
-import { reflectDiff, type ReflectionState } from "./reflection.ts";
+import { reflectSupplement, reflectDiff, type ReflectionState } from "./reflection.ts";
 import type { Remark } from "./remark.ts";
 
 export type LogMetrics = {
@@ -43,6 +43,11 @@ function rewrittenIds(start: ReflectionState, event: DiffLogEvent): Result.Resul
   return Result.succeed(ids);
 }
 
+function reflectMetrics(progress: ReflectionState, event: Extract<LogEvent, { type: "diff" | "supplement" }>): Result.Result<{ state: ReflectionState; rewritten: string[] }, string> {
+  if (event.type === "supplement") return Result.map(reflectSupplement(progress, event), ({ state }) => ({ state, rewritten: [] }));
+  return Result.flatMap(reflectDiff(progress, event), ({ state }) => Result.map(rewrittenIds(progress, event), (rewritten) => ({ state, rewritten })));
+}
+
 export const logMetrics = Effect.fnUntraced(function* (events: readonly LogEvent[]): Effect.fn.Return<LogMetrics, InvalidLogEvent> {
   let progress: ReflectionState | undefined;
   let remarks = 0;
@@ -59,16 +64,16 @@ export const logMetrics = Effect.fnUntraced(function* (events: readonly LogEvent
       progress = {
         criteria: event.criteria,
         map: emptyMap(event.title),
+        explainedTerms: new Map(),
         history: progress?.history ?? { round: 0, changes: [], currentTopic: undefined, lastChanged: undefined },
         ledger: progress?.ledger ?? ledger,
       };
     } else if (event.type === "remark") {
       remarks++;
       byId.set(event.remark.id, event.remark);
-    } else if (event.type === "diff") {
-      if (!progress) return yield* invalid("ログの diff より前に start がありません");
-      const { state } = yield* Effect.fromResult(reflectDiff(progress, event)).pipe(Effect.mapError(invalid));
-      const rewritten = yield* Effect.fromResult(rewrittenIds(progress, event)).pipe(Effect.mapError(invalid));
+    } else if (event.type === "diff" || event.type === "supplement") {
+      if (!progress) return yield* invalid(`ログの ${event.type} より前に start がありません`);
+      const { state, rewritten } = yield* Effect.fromResult(reflectMetrics(progress, event)).pipe(Effect.mapError(invalid));
       for (const id of rewritten) rewritesOf.set(id, (rewritesOf.get(id) ?? 0) + 1);
       progress = state;
       maxOpenSiblings = Math.max(maxOpenSiblings, openSiblings(state.map));

@@ -2,9 +2,12 @@ import { Schema } from "effect";
 import { earliestRemark, type Remark } from "./remark.ts";
 import { InferredSpeakerName } from "./speakerNames.ts";
 
-export const KINDS = ["議題", "論点", "案", "決定", "課題", "TODO", "要点"] as const;
+export const KINDS = ["議題", "論点", "案", "決定", "課題", "TODO", "要点", "補足"] as const;
 export type Kind = (typeof KINDS)[number];
 const KindSchema = Schema.Literals(KINDS);
+export const NodeKind = Schema.Literals([...KINDS, "会議"]);
+export const SupplementOrigin = Schema.Literals(["会議の中", "会議の外"]);
+export const TalkStatus = Schema.Literal("済み");
 
 export const PLAN_STATUSES = ["検討中", "却下"] as const;
 const PlanStatusSchema = Schema.Literals(PLAN_STATUSES);
@@ -13,10 +16,9 @@ export type PointStatus = typeof PointStatus["Type"];
 
 export const ROOT_ID = "root";
 
-export const MapNode = Schema.Struct({
+const NodeFields = {
   id: Schema.String,
   parent: Schema.mutableKey(Schema.NullOr(Schema.String)),
-  kind: Schema.Literals([...KINDS, "会議"]),
   text: Schema.mutableKey(Schema.String),
   planStatus: Schema.optionalKey(Schema.mutableKey(PlanStatusSchema)),
   assignee: Schema.optionalKey(Schema.mutableKey(Schema.String)),
@@ -27,9 +29,13 @@ export const MapNode = Schema.Struct({
   evidence: Schema.mutable(Schema.Array(Schema.String)),
   touchedAt: Schema.optionalKey(Schema.mutableKey(Schema.Finite)),
   evidenceRound: Schema.optionalKey(Schema.mutableKey(Schema.Finite)),
-  talkStatus: Schema.optionalKey(Schema.mutableKey(Schema.Literal("済み"))),
+  talkStatus: Schema.optionalKey(Schema.mutableKey(TalkStatus)),
   digression: Schema.optionalKey(Schema.mutableKey(Schema.Boolean)),
-});
+};
+export const MapNode = Schema.Union([
+  Schema.Struct({ ...NodeFields, kind: Schema.Literals(["会議", "議題", "論点", "案", "決定", "課題", "TODO", "要点"]), origin: Schema.optionalKey(Schema.Never) }),
+  Schema.Struct({ ...NodeFields, parent: Schema.mutableKey(Schema.String), kind: Schema.Literal("補足"), origin: SupplementOrigin, evidence: Schema.mutable(Schema.Array(Schema.String)).check(Schema.isMinLength(1)) }),
+]);
 export type MapNode = typeof MapNode["Type"];
 
 export const MeetingMap = Schema.Struct({
@@ -157,6 +163,7 @@ const isLeafKind = (kind: MapNode["kind"]) => kind === "決定" || kind === "TOD
 
 function parentError(parent: MapNode | undefined, kind: MapNode["kind"]): string | null {
   if (!parent) return "親が存在しない";
+  if (parent.kind === "補足") return "補足は子を持てない";
   if (isLeafKind(parent.kind)) return `${parent.kind} は子を持てない`;
   if (kind === "決定" && parent.kind !== "論点") return "決定の親は論点に限る";
   return null;
@@ -209,7 +216,7 @@ function evidenceError(known: ReadonlySet<string>, evidence: string[]): string |
   return null;
 }
 
-function newNode(op: OpOf<"add">, id: string, parent: string, round: number, allowed: readonly string[]): MapNode {
+function newNode(op: Omit<OpOf<"add">, "kind"> & { kind: Exclude<Kind, "補足"> }, id: string, parent: string, round: number, allowed: readonly string[]): MapNode {
   const criteria = normalizedCriteria(op.kind, op.criteria ?? [], allowed);
   return {
     id, parent, kind: op.kind, text: op.text, evidence: [...op.evidence],
@@ -226,13 +233,14 @@ function newNode(op: OpOf<"add">, id: string, parent: string, round: number, all
 
 function applyAdd(s: ApplyState, op: OpOf<"add">): Applied {
   const { map } = s;
+  if (op.kind === "補足") return "差分更新では補足を追加できない";
   if (map.nodes[op.ref] || s.refs.has(op.ref)) return "仮 ID が既存の ID と重なる";
   const parentId = resolveId(s, op.parent);
   const err = parentError(map.nodes[parentId], op.kind) ?? evidenceError(s.known, op.evidence)
     ?? digressionError(map, op.kind, parentId, op.digression);
   if (err) return err;
   const id = `n${map.nextId++}`;
-  map.nodes[id] = newNode(op, id, parentId, s.round, s.criteria);
+  map.nodes[id] = newNode({ ...op, kind: op.kind }, id, parentId, s.round, s.criteria);
   map.order.push(id);
   s.refs.set(op.ref, id);
   reopenUp(map, id);
@@ -285,6 +293,7 @@ function updateFields(n: MapNode, op: OpOf<"update">, round: number, allowed: re
 function applyUpdate(s: ApplyState, op: OpOf<"update">): Applied {
   const n = target(s, op.node);
   if (!n) return "対象が無い";
+  if (n.kind === "補足") return "差分更新では補足を更新できない";
   if (op.planStatus && n.kind !== "案") return "状態を持つのは案だけ";
   const err = evidenceError(s.known, op.evidence) ?? digressionError(s.map, n.kind, n.parent, op.digression);
   if (err) return err;
@@ -301,6 +310,7 @@ function applyMove(s: ApplyState, op: OpOf<"move">): Applied {
   const n = target(s, op.node);
   const parentId = resolveId(s, op.parent);
   if (!n) return "対象が無い";
+  if (n.kind === "補足") return "差分更新では補足を移動できない";
   if (isDescendant(s.map, parentId, n.id)) return "自分の子孫の下へは移せない";
   const err = parentError(s.map.nodes[parentId], n.kind);
   if (err) return err;
@@ -315,9 +325,10 @@ function applyMove(s: ApplyState, op: OpOf<"move">): Applied {
 }
 
 function combineError(map: MeetingMap, from: MapNode, into: MapNode): string | null {
+  if (from.kind === "補足" || into.kind === "補足") return "差分更新では補足を統合できない";
   if (from.kind !== into.kind) return "統合は同じ種別どうしに限る";
   if (isDescendant(map, into.id, from.id)) return "子孫へは統合できない";
-  if (isLeafKind(into.kind) && children(map, from.id).length) return `${into.kind} は子を持てない`;
+  if (isLeafKind(into.kind) && children(map, from.id).some((n) => n.kind !== "補足")) return `${into.kind} は子を持てない`;
   return null;
 }
 
@@ -332,13 +343,20 @@ function mergedProposer(s: ApplyState, src: MapNode, dst: MapNode): string | und
   return from && into && from.start < into.start ? src.proposer : dst.proposer;
 }
 
+function combineChildren(map: MeetingMap, from: string, into: string): void {
+  for (const child of children(map, from)) {
+    if (child.kind === "補足") removeNode(map, child.id);
+    else child.parent = into;
+  }
+}
+
 function applyCombine(s: ApplyState, op: OpOf<"combine">): Applied {
   const src = target(s, op.from), dst = target(s, op.into);
   if (!src || !dst || src.id === dst.id) return "対象が無い";
   const err = combineError(s.map, src, dst);
   if (err) return err;
   touchUp(s.map, src.parent, s.at);
-  for (const k of children(s.map, src.id)) k.parent = dst.id;
+  combineChildren(s.map, src.id, dst.id);
   if (dst.kind === "案") {
     const proposer = mergedProposer(s, src, dst);
     if (proposer === undefined) delete dst.proposer; else dst.proposer = proposer;
@@ -359,7 +377,9 @@ function applyCombine(s: ApplyState, op: OpOf<"combine">): Applied {
 function applyDelete(s: ApplyState, op: OpOf<"delete">): Applied {
   const n = target(s, op.node);
   if (!n) return "対象が無い";
-  if (children(s.map, n.id).length) return "子を持つノードは削除できない";
+  const kids = children(s.map, n.id);
+  if (kids.some((k) => k.kind !== "補足")) return "子を持つノードは削除できない";
+  for (const k of kids) removeNode(s.map, k.id);
   touchUp(s.map, n.parent, s.at);
   removeNode(s.map, n.id);
   s.combined.delete(n.id);

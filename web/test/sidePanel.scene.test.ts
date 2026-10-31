@@ -2,7 +2,8 @@ import { HashMap, Option } from "effect";
 import type { HtmlBuilder } from "foldkit/html";
 import { attr, click, expect as expectScene, find, findAll, given, Mount, scene, selector, Subscription, tap, textContent } from "foldkit/scene";
 import { describe, expect, it } from "vitest";
-import type { ChangeEntry, Remark, Snapshot, SnapshotNode } from "../../server/src/core/index.ts";
+import { reviewSnapshot, type ChangeEntry, type Remark, type Snapshot, type SnapshotNode } from "../../server/src/core/index.ts";
+import { supplementLog } from "../../server/test/fixtures/supplement.ts";
 import { init, update, view as mapView } from "../src/app/mapSurface/main.ts";
 import { Message } from "../src/app/mapSurface/message.ts";
 import { ObserveMapSurface } from "../src/app/mapSurface/mount.ts";
@@ -21,7 +22,7 @@ type VNode = Parameters<typeof textContent>[0];
 // マップの表示面と右の列を、同じ Model から並べて描く（親が h.submodel で並べるのと同じ組み合わせ）
 const app = { update, view: (model: MapSurfaceModel, h: HtmlBuilder<Message>) => h.div([], [mapView(model, { notice: () => null }, h), sideView(model, h)]) };
 
-const node = (id: string, parent: string | null, kind: SnapshotNode["kind"], extra: Partial<SnapshotNode> = {}): SnapshotNode => ({ id, parent, kind, text: id, evidence: [], ...extra });
+const node = (id: string, parent: string | null, kind: Exclude<SnapshotNode["kind"], "補足">, extra: Partial<Exclude<SnapshotNode, { kind: "補足" }>> = {}): Exclude<SnapshotNode, { kind: "補足" }> => ({ id, parent, kind, text: id, evidence: [], ...extra });
 const REMARKS: Remark[] = [
   { id: "r1", track: "自分", start: 65, end: 71.9, text: "<i>二回で</i>いきます" },
   { id: "r2", track: "相手", start: 125, end: 130, text: "了解です" },
@@ -76,6 +77,36 @@ const EMPTY_NOT_ON_MAP = "選んだノードは今のマップにありません
 const EMPTY_NO_REMARKS = "根拠の発言はありません";
 
 describe("sidePanel の Scene: 根拠のパネル（選択と連動して今と同じ中身が出る）", () => {
+  it("補足の言い直しを復元すると、同じ選択のまま以前と新しい根拠の発言を表示する", () => {
+    const log = supplementLog("SLO", ["r2"]);
+    const before = reviewSnapshot(log.slice(0, -1));
+    const after = reviewSnapshot(log);
+    scene(app, given(modelOf(before)),
+      nodeButton("n4"), clickedNode("n4"),
+      tap((s) => expect(textOf(s.html, ".evidence__remark-text")).toEqual(["サービス水準を決めます"])),
+      Subscription.emit(Message.ChangedSnapshot({ snapshot: after })),
+      expectScene(selector(".evidence__text")).toHaveText("月間稼働率による目標"),
+      tap((s) => expect(textOf(s.html, ".evidence__remark-text")).toEqual(["サービス水準を決めます", "月間の稼働率を使います"])));
+  });
+
+  it("同じ補足の出どころが変わると、選択したまま根拠の見出しと本文を更新する", () => {
+    const supplement = { id: "s", parent: "B", kind: "補足", text: "会議で説明された意味", evidence: ["r1"], origin: "会議の中" } satisfies SnapshotNode;
+    const before: Snapshot = { ...snap(), nodes: [...NODES, supplement] };
+    const after: Snapshot = { ...before, nodes: [...NODES, { ...supplement, origin: "会議の外", text: "一般に定まった語の意味" }] };
+    scene(app, given(modelOf(before)),
+      nodeButton("s"), clickedNode("s"),
+      expectScene(selector("section.evidence h2")).toHaveText("根拠"),
+      expectScene(selector(".evidence__text")).toHaveText(supplement.text),
+      expectScene(selector(".evidence__remark-text")).toHaveText(REMARKS[0]!.text),
+      Subscription.emit(Message.ChangedSnapshot({ snapshot: after })),
+      tap((s) => expect(textContent(Option.getOrThrow(find("section.evidence h2")(s.html)))).toMatch(/この語.*発言/)),
+      expectScene(selector(".evidence__text")).toHaveText("一般に定まった語の意味"),
+      expectScene(selector(".evidence__remark-text")).toHaveText(REMARKS[0]!.text),
+      Subscription.emit(Message.ChangedSnapshot({ snapshot: before })),
+      expectScene(selector("section.evidence h2")).toHaveText("根拠"),
+      expectScene(selector(".evidence__text")).toHaveText(supplement.text));
+  });
+
   it("何も選んでいない間は、見出し「根拠」と案内だけで、発言は出さない", () => {
     scene(
       app,

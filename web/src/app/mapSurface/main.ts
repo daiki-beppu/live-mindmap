@@ -1,8 +1,8 @@
-import { HashMap, Option, Schema } from "effect";
+import { HashMap, Option, Schema, Struct } from "effect";
 import { Submodel, type Update } from "foldkit";
 import type { Html, HtmlBuilder } from "foldkit/html";
 import { modifyFields } from "foldkit/struct";
-import { personLine, supportsCriteria, Snapshot, SnapshotNode, type SpeakerNames } from "../../../../server/src/core/index.ts";
+import { personLine, supportsCriteria, TalkStatus, Snapshot, SnapshotNode, type SpeakerNames } from "../../../../server/src/core/index.ts";
 import { Camera, initialCamera, stepCamera, cameraFocus, changedFocus, CLICK_ZOOM_FACTOR, edgeDots, pinchZoomFactor, scrollAlongAxis, scrollAxis, scrollPanDelta, zoomAtPoint, type CameraInput, type CameraSeen, type Viewport } from "../../camera.ts";
 import { FOLD_DOT_CLASSES, MAP_NODE_BUTTON_CLASS } from "../../enterFold.ts";
 import { foldView, keepTargetOf, type FoldView } from "../../folding.ts";
@@ -19,7 +19,7 @@ const FoldingContext = Schema.Struct({
   currentTopic: Schema.Option(Schema.String),
   now: Schema.Option(Schema.Finite),
   touchedAt: Schema.Record(Schema.String, Schema.Option(Schema.Finite)),
-  talkStatus: Schema.Record(Schema.String, Schema.Option(SnapshotNode.fields.talkStatus.schema)),
+  talkStatus: Schema.Record(Schema.String, Schema.Option(TalkStatus)),
 });
 const sameFoldingContext = Schema.toEquivalence(FoldingContext);
 const foldingContextOf = (snapshot: Snapshot): typeof FoldingContext.Type => ({
@@ -29,7 +29,11 @@ const foldingContextOf = (snapshot: Snapshot): typeof FoldingContext.Type => ({
   talkStatus: Object.fromEntries(snapshot.nodes.map((node) => [node.id, Option.fromUndefinedOr(node.talkStatus)])),
 });
 
-const sameNodeContent = Schema.toEquivalence(SnapshotNode.mapFields(({ criteria: _criteria, evidence: _evidence, evidenceRound: _evidenceRound, touchedAt: _touchedAt, talkStatus: _talkStatus, ...fields }) => fields));
+const CONTENT_IGNORED = ["criteria", "evidence", "evidenceRound", "touchedAt", "talkStatus"] as const;
+const sameNodeContent = Schema.toEquivalence(SnapshotNode.mapMembers(([regular, supplement]) => [
+  regular.mapFields(Struct.omit(CONTENT_IGNORED)),
+  supplement.mapFields(Struct.omit(CONTENT_IGNORED)),
+]));
 const sameNodes = Schema.toEquivalence(Schema.Array(SnapshotNode));
 const sameCriteria = Schema.toEquivalence(Schema.Array(Schema.String));
 const changedOnlyCriteria = (before: Snapshot, after: Snapshot): boolean => {
@@ -282,6 +286,9 @@ export const update = (model: Model, message: Message): Return =>
       const previous = surfaceOf(model);
       const surface = surfaceOf(measured);
       const followed = followTarget(model, measured, previous.seen, surface);
+      const sizeUnchanged = Option.isSome(model.size) && model.size.value.width === width && model.size.value.height === height;
+      const changedHeights = Object.keys(nodeHeights).filter((id) => Option.getOrUndefined(HashMap.get(model.nodeHeights, id)) !== nodeHeights[id]);
+      if (sizeUnchanged && changedHeights.length > 0 && changedHeights.every((id) => model.snapshot.nodes.find((n) => n.id === id)?.kind === "補足")) return { model: followed };
       const seen = seenAfterMotion(followed, surface.seen);
       return { model: updateCamera(followed, { type: "measured", heightsChanged }, previous.seen, seen) };
     },
@@ -297,6 +304,8 @@ export const update = (model: Model, message: Message): Return =>
       const reflection = reflectionOf(previous, refreshed, surface);
       if (reflection !== null) return { model: applyViewing(refreshed, reflection, previous, surface) };
       const followed = followTarget(model, refreshed, previous.surface.seen, surface);
+      if (snapshot.round === model.snapshot.round && snapshot.currentTopic === model.snapshot.currentTopic && snapshot.lastChanged === model.snapshot.lastChanged
+        && sameNodes(model.snapshot.nodes.filter((n) => n.kind !== "補足"), snapshot.nodes.filter((n) => n.kind !== "補足"))) return { model: followed };
       const seen = seenAfterMotion(followed, surface.seen);
       return { model: updateCamera(followed, { type: "replacedSnapshot" }, previous.surface.seen, seen) };
     },
@@ -400,6 +409,8 @@ const digressionDescription = (h: H, node: SnapshotNode, openness: FoldView["ope
     ? [h.AriaDescription(openness?.state === "bundle" ? "脱線した議題を含む" : "会議の目的に答えていない議題（脱線）")]
     : [];
 
+const supplementClasses = (node: SnapshotNode): string => node.kind === "補足" ? classes("map-node--supplement", node.origin === "会議の外" && "map-node--external") : "";
+
 function nodeBody(h: H, node: SnapshotNode, view: FoldView | null, selected: boolean, speakerNames: SpeakerNames, criteria: readonly string[]): Html {
   const openness = view?.openness[node.id];
   const fold = openness?.state === "folded" || openness?.state === "bundle" ? openness : null;
@@ -408,7 +419,7 @@ function nodeBody(h: H, node: SnapshotNode, view: FoldView | null, selected: boo
   return h.div(
     [
       h.Class(
-        classes("map-node", node.kind === "案" && node.planStatus === "却下" && "map-node--rejected", node.kind === "議題" && node.digression === true && "map-node--digression", fold !== null && "map-node--folded", selected && "map-node--selected", view?.blink.has(node.id) === true && "map-node--blink", "nopan"),
+        classes("map-node", supplementClasses(node), node.kind === "案" && node.planStatus === "却下" && "map-node--rejected", node.kind === "議題" && node.digression === true && "map-node--digression", fold !== null && "map-node--folded", selected && "map-node--selected", view?.blink.has(node.id) === true && "map-node--blink", "nopan"),
       ),
       h.Style({ "--kind-color": KIND_COLOR[node.kind] }),
     ],

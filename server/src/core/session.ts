@@ -5,7 +5,8 @@ import type { KatakanaAnswer } from "./latinWords.ts";
 import { toJsonExport, type JsonExport } from "./export.ts";
 import { attributePeople } from "./people.ts";
 import { cloneNode, Dropped, emptyMap, Op, pointStatus, type DiffOutput, type MeetingMap } from "./map.ts";
-import { reflectDiff, type ReflectionState } from "./reflection.ts";
+import { reflectDiff, reflectSupplement, type ReflectionState } from "./reflection.ts";
+import { SupplementCategory, SupplementOperation } from "./supplement.ts";
 import * as ScreenQueue from "./screenQueue.ts";
 import { hasContent, Remark } from "./remark.ts";
 import { acceptInferredNames, nameSpeaker as updateSpeakerName, restoreSpeakerName, speakerNameMap, SpeakerNameLogEvent, type SpeakerNameChange, type SpeakerNameTable } from "./speakerNames.ts";
@@ -91,6 +92,17 @@ export const DiffEvent = Schema.Struct({
   call: Schema.optionalKey(Schema.Struct({ startedAt: Schema.String, endedAt: Schema.String })),
 });
 
+export const SupplementEvent = Schema.Struct({
+  type: Schema.Literal("supplement"),
+  op: Schema.NullOr(SupplementOperation),
+  category: Schema.NullOr(SupplementCategory),
+  term: Schema.optionalKey(Schema.String),
+  usage: Schema.optionalKey(DiffUsage),
+  ms: Schema.Finite,
+  reflectedAt: Schema.Finite,
+  error: Schema.optionalKey(Schema.String),
+});
+
 // log.jsonl の時刻の書き方。Clock ではなく実時刻（TestClock の下でも実際の時刻）。Effect を実行した時点で決める
 export const logTimestamp = (shiftMs = 0): string => DateTime.formatIso(DateTime.addDuration(DateTime.nowUnsafe(), shiftMs));
 export const VocabEvent = Schema.Struct({
@@ -98,7 +110,7 @@ export const VocabEvent = Schema.Struct({
   words: Schema.Array(Schema.Struct({ surface: Schema.String, romaji: Schema.NullOr(Schema.String), source: Schema.Literals(["user", "screen", "carried"]) })),
 });
 export const VocabPoolEvent = Schema.Struct({ type: Schema.Literal("vocab-pool"), session: Schema.Int });
-export const LogEvent = Schema.Union([DiscussionNoticeEvent, StartEvent, RemarkEvent, VocabEvent, VocabPoolEvent, ScreenEvent, ScreenOffEvent, ScreenInputSkippedEvent, DiffEvent, DiffUpdatePausedEvent, DiffUpdateRetryEvent, DiffUpdateResumedEvent, DiffUpdateStateEvent, SpeakerNameLogEvent]);
+export const LogEvent = Schema.Union([DiscussionNoticeEvent, StartEvent, RemarkEvent, VocabEvent, VocabPoolEvent, ScreenEvent, ScreenOffEvent, ScreenInputSkippedEvent, DiffEvent, SupplementEvent, DiffUpdatePausedEvent, DiffUpdateRetryEvent, DiffUpdateResumedEvent, DiffUpdateStateEvent, SpeakerNameLogEvent]);
 export type LogEvent = typeof LogEvent["Type"];
 
 export class SessionLog extends Context.Service<SessionLog, {
@@ -117,6 +129,7 @@ const RECENT = 3;
 export { hasContent } from "./remark.ts";
 
 export type SessionState = {
+  readonly explainedTerms: ReflectionState["explainedTerms"];
   readonly discussion: DiscussionNoticeState;
   readonly criteria?: readonly string[];
   readonly speakerNames: SpeakerNameTable;
@@ -157,6 +170,7 @@ type Ledger = {
   readonly files: Set<string>;
 };
 type Replay = {
+  readonly explainedTerms: ReflectionState["explainedTerms"];
   readonly criteria?: readonly string[];
   readonly map: MeetingMap | undefined;
   readonly history: ReflectionState["history"];
@@ -164,11 +178,25 @@ type Replay = {
   readonly diffUpdate: DiffUpdateState;
 };
 
+const restoreSupplement = Effect.fnUntraced(function* (replay: Replay, ledger: Ledger, event: unknown, index: number) {
+  const invalid = (reason: string) => new InvalidLogEvent({ index, reason });
+  const row = yield* Schema.decodeUnknownEffect(SupplementEvent)(event).pipe(Effect.mapError((error) => invalid(error.message)));
+  const map = yield* Effect.fromNullishOr(replay.map).pipe(Effect.mapError(() => invalid("ログの supplement より前に start がありません")));
+  const { state } = yield* Effect.fromResult(reflectSupplement({ map, explainedTerms: replay.explainedTerms, criteria: replay.criteria, history: replay.history, ledger }, row)).pipe(Effect.mapError(invalid));
+  return { ...replay, map: state.map, explainedTerms: state.explainedTerms };
+});
+
+function restoreScreen(replay: Replay, ledger: Ledger, event: typeof ScreenEvent.Type): Replay {
+  if (event.image !== null) ledger.files.add(event.image);
+  return { ...replay, queue: ScreenQueue.receive(replay.queue, event, replay.diffUpdate.status === "paused") };
+}
+
 export const restoreState = Effect.fnUntraced(function* (events: Iterable<unknown>): Effect.fn.Return<SessionState & { readonly screens: RestoredScreens }, InvalidLogEvent> {
   let discussion = createDiscussionNoticeState();
   const ledger: Ledger = { remarks: [], byId: new Map(), processed: [], known: new Set(), files: new Set() };
   let speakerNames: SpeakerNameTable = new Map();
   let replay: Replay = {
+    explainedTerms: new Map(),
     map: undefined, history: { round: 0, changes: [], currentTopic: undefined, lastChanged: undefined },
     queue: ScreenQueue.make(), diffUpdate: { status: "running" },
   };
@@ -180,25 +208,26 @@ export const restoreState = Effect.fnUntraced(function* (events: Iterable<unknow
     const type = typeOf(event);
     if (type === StartEvent.fields.type.literal) {
       const e = yield* decodeStart(event).pipe(failed);
-      replay = { ...replay, criteria: e.criteria, map: emptyMap(e.title) };
+      replay = { ...replay, explainedTerms: new Map(), criteria: e.criteria, map: emptyMap(e.title) };
     } else if (type === RemarkEvent.fields.type.literal) {
       const e = yield* decodeRemark(event).pipe(failed);
       ledger.remarks.push(e.remark);
       ledger.byId.set(e.remark.id, e.remark);
     } else if (type === ScreenEvent.fields.type.literal) {
       const e = yield* decodeScreen(event).pipe(failed);
-      if (e.image !== null) ledger.files.add(e.image);
-      replay = { ...replay, queue: ScreenQueue.receive(replay.queue, e, replay.diffUpdate.status === "paused") };
+      replay = restoreScreen(replay, ledger, e);
     } else if (type === DiffEvent.fields.type.literal) {
       const e = yield* decodeDiff(event).pipe(failed);
       const map = yield* Effect.fromNullishOr(replay.map).pipe(Effect.mapError(() => invalid("ログの diff より前に start がありません")));
-      const { state, reflectedAt } = yield* Effect.fromResult(reflectDiff({ map, criteria: replay.criteria, history: replay.history, ledger }, e)).pipe(Effect.mapError(invalid));
+      const { state, reflectedAt } = yield* Effect.fromResult(reflectDiff({ map, explainedTerms: replay.explainedTerms, criteria: replay.criteria, history: replay.history, ledger }, e)).pipe(Effect.mapError(invalid));
       const cutoff = Math.max(...e.input.fresh.map((id) => ledger.byId.get(id)!.end));
       const queue = yield* Effect.fromResult(ScreenQueue.consume(replay.queue, e, cutoff)).pipe(Effect.mapError(invalid));
       ledger.known = state.ledger.known;
       ledger.processed = state.ledger.processed;
-      replay = { ...replay, queue, map: state.map, history: state.history, diffUpdate: { status: "running" } };
+      replay = { ...replay, explainedTerms: state.explainedTerms, queue, map: state.map, history: state.history, diffUpdate: { status: "running" } };
       discussion = observeSessionDiscussion(discussion, state.map, ledger.remarks, reflectedAt);
+    } else if (type === "supplement") {
+      replay = yield* restoreSupplement(replay, ledger, event, index);
     } else if (type === DiscussionNoticeEvent.fields.type.literal) {
       discussion = yield* restoreDiscussionNotice(discussion, event, index);
     } else if (type === SpeakerNameLogEvent.fields.type.literal) {
@@ -218,7 +247,7 @@ export const restoreState = Effect.fnUntraced(function* (events: Iterable<unknow
   const { map, history, queue, diffUpdate } = replay;
   const restoredMap = yield* Effect.fromNullishOr(map).pipe(Effect.mapError(() => new InvalidLogEvent({ index: 0, reason: "ログに start がありません" })));
   const pending = remarks.filter((r) => !r.duplicate && !known.has(r.id) && hasContent(r.text));
-  return { discussion, ...(replay.criteria?.length ? { criteria: replay.criteria } : {}), map: restoredMap, speakerNames, pending, processed, remarks, known, ...history, diffUpdate, screens: { queue, files } };
+  return { discussion, explainedTerms: replay.explainedTerms, ...(replay.criteria?.length ? { criteria: replay.criteria } : {}), map: restoredMap, speakerNames, pending, processed, remarks, known, ...history, diffUpdate, screens: { queue, files } };
 });
 
 const restoreDiscussionNotice = Effect.fnUntraced(function* (state: DiscussionNoticeState, event: unknown, index: number) {
@@ -477,7 +506,7 @@ const openSession = Effect.fnUntraced(function* (initial: SessionState, screens:
             let dropped: Dropped[] = [];
             yield* Ref.update(ref, (s) => {
               const byId = new Map(s.remarks.map((r) => [r.id, r]));
-              const applied = Result.getOrThrowWith(reflectDiff({ map: s.map, criteria: s.criteria, history: s, ledger: { byId, known: s.known, processed: s.processed } }, event), (reason) => new Error(reason));
+              const applied = Result.getOrThrowWith(reflectDiff({ map: s.map, explainedTerms: s.explainedTerms, criteria: s.criteria, history: s, ledger: { byId, known: s.known, processed: s.processed } }, event), (reason) => new Error(reason));
               const screenQueue = Result.getOrThrowWith(ScreenQueue.consume(s.screenQueue, event, cutoff), (reason) => new Error(reason));
               dropped = applied.dropped;
               return { ...s, ...applied.state.history, screenQueue, map: applied.state.map, discussion: observeSessionDiscussion(s.discussion, applied.state.map, s.remarks, applied.reflectedAt), known: applied.state.ledger.known, processed: applied.state.ledger.processed,
@@ -492,7 +521,7 @@ const openSession = Effect.fnUntraced(function* (initial: SessionState, screens:
             const byId = new Map(s.remarks.map((r) => [r.id, r]));
             const ops = attributePeople(outcome.ops, byId);
             const event: typeof DiffEvent.Type = { type: "diff", input, ops, dropped: [], ...presentFields(outcome, ["processedRemarks", "usage", "judge", "call"]) };
-            const applied = Result.getOrThrowWith(reflectDiff({ map: s.map, criteria: s.criteria, history: s, ledger: { byId, known: s.known, processed: s.processed } }, event), (reason) => new Error(reason));
+            const applied = Result.getOrThrowWith(reflectDiff({ map: s.map, explainedTerms: s.explainedTerms, criteria: s.criteria, history: s, ledger: { byId, known: s.known, processed: s.processed } }, event), (reason) => new Error(reason));
             const screenQueue = Result.getOrThrowWith(ScreenQueue.consume(s.screenQueue, event, cutoff), (reason) => new Error(reason));
             const accepted = acceptInferredNames(outcome.names, applied.state.ledger.known, byId);
             return [{ event, dropped: applied.dropped, accepted }, {
@@ -581,6 +610,7 @@ const createSession = Effect.fnUntraced(function* ({ title, criteria, images = t
     processed: [],
     remarks: [],
     known: new Set(),
+    explainedTerms: new Map(),
     round: 0,
     changes: [],
     currentTopic: undefined,

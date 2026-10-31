@@ -19,7 +19,7 @@ type MapSurfaceModel = typeof Model.Type;
 type VNode = Parameters<typeof textContent>[0];
 const app = { update, view: (model: Parameters<typeof view>[0], h: Parameters<typeof view>[2]) => view(model, { notice: () => null }, h) };
 
-const node = (id: string, parent: string | null, kind: SnapshotNode["kind"], text_: string, extra: Partial<SnapshotNode> = {}): SnapshotNode => ({
+const node = (id: string, parent: string | null, kind: Exclude<SnapshotNode["kind"], "補足">, text_: string, extra: Partial<Exclude<SnapshotNode, { kind: "補足" }>> = {}): Exclude<SnapshotNode, { kind: "補足" }> => ({
   id,
   parent,
   kind,
@@ -87,6 +87,26 @@ const fitBounds = (rects: Array<{ x: number; y: number; width: number; height: n
 
 const wrapperOf = (id: string) => selector(`[data-node-id="${id}"]`);
 const mapNodeOf = (id: string) => selector(`[data-node-id="${id}"] .map-node`);
+
+describe("mapSurface の Scene: 補足", () => {
+  it.each(["会議の中", "会議の外"] as const)("%s の補足を親の下のノードとして描き、通常ノードとは色を分ける", (origin) => {
+    const supplement = { id: "s", parent: "P", kind: "補足", text: "上限の背景", evidence: ["r1"], origin } satisfies SnapshotNode;
+    scene(app, given(modelOf(snap([...nodes(), supplement]), "still")),
+      measured({ ...HEIGHTS, s: 40 }),
+      expectScene(selector('[data-node-id="s"] .map-node__text')).toHaveText(supplement.text),
+      expectScene(selector('[data-node-id="s"] .map-node__mark')).toBeAbsent(),
+      tap((s) => {
+        const supplementNode = findAll('[data-node-id="s"] .map-node')(s.html);
+        expect(supplementNode).toHaveLength(1);
+        const color = styleOf(supplementNode[0]!, "--kind-color");
+        expect(color).toBeTruthy();
+        expect(Object.values(KIND_COLOR).filter((value) => value === color)).toHaveLength(1);
+        const classes = Option.getOrThrow(attr(supplementNode[0]!, "class")).split(" ");
+        expect(classes.includes("map-node--external")).toBe(origin === "会議の外");
+        expect(nodeTranslate(s.html, "s")[0]).toBeGreaterThan(nodeTranslate(s.html, "P")[0]!);
+      }));
+  });
+});
 
 describe("mapSurface の Scene: Mount（実測と画面の大きさ）", () => {
   it("Mount は表示面の要素に 1 つだけ付き、resolve するまでは、ノードは見せず、エッジも描かない", () => {

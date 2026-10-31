@@ -28,6 +28,9 @@ function outline(node: ExportNode, depth: number, names: SpeakerNames): string[]
     case "決定":
       label = `→ 決定：${node.text}`;
       break;
+    case "補足":
+      label = `${node.text}（${node.origin}）`;
+      break;
     case "TODO":
       label = todoLabel(node, names);
       break;

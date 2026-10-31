@@ -1,4 +1,4 @@
-import { reviewSnapshot, SpeakerNameLogEvent, topicOf, type CaptionBubble, type LogEvent, type Remark, type Snapshot, type SpeakerNames } from "../../server/src/core/index.ts";
+import { reviewSnapshot, SpeakerNameLogEvent, SupplementEvent, topicOf, type CaptionBubble, type LogEvent, type Remark, type Snapshot, type SpeakerNames } from "../../server/src/core/index.ts";
 import { Schema } from "effect";
 
 export const CAPTION_SECONDS = 8;
@@ -33,7 +33,10 @@ export function buildReviewTimeline(events: readonly unknown[]): ReviewTimeline 
       byId.set(e.remark.id, e.remark);
     } else if (e.type === "diff" && e.error === undefined) {
       const ends = e.input.fresh.slice(0, e.processedRemarks ?? e.input.fresh.length).map((id) => byId.get(id)?.end ?? Number.NEGATIVE_INFINITY);
-      reflections.push({ round: reflections.length + 1, at: Math.max(...ends), index });
+      reflections.push({ round: (reflections.at(-1)?.round ?? 0) + 1, at: Math.max(...ends), index });
+    } else if (e.type === "supplement") {
+      const supplement = Schema.decodeUnknownSync(SupplementEvent)(event);
+      reflections.push({ round: reflections.at(-1)?.round ?? 0, at: supplement.reflectedAt, index });
     }
   });
   const reflectionTimes = [...new Set(reflections.map((r) => r.at))].sort((a, b) => a - b);

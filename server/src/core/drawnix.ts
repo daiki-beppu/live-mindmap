@@ -10,6 +10,7 @@ export const KIND_COLORS: Record<Kind, { fill: string; stroke: string }> = {
   案: { fill: "#f3e8ff", stroke: "#a855f7" },
   決定: { fill: "#dcfce7", stroke: "#22c55e" },
   TODO: { fill: "#ffedd5", stroke: "#f97316" },
+  補足: { fill: "#f0fdfa", stroke: "#0f766e" },
   要点: { fill: "#f1f5f9", stroke: "#94a3b8" },
 };
 
@@ -51,6 +52,7 @@ function toElement(node: ExportNode, isRoot: boolean, names: SpeakerNames, speak
     data: { topic: { children: [{ text: node.text }] } },
     children: node.children.map((c) => toElement(c, false, names, speakers)),
   };
+  if (node.kind === "補足") el.data.topic.children.push({ text: `（${node.origin}）`, color: PERSON_COLOR });
   const person = speakers ? personLine(node, names) : null;
   if (person !== null) el.data.topic.children.push({ text: ` ${person}`, color: PERSON_COLOR });
   if (node.criteria?.length) el.data.topic.children.push({ text: ` 判断軸：${node.criteria.join("・")}`, color: PERSON_COLOR });

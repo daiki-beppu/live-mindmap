@@ -15,13 +15,27 @@ import {
 } from "../src/core/index.ts";
 import { KIND_COLORS } from "../src/core/drawnix.ts";
 import { playBatches } from "./fixtures/batches.ts";
+import { restore } from "./fixtures/restore.ts";
+import { supplementLog } from "./fixtures/supplement.ts";
+
+it.effect("補足を言い直したログの復元後も、JSON文字列に以前と新しい根拠の発言が残る", () => Effect.gen(function* () {
+  for (const evidence of [["r1"], ["r2"]]) {
+    const session = yield* restore(supplementLog("SLO", evidence));
+    const text = exportFiles(yield* session.exportJson)["map.json"];
+    const json = Schema.decodeUnknownSync(Schema.fromJsonString(JsonExport))(text);
+    const supplement = json.root.children.find((n) => n.id === "n2")!.children.find((n) => n.id === "n4")!;
+    expect(supplement.text).toBe("月間稼働率による目標");
+    expect(supplement.evidence.map((r) => r.id)).toEqual(evidence[0] === "r1" ? ["r1"] : ["r1", "r2"]);
+    expect(supplement.evidence.map((r) => r.text)).toEqual(evidence[0] === "r1" ? ["サービス水準を決めます"] : ["サービス水準を決めます", "月間の稼働率を使います"]);
+  }
+}));
 
 const remark = (id: string, start: number, text = "発言"): Remark => ({ id, track: "相手", start, end: start + 5, text });
 
-type NodeInit = Partial<Omit<ExportNode, "id" | "kind" | "text" | "children">> & {
+type NodeInit = Partial<Omit<Exclude<ExportNode, { kind: "補足" }>, "id" | "kind" | "text" | "children">> & {
   children?: ExportNode[];
 };
-const node = (id: string, kind: ExportNode["kind"], text: string, init: NodeInit = {}): ExportNode => ({
+const node = (id: string, kind: Exclude<ExportNode["kind"], "補足">, text: string, init: NodeInit = {}): ExportNode => ({
   id,
   kind,
   text,

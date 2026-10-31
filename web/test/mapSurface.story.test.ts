@@ -16,7 +16,7 @@ import { foldingActions } from "./foldingActions.ts";
 
 type MapSurfaceModel = typeof Model.Type;
 
-const node = (id: string, parent: string | null, kind: SnapshotNode["kind"] = "議題"): SnapshotNode => ({ id, parent, kind, text: id, evidence: parent ? ["r1"] : [] });
+const node = (id: string, parent: string | null, kind: Exclude<SnapshotNode["kind"], "補足"> = "議題"): Exclude<SnapshotNode, { kind: "補足" }> => ({ id, parent, kind, text: id, evidence: parent ? ["r1"] : [] });
 const snapshot: Snapshot = { nodes: [node("root", null, "会議"), node("A", "root"), node("P", "A", "論点")], round: 1, changes: [], remarks: [] };
 
 const initial = (mode: MapSurfaceModel["mode"] = "still", isMac = false): MapSurfaceModel => init(snapshot, mode, isMac);

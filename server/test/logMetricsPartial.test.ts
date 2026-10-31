@@ -2,6 +2,18 @@ import { expect, it } from "@effect/vitest";
 import { Effect } from "effect";
 import { logMetrics, type LogEvent } from "../src/core/index.ts";
 
+it.effect("補足の採番を計測にも反映し、後続の通常ノードの書き換えを数える", () => Effect.gen(function* () {
+  const events: LogEvent[] = [
+    { type: "start", title: "定例" },
+    { type: "remark", remark: { id: "r1", track: "相手", start: 0, end: 10, text: "用語の話" } },
+    { type: "diff", input: { recent: [], fresh: ["r1"], nodeCount: 0 }, ops: [{ op: "add", ref: "a", parent: "root", kind: "議題", text: "議題", evidence: ["r1"] }], dropped: [] },
+    { type: "supplement", op: { op: "add", parent: "n1", text: "説明", origin: "会議の外", evidence: ["r1"] }, category: "用語", term: "用語", ms: 1, reflectedAt: 10 },
+    { type: "diff", input: { recent: [], fresh: ["r1"], nodeCount: 2 }, ops: [{ op: "add", ref: "b", parent: "root", kind: "議題", text: "次の議題", evidence: ["r1"] }], dropped: [] },
+    { type: "diff", input: { recent: [], fresh: ["r1"], nodeCount: 3 }, ops: [{ op: "update", node: "n3", text: "言い直した議題", evidence: ["r1"] }], dropped: [] },
+  ];
+  expect((yield* logMetrics(events)).rewrites).toBe(1);
+}));
+
 it.effect("logMetrics: processedRemarks が fresh の件数を超える成功行は InvalidLogEvent で失敗する", () => Effect.gen(function* () {
   const events: LogEvent[] = [
     { type: "start", title: "定例" },

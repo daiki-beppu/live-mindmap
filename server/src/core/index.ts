@@ -30,6 +30,7 @@ export * from "./remark.ts";
 export * from "./snapshot.ts";
 export {
   DiffEvent,
+  SupplementEvent,
   DiffUpdater,
   DiffUsage,
   hasContent,

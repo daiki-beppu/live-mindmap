@@ -27,6 +27,114 @@ const base = (): MeetingMap =>
 const node = (map: MeetingMap, id: string) => map.nodes[id]!;
 const reasons = (ops: Op[], map: MeetingMap = base(), stamp?: { round: number; at: number }) => stamped(map, ops, stamp).dropped.map((d) => d.reason);
 
+describe("applyOps: 補足と木の操作", () => {
+  const supplemented = (): MeetingMap => {
+    const map = base();
+    return {
+      ...map,
+      nodes: {
+        ...map.nodes,
+        n7: { id: "n7", parent: "n3", kind: "補足", text: "3 回とする背景", evidence: ["r1"], origin: "会議の中" },
+        n8: { id: "n8", parent: "n6", kind: "補足", text: "人員の背景", evidence: ["r1"], origin: "会議の外" },
+      },
+      order: [...map.order, "n7", "n8"],
+      nextId: 9,
+    };
+  };
+
+  it.each([
+    { op: "add", ref: "s", parent: "n1", kind: "補足", text: "追加は禁止", evidence: ["r2"] },
+    { op: "update", node: "n7", text: "更新は禁止", evidence: ["r2"] },
+    { op: "move", node: "n7", parent: "n6" },
+    { op: "combine", from: "n7", into: "n8" },
+    { op: "combine", from: "n8", into: "n7" },
+    { op: "add", ref: "child", parent: "n7", kind: "要点", text: "子は禁止", evidence: ["r2"] },
+    { op: "move", node: "n5", parent: "n7" },
+    { op: "close", node: "n7" },
+  ] satisfies Op[])("補足への禁止操作を理由つきで落とし、マップを変えない: %j", (op) => {
+    const before = supplemented();
+    const saved = structuredClone(before);
+    const got = stamped(before, [op]);
+    expect(got.dropped).toHaveLength(1);
+    expect(got.dropped[0]!.op).toEqual(op);
+    expect(got.dropped[0]!.reason.length).toBeGreaterThan(0);
+    expect(got.map).toEqual(saved);
+    expect(before).toEqual(saved);
+  });
+
+  it("補足に対する削除だけが成立する", () => {
+    const before = supplemented();
+    const got = stamped(before, [{ op: "delete", node: "n7" }]);
+    expect(got.dropped).toEqual([]);
+    expect(got.map.nodes.n7).toBeUndefined();
+    expect(got.map.order).not.toContain("n7");
+    expect(got.map.nodes.n3).toMatchObject({ text: "3 回", evidence: ["r1"] });
+    expect(got.map.nodes.n8).toEqual(before.nodes.n8);
+  });
+
+  it.each(["n3", "n4", "n5"])("補足しか添えていない親 %s は補足と一緒に削除できる", (parent) => {
+    const before = supplemented();
+    before.nodes.n7!.parent = parent;
+    const got = stamped(before, [{ op: "delete", node: parent }]);
+    expect(got.dropped).toEqual([]);
+    expect(got.map.nodes[parent]).toBeUndefined();
+    expect(got.map.nodes.n7).toBeUndefined();
+    expect(got.map.order).not.toContain(parent);
+    expect(got.map.order).not.toContain("n7");
+    expect(got.map.nodes.n8).toEqual(before.nodes.n8);
+  });
+
+  it("通常の子がある親は、補足も含めて削除せず理由つきで落とす", () => {
+    const before = supplemented();
+    before.nodes.n7!.parent = "n2";
+    const got = stamped(before, [{ op: "delete", node: "n2" }]);
+    expect(got.dropped).toHaveLength(1);
+    expect(got.dropped[0]!.reason.length).toBeGreaterThan(0);
+    expect(got.map).toEqual(before);
+  });
+
+  it.each(["案", "決定", "TODO"] as const)("%s の統合元の補足は消え、統合先の補足は残る", (kind) => {
+    const before = supplemented();
+    before.nodes.n3 = { id: "n3", parent: "n2", kind, text: "統合元", evidence: ["r1"] };
+    before.nodes.n6 = { id: "n6", parent: "n2", kind, text: "統合先", evidence: ["r2"] };
+    const got = stamped(before, [{ op: "combine", from: "n3", into: "n6" }]);
+    expect(got.dropped).toEqual([]);
+    expect(got.map.nodes.n3).toBeUndefined();
+    expect(got.map.nodes.n7).toBeUndefined();
+    expect(got.map.order).not.toContain("n7");
+    expect(got.map.nodes.n8).toEqual(before.nodes.n8);
+  });
+
+  it("統合元の通常の子は移し、添えた補足だけを消す", () => {
+    const before = supplemented();
+    before.nodes.n9 = { id: "n9", parent: "n3", kind: "課題", text: "案の課題", evidence: ["r1"] };
+    before.nodes.n6 = { id: "n6", parent: "root", kind: "案", text: "統合先", evidence: ["r1"] };
+    before.order.push("n9");
+    before.nextId = 10;
+    const got = stamped(before, [{ op: "combine", from: "n3", into: "n6" }]);
+    expect(got.dropped).toEqual([]);
+    expect(got.map.nodes.n9).toEqual({ ...before.nodes.n9, parent: "n6" });
+    expect(got.map.nodes.n7).toBeUndefined();
+    expect(got.map.nodes.n8).toEqual(before.nodes.n8);
+  });
+
+  it("親を移動すると補足も同じ親に付いたまま移る", () => {
+    const before = supplemented();
+    const got = stamped(before, [{ op: "move", node: "n3", parent: "n6" }]);
+    expect(got.dropped).toEqual([]);
+    expect(got.map.nodes.n3!.parent).toBe("n6");
+    expect(got.map.nodes.n7).toEqual(before.nodes.n7);
+  });
+
+  it.each(["補足", "「補足」", "```\n補足\n```", "```\n補足"])("通常ノードの本文 %j を補足の種別と取り違えない", (text) => {
+    const before = base();
+    before.nodes.n3 = { id: "n3", parent: "n2", kind: "要点", text, evidence: ["r1"] };
+    const got = stamped(before, [{ op: "update", node: "n3", text: "言い直した要点", evidence: ["r2"] }]);
+    expect(got.dropped).toEqual([]);
+    expect(got.map.nodes.n3).toMatchObject({ kind: "要点", text: "言い直した要点", evidence: ["r1", "r2"] });
+  });
+});
+
 describe("判断軸への関係づけ", () => {
   const criteria = ["採用のしやすさ", "運用負荷"];
   const apply = (map: MeetingMap, ops: Op[]) => applyOps(map, ops, known, { round: 2, at: 10 }, remarks, criteria);

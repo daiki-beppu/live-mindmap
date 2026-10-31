@@ -18,7 +18,7 @@ type MapSurfaceModel = typeof Model.Type;
 type VNode = Parameters<typeof textContent>[0];
 const app = { update, view: (model: Parameters<typeof view>[0], h: Parameters<typeof view>[2]) => view(model, { notice: () => null }, h) };
 
-const node = (id: string, parent: string | null, kind: SnapshotNode["kind"] = "議題", extra: Partial<SnapshotNode> = {}): SnapshotNode => ({ id, parent, kind, text: id, evidence: parent ? ["r1"] : [], ...extra });
+const node = (id: string, parent: string | null, kind: Exclude<SnapshotNode["kind"], "補足"> = "議題", extra: Partial<Exclude<SnapshotNode, { kind: "補足" }>> = {}): Exclude<SnapshotNode, { kind: "補足" }> => ({ id, parent, kind, text: id, evidence: parent ? ["r1"] : [], ...extra });
 const snap = (nodes: SnapshotNode[], extra: Partial<Snapshot> = {}): Snapshot => ({ nodes, round: 3, changes: [], remarks: [], ...extra });
 
 // 済みの議題 A（論点 A1 を持つ）は畳まれ、話し中の今の議題 B は畳まれない
