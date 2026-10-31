@@ -8,13 +8,21 @@ export const REVIEW_LOG_ELEMENT_ID = "live-mindmap-review-log";
 
 const BODY_END = "</body>";
 
+const decodeSupplement = Schema.decodeUnknownSync(SupplementEvent);
+
+function reviewEvent(event: unknown): unknown {
+  if (!Predicate.hasProperty(event, "type") || event.type !== SupplementEvent.fields.type.literal) return event;
+  const { op } = decodeSupplement(event);
+  return { ...event, category: null, op: op === null || op.op === "delete" ? op : { ...op, kind: "補足" } };
+}
+
 // `<` は < にして、発言の中の </script> や <!-- で要素が閉じたり壊れたりしないようにする。
 // インライン化した JS の中に "</body>" があっても壊れないよう、最後の </body> を使う
 export function embedReviewLog(html: string, events: readonly unknown[]): string {
   const at = html.lastIndexOf(BODY_END);
   if (at < 0) throw new Error("テンプレートに </body> がありません");
   const kept = events.filter((event) => !(Predicate.hasProperty(event, "type") && event.type === DiscussionNoticeEvent.fields.type.literal));
-  const json = JSON.stringify(kept).replaceAll("<", "\\u003c");
+  const json = JSON.stringify(kept.map(reviewEvent)).replaceAll("<", "\\u003c");
   const element = `<script type="application/json" id="${REVIEW_LOG_ELEMENT_ID}">${json}</script>`;
   return html.slice(0, at) + element + html.slice(at);
 }

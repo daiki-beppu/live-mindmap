@@ -34,9 +34,14 @@ const events = [
     at: "2026-10-07T00:00:02.000Z",
     type: "diff",
     input: { recent: [], fresh: ["r1"], nodeCount: 0 },
-    ops: [{ op: "add", ref: "t1", parent: "root", kind: "議題", text: "採用", evidence: ["r1"] }],
+    ops: [
+      { op: "add", ref: "t1", parent: "root", kind: "議題", text: "採用", evidence: ["r1"] },
+      { op: "add", ref: "t2", parent: "root", kind: "要点", text: "採用方法", evidence: ["r1"] },
+    ],
     dropped: [],
   },
+  { type: "supplement", op: { op: "add", parent: "n1", text: "会議の外から添える説明", evidence: ["r1"], origin: "会議の外" }, category: null, ms: 1, reflectedAt: 6 },
+  { type: "supplement", op: { op: "add", parent: "n2", text: "会議の中から添える説明", evidence: ["r1"], origin: "会議の中" }, category: null, ms: 1, reflectedAt: 7 },
 ];
 
 describe("map.html の本物のビルド", () => {
@@ -61,7 +66,8 @@ describe("map.html の本物のビルド", () => {
       const audioHtml = yield* Effect.tryPromise(() => readFile(audioPath!, "utf8"));
       expect(embeddedAudio(audioHtml)).toEqual(FAKE_MIX_BYTES);
       const audioLog = new RegExp(`<script type="application/json" id="${REVIEW_LOG_ELEMENT_ID}">([\\s\\S]*?)</script>`).exec(audioHtml);
-      expect(JSON.parse(audioLog![1]!)).toEqual(events);
+      expect(JSON.parse(audioLog![1]!)).toMatchObject(events);
+      expect(JSON.parse(audioLog![1]!).filter((row: { type: string }) => row.type !== "supplement")).toEqual(events.filter((row) => row.type !== "supplement"));
       expect(embeddedAudio(yield* Effect.tryPromise(() => readFile(path!, "utf8")))).toBeNull();
       const html = yield* Effect.tryPromise(() => readFile(path!, "utf8"));
       // インライン化した JS・CSS の中身にタグに見える文字列があっても、外部参照とは数えない
@@ -69,7 +75,8 @@ describe("map.html の本物のビルド", () => {
       expect(markup).not.toMatch(/<script[^>]*\ssrc=/);
       expect(markup).not.toMatch(/<link[^>]*rel="stylesheet"/);
       const match = new RegExp(`<script type="application/json" id="${REVIEW_LOG_ELEMENT_ID}">([\\s\\S]*?)</script>`).exec(html);
-      expect(JSON.parse(match![1]!)).toEqual(events);
+      expect(JSON.parse(match![1]!)).toMatchObject(events);
+      expect(JSON.parse(match![1]!).filter((row: { type: string }) => row.type !== "supplement")).toEqual(events.filter((row) => row.type !== "supplement"));
 
       // CSS（Tailwind v4 の出力と、素の CSS に残した点滅）は <style> として HTML に入る（Issue #830）
       const css = [...html.matchAll(/<style\b[^>]*>([\s\S]*?)<\/style>/g)].map((m) => m[1]!).join("\n");
@@ -100,28 +107,44 @@ describe("map.html の本物のビルド", () => {
       const seen = yield* Effect.acquireUseRelease(
         (yield* Playwright).launch,
         (browser) => Effect.tryPromise(async () => {
-          const page = await browser.newPage();
-          await page.goto(pathToFileURL(path!).href);
-          await page.locator(".map-node").first().waitFor({ timeout: 30_000 });
-          const licenses = await page.evaluate(
-            (id) => (document.getElementById(id) as HTMLTemplateElement | null)?.content.textContent ?? null,
-            REVIEW_LICENSES_ELEMENT_ID,
-          );
-          const bodyText = await page.evaluate(() => document.body.innerText);
-          return {
-            licenses,
-            bodyText,
-            nodes: await page.locator(".map-node").allInnerTexts(),
-            intake: await page.locator(".intake-notice").count(),
-            changes: await page.locator(".changes__item").allInnerTexts(),
-            // 「変わったこと」の項目を選ぶと、根拠の発言が右の列に出る
-            evidenceBefore: await page.locator(".evidence__remark").count(),
-            evidence: await (async () => {
-              await page.locator(".changes__button").first().click();
-              await page.locator(".evidence__remark").first().waitFor({ timeout: 10_000 });
-              return page.locator(".evidence__remark").allInnerTexts();
-            })(),
-          };
+          const context = await browser.newContext();
+          try {
+            const page = await context.newPage();
+            await page.goto(pathToFileURL(path!).href);
+            await page.locator(".map-node").first().waitFor({ timeout: 30_000 });
+            const supplementStyles = [];
+            for (const text of ["会議の外から添える説明", "会議の中から添える説明"]) {
+              const button = page.getByRole("button", { name: text, exact: true });
+              await button.waitFor({ state: "visible", timeout: 10_000 });
+              supplementStyles.push(await button.evaluate((element) => {
+                const style = getComputedStyle(element);
+                const node = element.closest(".map-node")!;
+                return { text: element.textContent, fontStyle: style.fontStyle, color: style.color, shadow: getComputedStyle(node).boxShadow, marks: node.querySelectorAll(".map-node__mark").length };
+              }));
+            }
+            const licenses = await page.evaluate(
+              (id) => (document.getElementById(id) as HTMLTemplateElement | null)?.content.textContent ?? null,
+              REVIEW_LICENSES_ELEMENT_ID,
+            );
+            const bodyText = await page.evaluate(() => document.body.innerText);
+            return {
+              supplementStyles,
+              licenses,
+              bodyText,
+              nodes: await page.locator(".map-node").allInnerTexts(),
+              intake: await page.locator(".intake-notice").count(),
+              changes: await page.locator(".changes__item").allInnerTexts(),
+              // 「変わったこと」の項目を選ぶと、根拠の発言が右の列に出る
+              evidenceBefore: await page.locator(".evidence__remark").count(),
+              evidence: await (async () => {
+                await page.locator(".changes__button").first().click();
+                await page.locator(".evidence__remark").first().waitFor({ timeout: 10_000 });
+                return page.locator(".evidence__remark").allInnerTexts();
+              })(),
+            };
+          } finally {
+            await context.close();
+          }
         }),
         (browser) => Effect.promise(() => browser.close()),
       );
@@ -135,10 +158,14 @@ describe("map.html の本物のビルド", () => {
       expect(seen.bodyText, "icons.NOTICE.md").not.toContain(ICONS_NOTICE.split("\n")[0]!.trim());
       expect(seen.nodes.join("\n")).toContain("採用");
       expect(seen.intake).toBe(0);
-      expect(seen.changes).toHaveLength(1);
+      expect(seen.changes).toHaveLength(2);
       expect(seen.changes[0]).toContain("採用");
       expect(seen.evidenceBefore).toBe(0);
       expect(seen.evidence.join("\n")).toContain("採用の話をします");
+      expect(seen.supplementStyles).toEqual([
+        { text: "会議の外から添える説明", fontStyle: "italic", color: "rgb(123, 168, 161)", shadow: "none", marks: 0 },
+        { text: "会議の中から添える説明", fontStyle: "normal", color: "rgb(15, 118, 110)", shadow: "none", marks: 0 },
+      ]);
 
       const distAfter = existsSync(WEB_DIST) ? yield* Effect.tryPromise(() => readdir(WEB_DIST)) : null;
       expect(distAfter).toEqual(distBefore);

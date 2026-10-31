@@ -20,6 +20,13 @@ function walk(node: ExportNode, parent: ExportNode | null = null): { node: Expor
   return [{ node, parent }, ...node.children.flatMap((c) => walk(c, node))];
 }
 
+const supplementLabel = (node: Extract<ExportNode, { kind: "補足" }>): string => `${node.text}（${node.origin}）`;
+
+function supplementLines(node: ExportNode): string[] {
+  return node.children.filter((child) => child.kind === "補足")
+    .map((child) => `  - ${supplementLabel(child)}${criteriaLine(child)}${stamp(child)}`);
+}
+
 function outline(node: ExportNode, depth: number, names: SpeakerNames): string[] {
   const indent = "  ".repeat(depth);
   const person = personLine(node, names);
@@ -29,7 +36,7 @@ function outline(node: ExportNode, depth: number, names: SpeakerNames): string[]
       label = `→ 決定：${node.text}`;
       break;
     case "補足":
-      label = `${node.text}（${node.origin}）`;
+      label = supplementLabel(node);
       break;
     case "TODO":
       label = todoLabel(node, names);
@@ -53,11 +60,15 @@ export function toMarkdown(exp: JsonExport): string {
   const list = (items: string[]) => (items.length > 0 ? items : ["- なし"]);
   const decisions = all
     .filter(({ node }) => node.kind === "決定")
-    .map(({ node, parent }) => `- ${parent ? `${parent.text} → ` : ""}${node.text}${criteriaLine(node)}${stamp(node)}`);
-  const todos = all.filter(({ node }) => node.kind === "TODO").map(({ node }) => `- ${todoLabel(node, names)}${stamp(node)}`);
+    .flatMap(({ node, parent }) => [
+      `- ${parent ? `${parent.text} → ` : ""}${node.text}${criteriaLine(node)}${stamp(node)}`,
+      ...(parent ? supplementLines(parent) : []),
+      ...supplementLines(node),
+    ]);
+  const todos = all.filter(({ node }) => node.kind === "TODO").flatMap(({ node }) => [`- ${todoLabel(node, names)}${stamp(node)}`, ...supplementLines(node)]);
   const open = all
     .filter(({ node }) => node.kind === "論点" && node.pointStatus === "未決")
-    .map(({ node }) => `- ${node.text}${criteriaLine(node)}${stamp(node)}`);
+    .flatMap(({ node }) => [`- ${node.text}${criteriaLine(node)}${stamp(node)}`, ...supplementLines(node)]);
   return [
     `# ${exp.root.text}`,
     "",
