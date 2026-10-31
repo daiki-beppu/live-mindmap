@@ -98,19 +98,73 @@ web から `tailwindcss` と `@tailwindcss/vite` を外すと、`pnpm-lock.yaml`
 - JS の `closest()` だけが使う印（`nopan`・`nowheel`）は、許す一覧に入れる。
 - AGENTS.md の「Rules and what enforces them」の形に合う。`typecheck` に載せれば CI で止まる。
 
+## 追補: 2 回目の試しで分かったこと
+
+上の調べのあと、別の捨てるブランチ（`origin/main` の `1468f11` から切った `scratch/stylex-try` と `scratch/plain-css-try`。どちらも push していない）で、上の「未検証のもの」の一部と、上で触れていない点を確かめた。StyleX の側は `keys/keyList.ts`（Popover のパネルと、子孫セレクタ `.key-list__anchor .key-list`）と `mapSurface/main.ts`（点滅の `@keyframes`、`.map-node:hover .map-node__fold-dot` を marker に、ノードの枠と画面外の点）を書き換え、素の CSS の側は `keys/keyList.ts` と `sessionLayout/speakerName.ts` のユーティリティをすべて意味のクラス名の規則に移した。
+
+### dev での CSS の変更は、どの書き方でも全体の再読み込みになる（検証済み）
+
+- Tailwind を外し、トークンを `:root` に置いた web の dev サーバーをブラウザ（Chrome DevTools MCP）で開き、`styles.css` の `--color-gray-200` を書き換えた。`getComputedStyle(document.documentElement)` の値は 2 秒以内に新しい値になったが、`window` に置いた印は消え、`performance.timeOrigin` が変わった。つまり `<style>` の差し替えではなく、ページ全体を読み直している。
+- 理由は Foldkit の Vite プラグイン。`@foldkit/vite-plugin@0.27.0` の `handleHotUpdate` は、変わったモジュールがあれば必ず `server.ws.send({ type: 'full-reload' })` を送り、`[]` を返して Vite の HMR を止める（`dist/index.js` 526–535 行）。Model は Foldkit の側が保って読み直す（同ファイル 129 行の `isReloadFlush`）。
+- このため「CSS 変数が HMR に乗るか」は、StyleX・素の CSS・今の Tailwind のどれでも同じ答え（変更は画面に出るが、全体の再読み込みで出る）になり、選ぶ材料にならない。
+- StyleX の dev は、unplugin が HTML に `<script src="/@id/virtual:stylex:runtime">` と `<link href="/virtual:stylex.css">` を差し込み、`/virtual:stylex.css` に変換済みのモジュールの規則（`@keyframes x9kdo2h-B`、`.x-default-marker:hover *` など 67 規則）が出た。ファイルを変えて再変換させると新しい値が CSS に出た（検証済み。ブラウザで画面が変わる様子は見ていない）。
+
+### StyleX は web のテストの段取りを変える（検証済み）
+
+- web の `vite.config.ts` は、vitest の mode（`test`）では Foldkit の view-identity 変換が `vi.hoisted` を壊すので、プラグインを 1 つも入れない。StyleX を入れても同じにすると、`stylex.create`・`stylex.keyframes` が変換されないまま走り、「Unexpected 'stylex.keyframes' call at runtime. Styles must be compiled by '@stylexjs/babel-plugin'」で、unit の 54 ファイルのうち 27 が読み込みの段階で落ちた。StyleX は、ビルド時に変換しないと実行できない（`@stylexjs/stylex` の `lib/es/stylex.mjs` 133・166 行）。
+- test の mode にだけ `stylex.vite()` を入れると読み込みは通るが、StyleX の動的な style（`slotAt: (x, y) => ({ transform: … })`）でノードの位置を書いた形では、scene テストの 26 件が落ちた。StyleX は動的な値を `--x-transform` のような CSS 変数で inline に渡し、規則の側で `transform: var(--x-transform)` と読むので、inline の `transform` を読むテスト（`mapSurface.scene.test.ts` の「ノードの外側の要素の transform が…」など）が値を見つけられない。
+- 動的な値は今どおり `h.Style` で直接渡し、StyleX は動かない値だけにすると、unit の 1884 件がすべて通った。ただし StyleX を test の mode に入れた run だけ、終わりに「close timed out after 10000ms … something prevents Vite server from exiting」が出た（素の CSS の run では出ない）。unplugin の `configureServer` が `setInterval` を張る（`lib/es/vite.mjs` 59 行）のが原因と見ている（**未検証**、出る・出ないの対比だけ）。
+
+### StyleX の書き方の未検証だった点（検証済み）
+
+| 書いたもの | 出た CSS |
+|---|---|
+| 自分の属性: `display: { default: "none", ":is([data-open])": "block" }` | `.xrtxo2y[data-open]:not(#\#)… { display: block }`。自分の属性は `":is([…])"` のキーで書ける |
+| 画面ごとの上書き（`.meeting .side` の類）: `display: { default: null, "@media (max-width: 768px)": { default: null, [stylex.when.ancestor('[data-screen="meeting"]')]: "none" } }` | `@media (width <= 768px) { .x10n2bjd…:where(.x-default-marker[data-screen="meeting"] *) { display: none } }`。画面の根に `data-screen` と marker を付ければ、`@media` と組んで書ける |
+| `:focus-within` の祖先（`.review-volume:focus-within .review-volume__slider`） | `:where(.x-default-marker:focus-within *)` |
+| 兄弟（`.layout:has(> .self-pause-notice) > .intake-notice` の代わり）: `when.anySibling(":is(*)")` | `:where(.x-default-marker:is(*) ~ *, :has( ~ .x-default-marker:is(*)))`。前後の兄弟の両方に当たり、今の「直下の子に休止の一言があるとき」と同じ意味にはならない |
+| `@media (width < 600px)` | `@media (width <= 599.99px)` に書き換えて出す |
+| `min(720px, calc(100vw - 2 * 316px))`、`color-mix(…)`、`calc(var(--caption-bubble-ratio) * (…))` | そのまま出る（`calc` の中は `100vw - 632px` に畳む） |
+
+- marker は祖先の要素ごとに `stylex.props(stylex.defaultMarker()).className` を `h.Class` の文字列に足す。今回は `.map-node` に足し、子の畳む丸に `when.ancestor(":hover")` を書いた。
+- 型: `tsc` は、キーワードの値を持つプロパティの綴り違い（`display: "flexx"`）を、その style を `stylex.props(...)` に渡した箇所で「Type '"flexx"' is not assignable … Did you mean '"flex"'?」として捕まえた。未知のキー（`colr: "red"`）と長さの綴り違い（`fontSize: "13pz"`）は通し、どちらもそのまま CSS に出た。`effect-tsgo diagnostics` は Effect の診断だけを出し、TS の型の誤り（`styles.kyes`）も出さない（`tsc` の側が TS2339 で捕まえる）。
+
+### StyleX と `@foldkit/ui` の部品の `h.Style`
+
+web が使う部品のうち、属性の配列に自分で `h.Style` を入れるもの（`@foldkit/ui@0.167.0` の `dist`）: Slider（track・塗り・thumb、`slider/index.js` 336・341・368 行）、Popover（button・panel、`popover/index.js` 366・373 行）、Menu（`menu/index.js` 556・567 行）、Tooltip（`tooltip/tooltip.js` 214 行）、Toast（`toast/index.js` 108・170 行）、Disclosure（`disclosure/index.js` 75・83 行）。`[...panel, h.Class(…)]` のように部品の属性の後ろに足すとき、`h.Class` は部品が `h.Class` を持たないので安全だが、`h.Style` を足すと部品の style（Popover のパネルの `position: absolute; visibility: hidden` など）が消える。StyleX の動的な style はこの `h.Style` になるので、これらの要素には動かない style だけを当てる決まりが要る。素の CSS でも、`h.Style` を足さない点は同じ。
+
+### 依存の数: Tailwind を外して StyleX を入れたとき（検証済み）
+
+- `origin/main` の web から `tailwindcss`・`@tailwindcss/vite` を外し、`@stylexjs/stylex@0.19.1`・`@stylexjs/unplugin@0.19.1`・`unplugin@2.3.11` を入れると、lock の packages は main に比べて 47 項目増え、32 項目減った（382 → 397）。`lightningcss` は Vite の `1.33.0` を共有し、増えなかった。
+- `unplugin` は `@stylexjs/unplugin` の peer（`^2.3.11`）で、自分で入れる必要がある。版を付けずに入れると最新の `3.7.0` が入り、`pnpm peers check` が unmet peer を出した。上の 46 項目との 1 項目の差は、この `unplugin` を入れたかどうかの差と見ている。
+- 素の CSS は 32 項目減って、増えない（上と同じ）。
+
+### 素の CSS の行数の試算（検証済みの一部と推計）
+
+- `keys/keyList.ts`（ユーティリティを持つ `h.Class` 5 か所）と `sessionLayout/speakerName.ts`（4 か所と話者の色の定数 5 つ）を移すと、規則は 17 行増えた（話者の色が 1 色 1 規則、`hover:underline` が `@media (hover: hover)` の 1 規則）。Tailwind の入口（`@layer`・`@import`・`@source`・`@theme static` と `--spacing`）の 6 行は `:root {` の 1 行になった。218 行 → 229 行。
+- web のビルドの出力（Tailwind の `@layer utilities`）からユーティリティごとの宣言を引いて、`h.Class` ごとに意味のクラス名 1 つの規則にまとめると、規則は 79、宣言は 394（`--tw-*` の内部の変数を含む）になった。1 規則 1 行なら約 300 行、1 宣言 1 行なら約 550〜700 行。上の見込み（約 300 行）と合う。
+- 1 ファイル HTML（検証済み）: この状態で `review.ts` と同じ形でビルドすると、`<style>` に `--color-gray-200:#e5e7eb` と `.captions__name--c1{color:#2f6fb3}` が入り、`<link>` は無かった。
+- テスト: unit の 1884 件のうち 1 件（`sessionLayout.scene.test.ts` 230 行、仮の名前は `opacity-50` を持つ）が、ユーティリティのクラス名そのものを見ていて落ちた。移すときは、ユーティリティの名前を見るテストを意味のクラス名に書き換える。
+
+### fallow の `css-dead-surface` は、足した未使用のクラスを `audit` で捕まえる（検証済み）
+
+- `styles.css` に `.key-list__unused { color: red; }` を足して `fallow audit --base origin/main` を流すと、`css-dead-surface`（`unreferenced-css-class`、`key-list__unused`）が出た。変えたファイルに絞る `audit` では、新しく足した未使用のクラスは捕まる。既定は `warn` で verdict を変えない。
+- `h.Class("key-list__row")` を `key-list__ro`（1 文字違い）や `key-list__keyz` にしても、`css-broken-reference` は出なかった（上の結論と同じ）。
+- 依存を増やさない検査スクリプトの別の試し（約 40 行、`h.Class` の文字列のうち BEM の形の語を拾う）でも、`key-list__ro`・`key-list__keyz` を「定義の無いクラス」に、移したあとの `key-list__row` と足した `key-list__unused` を「使われていないクラス」に出した。`test/semanticClasses.ts` の `SEMANTIC_CLASSES`（scene テストが使う意味のクラス名の一覧、約 110 個）が、印のクラスと規則を持たない名前の「許す一覧」の元にできる。
+
 ## 推奨（#1795 で決める）
 
 1. **素の CSS + CSS 変数を選ぶ。** Tailwind の 32 項目が消え、増える依存は無い。1 ファイル HTML と dev にそのまま乗る（どちらも検証済み）。今の `styles.css` は、子孫・状態のセレクタ、`@keyframes`、`color-mix`・`min()`・`calc()` をすでに素の CSS で持っているので、移すのは `h.Class` のユーティリティ（延べ 313 語、規則にして約 75〜80）だけ。
 2. **トークンは `:root` の CSS 変数に置く。** 今の `@theme static` の 14 個（色 12、`--spacing`、`--font-weight-semibold`）をそのまま写す。`--spacing: 1px` は Tailwind の数のユーティリティのためだけにあるので、移したあとは要らない。
 3. **打ち間違いの検査は小さなスクリプトで足す。** `h.Class` のクラス名と `styles.css` の規則を両方向に突き合わせ、`typecheck` に載せる。fallow の CSS の規則は Foldkit の `h.Class` を読まないので、未使用のクラスの検査には使えない（fallow の側で Foldkit を読めるようになるまで）。CSS のプロパティの綴り違いは、stylelint を入れない限り捕まらない（StyleX も lint を足さないと捕まらない点は同じ）。
-4. **StyleX は今回も勧めない。** 10/10 の 4 点のうち、1 ファイル HTML の回避・0.x の互換の壊れ方・65 のセレクタの書き換えは今も同じ。綴り違いは lint で捕まるようになったが、`@stylexjs/eslint-plugin` を oxlint の alpha の JS プラグインに載せることになる。依存は Tailwind を外して減る分より多く増える（46 項目以上）。
+4. **StyleX は今回も勧めない。** 10/10 の 4 点のうち、1 ファイル HTML の回避・0.x の互換の壊れ方・65 のセレクタの書き換えは今も同じ。綴り違いは lint で捕まるようになったが、`@stylexjs/eslint-plugin` を oxlint の alpha の JS プラグインに載せることになる。依存は Tailwind を外して減る分より多く増える（+47・−32、追補）。加えて、変換なしでは実行できないので、web の vitest の mode にも StyleX のプラグインを入れる必要があり、動的な値を StyleX で書くと inline の style を読む scene テストが落ちる（追補）。
 
 ## 未検証のもの
 
-- dev サーバーで CSS を変えたとき、ブラウザで実際に差し替わるか（HMR のモジュールとして配られることだけを確かめた）。
-- Tailwind を外したあと StyleX を入れたときの依存の数（`lightningcss` を Vite と共有できるか）。
-- StyleX で自分の属性（`.review-tip[data-open]` など）を書く形と、`:has(> …)` の直下の子を表せるか。
-- 素の CSS に移したあとの `styles.css` の実際の行数（見込みは数えた語の数からの推計）。
+- `:has(> …)` の直下の子を StyleX で同じ意味に表せるか（`when.anySibling` は前後の兄弟の両方に当たる。追補）。
+- StyleX を vitest の mode に入れたときの「close timed out」の原因（unplugin の `setInterval` と見ているが、確かめていない）。
+- 素の CSS に全部移したあとの `styles.css` の実際の行数（2 ファイルを移した実数と、残りの推計だけ）。
+- StyleX・素の CSS で描いた画面の寸法が今と同じか（ビルドの出力と CSS の文面を見ただけで、画面の computed style は比べていない）。
 - 検査スクリプトを今のコードの組み立てる修飾子（`map-node--${kind}` など）に合わせたときの、許す一覧の大きさ。
 
 ## 出典
@@ -120,5 +174,6 @@ web から `tailwindcss` と `@tailwindcss/vite` を外すと、`pnpm-lock.yaml`
 - fallow: `fallow@3.33.1` の `capabilities.json`・`issue-registry.json`・`schema.json`、fallow.tools/docs/explanations/health/
 - oxlint: oxc.rs/docs/guide/usage/linter/js-plugins
 - Vite: vite.dev/guide/features（CSS の HMR）、npm の `vite@8.3.2` の依存
+- 追補: `@foldkit/vite-plugin@0.27.0` の `dist/index.js`、`@foldkit/ui@0.167.0` の `dist/{slider,popover,menu,tooltip,toast,disclosure}`、`@stylexjs/stylex@0.19.1` の `lib/es/stylex.mjs`、StyleX の docs（`e3e2d02`）の `learn/styling-ui/defining-styles.mdx`・`api/javascript/when.mdx`・`api/configuration/eslint-plugin.mdx`、`unplugin` の npm の版、`fallow audit --base origin/main` の JSON、この repo の `test/semanticClasses.ts`・`test/sessionLayout.scene.test.ts`・`test/mapSurface.scene.test.ts`
 - 10/10 の調査: `origin/research/foldkit-css` の `docs/investigations/2026-10-10-foldkit-css.md`（#747）
 - この repo: `web/src/styles.css`、`web/vite.config.ts`、`web/AGENTS.md`、`web/src/app/**`、`server/src/review.ts`、`.fallowrc.json`
