@@ -1,18 +1,7 @@
-import { ROOT_ID, type MapNode } from "./map.ts";
+import { childrenByParent, ROOT_ID, type MapNode } from "./map.ts";
 
 export type GroupNode = Pick<MapNode, "id" | "parent" | "kind" | "talkStatus">;
 export type GroupSize = { size: number; topicId: string };
-
-export function childrenByParent<N extends { readonly id: string; readonly parent: string | null }>(nodes: readonly N[]): Map<string, N[]> {
-  const kids = new Map<string, N[]>();
-  for (const n of nodes) {
-    if (n.parent === null) continue;
-    const siblings = kids.get(n.parent);
-    if (siblings) siblings.push(n);
-    else kids.set(n.parent, [n]);
-  }
-  return kids;
-}
 
 export function groupSize(nodes: readonly GroupNode[], id: string): GroupSize {
   const byId = new Map(nodes.map((n) => [n.id, n]));

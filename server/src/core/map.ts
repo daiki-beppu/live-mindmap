@@ -133,8 +133,33 @@ export function children(map: MeetingMap, id: string): MapNode[] {
   return map.order.map((k) => map.nodes[k]!).filter((n) => n.parent === id);
 }
 
+export const pointStatusOf = (kids: readonly Pick<MapNode, "kind">[]): PointStatus => kids.some((c) => c.kind === "決定") ? "決定済み" : "未決";
+
+export function childrenByParent<N extends { readonly id: string; readonly parent: string | null }>(nodes: readonly N[]): Map<string, N[]> {
+  const kids = new Map<string, N[]>();
+  for (const n of nodes) {
+    if (n.parent === null) continue;
+    const siblings = kids.get(n.parent);
+    if (siblings) siblings.push(n);
+    else kids.set(n.parent, [n]);
+  }
+  return kids;
+}
+
+const kidsCache = new WeakMap<MeetingMap, ReadonlyMap<string, readonly MapNode[]>>();
+
+// 作り終えた map は書き換えないので、子の索引を map ごとに覚えておける。
+export function kidsOf(map: MeetingMap): ReadonlyMap<string, readonly MapNode[]> {
+  let kids = kidsCache.get(map);
+  if (kids === undefined) {
+    kids = childrenByParent(map.order.map((id) => map.nodes[id]!));
+    kidsCache.set(map, kids);
+  }
+  return kids;
+}
+
 export function pointStatus(map: MeetingMap, id: string): PointStatus {
-  return children(map, id).some((c) => c.kind === "決定") ? "決定済み" : "未決";
+  return pointStatusOf(children(map, id));
 }
 
 function isDescendant(map: MeetingMap, id: string, ancestor: string): boolean {

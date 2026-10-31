@@ -1,5 +1,5 @@
 import { Schema } from "effect";
-import { children, pointStatus, type MeetingMap } from "./map.ts";
+import { kidsOf, pointStatusOf, type MapNode, type MeetingMap } from "./map.ts";
 import { earliestRemark, type Remark } from "./remark.ts";
 
 export const DISCUSSION_NOTICE_SECONDS = 10 * 60;
@@ -17,10 +17,9 @@ export type DiscussionNoticeState = { readonly points: ReadonlyMap<string, Perio
 
 export const createDiscussionNoticeState = (): DiscussionNoticeState => ({ points: new Map(), lastAt: undefined });
 
-function observePoint(previous: Period | undefined, map: MeetingMap, id: string, remarks: ReadonlyMap<string, Remark>, at: number): Period | undefined {
-  const node = map.nodes[id]!;
-  const currentChildren = new Set(children(map, id).map((child) => child.id));
-  if (node.talkStatus === "済み" || pointStatus(map, id) === "決定済み") return { status: "inactive", children: currentChildren };
+function observePoint(previous: Period | undefined, node: MapNode, kids: readonly MapNode[], remarks: ReadonlyMap<string, Remark>, at: number): Period | undefined {
+  const currentChildren = new Set(kids.map((child) => child.id));
+  if (node.talkStatus === "済み" || pointStatusOf(kids) === "決定済み") return { status: "inactive", children: currentChildren };
   const first = earliestRemark(node.evidence, remarks);
   if (first === undefined) return;
   const active: Extract<Period, { status: "active" }> = previous?.status === "active" ? previous : {
@@ -34,10 +33,12 @@ function observePoint(previous: Period | undefined, map: MeetingMap, id: string,
 }
 
 export function observeDiscussion(state: DiscussionNoticeState, map: MeetingMap, remarks: ReadonlyMap<string, Remark>, at: number): DiscussionNoticeState {
+  const kids = kidsOf(map);
   const points = new Map<string, Period>();
   for (const id of map.order) {
-    if (map.nodes[id]!.kind !== "論点") continue;
-    const period = observePoint(state.points.get(id), map, id, remarks, at);
+    const node = map.nodes[id]!;
+    if (node.kind !== "論点") continue;
+    const period = observePoint(state.points.get(id), node, kids.get(id) ?? [], remarks, at);
     if (period !== undefined) points.set(id, period);
   }
   return { ...state, points };

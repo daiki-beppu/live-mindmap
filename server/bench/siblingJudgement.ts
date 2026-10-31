@@ -1,5 +1,5 @@
 import { Effect, Schema } from "effect";
-import { childrenByParent } from "../src/core/groupSize.ts";
+import { childrenByParent } from "../src/core/map.ts";
 import type { Judge } from "./claudeJudge.ts";
 import { largestGroup } from "./mapShape.ts";
 import { restoredNodes } from "./restoredNodes.ts";
