@@ -67,6 +67,7 @@ Evals measure real model and speech-recognition output by hand. They are not par
 
 - `cli eval`: the diff-update prompt, model, or flow.
 - `mapShape`・`edgeJudge`・`siblingJudge`: 差分更新のプロンプトを変えたら、形と意味の物差しとして回す。
+- `supplementJudge`: 補足のプロンプト・モデル・引き金を変えたら、合成会議だけで補足ごとの5ラベルの件数・割合を比較する。前後それぞれ2回の件数と判定総数を合算する。
 - `sttAccuracy`: the recognition engine, language, or vocabulary hints.
 - `sttLatency`: how finals are handled, or how the helper feeds recognition.
 - `speakerAccuracy`: the speaker-diarization model, the rules that attribute remarks to speakers, or their reference values.

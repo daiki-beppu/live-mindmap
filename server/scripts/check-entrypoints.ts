@@ -12,6 +12,7 @@ const BENCH_TEARDOWNS = {
   "bench/speechEnds.ts": "exitNaturally",
   "bench/edgeJudge.ts": "exitNaturally",
   "bench/siblingJudge.ts": "exitNaturally",
+  "bench/supplementJudge.ts": "exitNaturally",
   "bench/speakerReplay.ts": "exitNaturally",
   "bench/speakerAccuracy.ts": "exitNaturally",
   "bench/timelineReplay.ts": "exitNaturally",
