@@ -42,8 +42,8 @@ const observation = fs.existsSync(observationFile) ? JSON.parse(fs.readFileSync(
 const current = observation === undefined ? undefined : fs.realpathSync(observation.current);
 fs.appendFileSync(path.join(control, 'calls.jsonl'), JSON.stringify({kind: 'browser', args: process.argv.slice(2), cwd: process.cwd(), browsers: process.env.PLAYWRIGHT_BROWSERS_PATH, skipGc: process.env.PLAYWRIGHT_SKIP_BROWSER_GC ?? null, cli: __filename, current, oldExists: observation === undefined ? undefined : fs.existsSync(observation.old)}) + '\\\\n');
 const browserCall = fs.readFileSync(path.join(control, 'calls.jsonl'), 'utf8').trim().split('\\\\n').map(line => JSON.parse(line)).filter(call => call.kind === 'browser').length;
-fs.writeFileSync(path.join(control, 'browser-started'), 'started');
 fs.writeFileSync(path.join(control, 'browser-pid'), String(process.pid));
+fs.writeFileSync(path.join(control, 'browser-started'), 'started');
 (async () => {
   while (fs.existsSync(path.join(control, 'hold-browser'))) await new Promise(resolve => setTimeout(resolve, 10));
   if (fs.existsSync(path.join(control, 'fail-browser'))) { console.error('browser failed'); process.exit(19); }

@@ -34,6 +34,46 @@ const stopInstaller = async (worker: ReturnType<typeof processInstaller>) => {
 
 // プロセスをまたぐ lock の排他、SIGKILL の後に残る lock、プロセスグループの終了、pid の生存で結果が決まる契約。
 describe("管理 Chromium の導入（プロセスをまたぐ排他）", () => {
+  it.live("偽ブラウザのPID書込が止まっている間は開始を通知せず、通知後はPIDを読み取れる", () => Effect.gen(function* () {
+    const dir = yield* temporaryDeps;
+    const npm = yield* fakeNpm(dir);
+    yield* Effect.tryPromise(async () => {
+      const hold = join(dir, "hold-pid-write");
+      const hook = join(dir, "pause-pid-write.cjs");
+      await writeFile(join(dir, "package.json"), JSON.stringify({ dependencies: { "playwright-core": "999.0.0" } }));
+      await writeFile(hold, "hold");
+      await writeFile(hook, `
+const fs = require('node:fs');
+const path = require('node:path');
+const control = ${JSON.stringify(dir)};
+const write = fs.writeFileSync;
+fs.writeFileSync = function (file, ...args) {
+  if (file === path.join(control, 'browser-pid')) {
+    write(path.join(control, 'pid-write-reached'), 'reached');
+    const waiting = new Int32Array(new SharedArrayBuffer(4));
+    while (fs.existsSync(path.join(control, 'hold-pid-write'))) Atomics.wait(waiting, 0, 0, 10);
+  }
+  return write(file, ...args);
+};
+`);
+      const child = spawn(npm.command, ["--require", hook, "-e", `require(${JSON.stringify(npm.args[0])}); require('./node_modules/playwright-core/cli.js');`], {
+        cwd: dir, env: { ...process.env, PLAYWRIGHT_BROWSERS_PATH: join(dir, "browsers") }, stdio: "ignore",
+      });
+      const exit = once(child, "exit");
+      try {
+        await vi.waitFor(async () => expect(await readFile(join(dir, "pid-write-reached"), "utf8")).toBe("reached"), { timeout: 10_000 });
+        await expect(readFile(join(dir, "browser-started"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+        await rm(hold);
+        await vi.waitFor(async () => expect(await readFile(join(dir, "browser-started"), "utf8")).toBe("started"), { timeout: 10_000 });
+        expect(Number(await readFile(join(dir, "browser-pid"), "utf8"))).toBe(child.pid);
+        expect(await exit).toEqual([0, null]);
+      } finally {
+        if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+        await exit;
+      }
+    });
+  }).pipe(Effect.scoped));
+
   it.live.each(["npm", "browser", "leader"])("親だけ死亡した %s の生存中は拒否し、終了後に同じルートで回復する", (stage) => Effect.gen(function* () {
     const dir = yield* temporaryDeps;
     yield* fakeNpm(dir);
