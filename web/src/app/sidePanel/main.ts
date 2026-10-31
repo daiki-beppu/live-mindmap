@@ -10,20 +10,20 @@ import { Message } from "../mapSurface/message.ts";
 function evidenceBody(h: HtmlBuilder<Message>, { node, remarks }: Evidence): ReadonlyArray<Html> {
   const status = node.kind === "論点" ? node.pointStatus : node.kind === "案" ? node.planStatus : undefined;
   return [
-    h.p([h.Class("evidence__meta")], [h.span([h.Class("evidence__kind font-semibold")], [node.kind]), status ? h.span([h.Class("evidence__status ml-[8px] text-gray-500")], [status]) : null]),
-    h.p([h.Class("evidence__text wrap-anywhere")], [node.text]),
+    h.p([h.Class("evidence__meta")], [h.span([h.Class("evidence__kind")], [node.kind]), status ? h.span([h.Class("evidence__status")], [status]) : null]),
+    h.p([h.Class("evidence__text")], [node.text]),
     remarks.length === 0
-      ? h.p([h.Class("evidence__empty text-gray-500")], ["根拠の発言はありません"])
+      ? h.p([h.Class("evidence__empty")], ["根拠の発言はありません"])
       : h.ul(
           [],
           remarks.map((r) =>
             h.keyed("li")(
               r.id,
-              [h.Class("evidence__remark flex flex-wrap gap-x-[8px] gap-y-[4px] py-[6px] [border-bottom:1px_solid_var(--color-gray-100)]")],
+              [h.Class("evidence__remark")],
               [
-                h.span([h.Class("evidence__time text-gray-500 [font-variant-numeric:tabular-nums]")], [`${formatClock(r.start)}〜${formatClock(r.end)}`]),
-                h.span([h.Class("evidence__track font-semibold")], [r.track]),
-                h.span([h.Class("evidence__remark-text basis-full wrap-anywhere")], [r.text]),
+                h.span([h.Class("evidence__time")], [`${formatClock(r.start)}〜${formatClock(r.end)}`]),
+                h.span([h.Class("evidence__track")], [r.track]),
+                h.span([h.Class("evidence__remark-text")], [r.text]),
               ],
             ),
           ),
@@ -35,14 +35,14 @@ function evidencePanel(h: HtmlBuilder<Message>, model: Model): Html {
   const selectedId = model.viewing.selection?.id ?? null;
   const evidence = selectedId === null ? null : evidenceOf(model.snapshot, selectedId, model.viewing.humanFolds);
   return h.section(
-    [h.Class("evidence flex-1 min-h-0 box-border p-[12px] overflow-y-auto "+"[border-bottom:1px_solid_var(--color-gray-200)]"), h.AriaLabelledBy("evidence-heading")],
+    [h.Class("evidence"), h.AriaLabelledBy("evidence-heading")],
     [
       h.h2([h.Id("evidence-heading")], [evidence?.node.origin === "会議の外" ? "この語が話された発言" : "根拠"]),
       selectedId === null ? null : h.button([h.Type("button"), h.Class("side__close"), h.OnClick(Message.ClickedEvidenceClose())], ["閉じる"]),
       ...(selectedId === null
-        ? [h.p([h.Class("evidence__empty text-gray-500")], ["ノードを選ぶと、根拠の発言が出ます"])]
+        ? [h.p([h.Class("evidence__empty")], ["ノードを選ぶと、根拠の発言が出ます"])]
         : evidence === null
-          ? [h.p([h.Class("evidence__empty text-gray-500")], ["選んだノードは今のマップにありません"])]
+          ? [h.p([h.Class("evidence__empty")], ["選んだノードは今のマップにありません"])]
           : evidenceBody(h, evidence)),
     ],
   );
@@ -51,11 +51,11 @@ function evidencePanel(h: HtmlBuilder<Message>, model: Model): Html {
 function todoList(h: HtmlBuilder<Message>, model: Model): Html {
   const todos = model.snapshot.nodes.filter((n) => n.kind === "TODO");
   return h.section(
-    [h.Class("todos flex-1 min-h-0 box-border p-[12px] overflow-y-auto [border-bottom:1px_solid_var(--color-gray-200)]"), h.AriaLabelledBy("todos-heading")],
+    [h.Class("todos"), h.AriaLabelledBy("todos-heading")],
     [
       h.h2([h.Id("todos-heading")], ["TODO"]),
       todos.length === 0
-        ? h.p([h.Class("todos__empty text-gray-500")], ["TODO はまだありません"])
+        ? h.p([h.Class("todos__empty")], ["TODO はまだありません"])
         : h.ul(
             [],
             todos.map((node) => {
@@ -63,15 +63,15 @@ function todoList(h: HtmlBuilder<Message>, model: Model): Html {
               const who = todoAssignee(node, model.speakerNames);
               return h.keyed("li")(
                 node.id,
-                [h.Class("todos__item [border-bottom:1px_solid_var(--color-gray-100)]")],
+                [h.Class("todos__item")],
                 [
                   h.button(
-                    [h.Type("button"), h.Class("todos__button flex flex-wrap gap-x-[8px] gap-y-[4px] w-full px-0 py-[6px] [border:0] bg-transparent text-inherit [font:inherit] text-left cursor-pointer"), h.OnClick(Message.ClickedChangeItem({ nodeId: node.id }))],
+                    [h.Type("button"), h.Class("todos__button"), h.OnClick(Message.ClickedChangeItem({ nodeId: node.id }))],
                     [
-                      at === undefined ? null : h.time([h.Class("todos__time text-gray-500 [font-variant-numeric:tabular-nums]")], [formatClock(at)]),
-                      who === null ? null : h.span([h.Class("todos__assignee font-semibold")], [who]),
-                      node.due === undefined ? null : h.span([h.Class("todos__due text-gray-500")], [node.due]),
-                      h.span([h.Class("todos__text basis-full wrap-anywhere")], [node.text]),
+                      at === undefined ? null : h.time([h.Class("todos__time")], [formatClock(at)]),
+                      who === null ? null : h.span([h.Class("todos__assignee")], [who]),
+                      node.due === undefined ? null : h.span([h.Class("todos__due")], [node.due]),
+                      h.span([h.Class("todos__text")], [node.text]),
                     ],
                   ),
                 ],
@@ -84,7 +84,7 @@ function todoList(h: HtmlBuilder<Message>, model: Model): Html {
 
 function changeList(h: HtmlBuilder<Message>, model: Model): Html {
   return h.aside(
-    [h.Class("changes flex-1 min-h-0 box-border p-[12px] overflow-y-auto"), h.AriaLabelledBy("changes-heading")],
+    [h.Class("changes"), h.AriaLabelledBy("changes-heading")],
     [
       h.h2([h.Id("changes-heading")], ["変わったこと"]),
       h.ul(
@@ -92,15 +92,15 @@ function changeList(h: HtmlBuilder<Message>, model: Model): Html {
         [...model.snapshot.changes].reverse().map((c) =>
           h.keyed("li")(
             `${c.round}-${c.node}-${c.change}`,
-            [h.Class("changes__item [border-bottom:1px_solid_var(--color-gray-100)]")],
+            [h.Class("changes__item")],
             [
               h.button(
-                [h.Type("button"), h.Class("changes__button flex flex-wrap gap-x-[8px] gap-y-[4px] w-full px-0 py-[6px] [border:0] bg-transparent text-inherit [font:inherit] text-left cursor-pointer"), h.OnClick(Message.ClickedChangeItem({ nodeId: c.node }))],
+                [h.Type("button"), h.Class("changes__button"), h.OnClick(Message.ClickedChangeItem({ nodeId: c.node }))],
                 [
-                  h.time([h.Class("changes__time text-gray-500 [font-variant-numeric:tabular-nums]")], [formatClock(c.at)]),
-                  h.span([h.Class("changes__type font-semibold text-gray-700")], [c.change]),
-                  h.span([h.Class("changes__kind text-gray-500")], [c.kind]),
-                  h.span([h.Class("changes__text basis-full wrap-anywhere")], [c.text]),
+                  h.time([h.Class("changes__time")], [formatClock(c.at)]),
+                  h.span([h.Class("changes__type")], [c.change]),
+                  h.span([h.Class("changes__kind")], [c.kind]),
+                  h.span([h.Class("changes__text")], [c.text]),
                 ],
               ),
             ],
@@ -117,7 +117,7 @@ export const view = Submodel.defineView<Model, Message>((model, h): Html | null 
       id: "side",
       isOpen: model.viewing.sideHidden !== true,
       onToggle: (isOpen) => Message.ToggledSide({ isOpen }),
-      toView: ({ panel }) => (model.viewing.sideHidden === true && model.viewing.selection === undefined ? null : h.div([h.Class(`side${model.viewing.selection === undefined ? "" : " side--selected"}${model.viewing.sideHidden === true ? " side--hidden" : ""} flex-none w-[300px] h-full flex flex-col [border-left:1px_solid_var(--color-gray-200)] text-[13px] text-gray-900`), ...panel], [evidencePanel(h, model), todoList(h, model), changeList(h, model)])),
+      toView: ({ panel }) => (model.viewing.sideHidden === true && model.viewing.selection === undefined ? null : h.div([h.Class(["side", model.viewing.selection === undefined ? "" : "side--selected", model.viewing.sideHidden === true ? "side--hidden" : ""].join(" ")), ...panel], [evidencePanel(h, model), todoList(h, model), changeList(h, model)])),
     },
     h,
   ),
