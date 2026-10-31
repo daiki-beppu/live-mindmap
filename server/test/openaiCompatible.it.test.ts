@@ -120,6 +120,16 @@ const listening = Effect.fnUntraced(function* (handler: (req: IncomingMessage, r
 const fixture = join(import.meta.dirname, "fixtures/short.transcript.json");
 
 describe("互換モデルの実行配線（C01・invRefusedIsInert）", () => {
+  it.live("互換経路のplayは補足を作らず、標準エラーに補足なしの通知を1行だけ出す", () => Effect.gen(function* () {
+    const root = yield* temporaryDirectory;
+    const remote = yield* loopback(() => {});
+    writeFileSync(join(root, "config.json"), JSON.stringify({ models: { compatible: { route: "openai-compatible", model: "synthetic", url: remote.url } } }));
+    const result = yield* runEntry(root, 0, ["play", join(import.meta.dirname, "fixtures/short.transcript.json"), "--model", "compatible"]);
+    expect(result).toMatchObject({ code: 0, stderr: "補足なしで始めます\n" });
+    expect(remote.requests.length).toBeGreaterThan(0);
+    expect(remote.requests.every((request) => request.path === "/v1/chat/completions" && "文" in request.body.response_format.json_schema.schema.properties)).toBe(true);
+  }));
+
   it.live("play --modelでループバックHTTPからマップ・根拠・ログ・書き出しまで届く", () => Effect.gen(function* () {
     const root = yield* temporaryDirectory;
     let changed = false;
@@ -321,7 +331,7 @@ describe("互換モデルの実行配線（C01・invRefusedIsInert）", () => {
     writeFileSync(config, JSON.stringify({ models: { compatible: { route: "openai-compatible", model: "synthetic-model", url: `http://127.0.0.1:${port}/v1`, apiKeyEnv: "SYNTHETIC_PROCESS_KEY", maxTokens: 321, extraBody: { seed: 17 } } } }));
     const started = yield* runEntry(root, server.port, ["start", "--app", "us.zoom.xos", "--no-audio", "--no-screen", "--model", "compatible"]);
     expect(started.code).toBe(0);
-    expect(started.stderr).toBe("");
+    expect(started.stderr).toBe("補足なしで始めます\n");
     expect(requests).toHaveLength(1);
     writeFileSync(config, JSON.stringify({ models: { compatible: { route: "openai-compatible", model: "replacement", url: "http://127.0.0.1:1/v1" } } }));
     sayRemark!();

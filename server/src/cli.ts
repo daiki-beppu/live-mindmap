@@ -359,7 +359,8 @@ const recordPlayback = Effect.fn("recordPlayback")(function* (
 ) {
   const sessionsDir = yield* sessionsDirConfig;
   const dir = yield* createSessionDir(sessionsDir).pipe(Effect.mapError((e) => new CommandFailed({ message: describe(e) })));
-  const { session, appendLog } = yield* openLoggedSession({ dir, title: input.title, criteria: input.criteria, send, model });
+  const carriedTerms = input.vocabulary?.flatMap((line) => line.words.filter((word) => word.source === "carried").map((word) => word.surface)) ?? [];
+  const { session, appendLog } = yield* openLoggedSession({ dir, title: input.title, criteria: input.criteria, send, model, carriedTerms });
   const replaying = input.vocabulary === undefined
     ? session
     : yield* withReplayCorrection(session, {

@@ -81,7 +81,9 @@ export class StartupChecks extends Context.Service<StartupChecks, { readonly rep
         const prepared = yield* prepareUpdater(input.plan).pipe(
           Effect.provideContext(Context.add(preparationServices, Scope.Scope, scope)), Effect.mapError(startupPreparationFailure),
         );
-        return { updaterLayer: prepared.layer, warnings: prepared.notice === undefined ? warnings : [...warnings, prepared.notice] };
+        const notices = prepared.notice === undefined ? [] : [prepared.notice];
+        const supplement = (input.entry === "start" || input.entry === "play") && input.route !== "claude" ? ["補足なしで始めます"] : [];
+        return { updaterLayer: prepared.layer, warnings: [...warnings, ...notices, ...supplement] };
       });
     }
     return StartupChecks.of({ report, prepare });

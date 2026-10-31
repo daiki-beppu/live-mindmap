@@ -14,7 +14,7 @@ import { StartupDepsMissing } from "../src/startupDepsMissing.ts";
 import { defaultClaude, type ExecutableModel } from "../src/modelSelection.ts";
 import { readModelTransferToken, MODEL_TRANSFER_HEADER } from "../src/modelTransferToken.ts";
 import { SessionSinks } from "../src/sessionSinks.ts";
-import { unusedApple } from "./fixtures/appleIntelligence.ts";
+import { availableApple, unusedApple } from "./fixtures/appleIntelligence.ts";
 import { runCliEntry } from "./fixtures/cliEntry.ts";
 import { forbiddenManagedDeps } from "./fixtures/forbiddenManagedDeps.ts";
 import { fakeScreenJpeg } from "./fixtures/screenJpeg.ts";
@@ -94,8 +94,8 @@ const resource = Effect.fnUntraced(function* (realPreparation: boolean, missingH
   return { root, sessionsDir, deps, helpers, server, request, status };
 });
 
-const cli = (root: string, port: number, args: string[], model: string | undefined) => runCliEntry(args, Layer.mergeAll(
-  forbiddenManagedDeps, NodeServices.layer, unusedApple, NodeHttpClient.layerUndici, fakeExportServices(), fakeScreenJpeg().layer,
+const cli = (root: string, port: number, args: string[], model: string | undefined, apple = unusedApple) => runCliEntry(args, Layer.mergeAll(
+  forbiddenManagedDeps, NodeServices.layer, apple, NodeHttpClient.layerUndici, fakeExportServices(), fakeScreenJpeg().layer,
   ConfigProvider.layer(ConfigProvider.fromEnvRecord({
     HOME: join(root, "home"), LIVE_MINDMAP_CONFIG: join(root, "config.json"), LIVE_MINDMAP_JUDGE: "off",
     ...(model === undefined ? {} : { LIVE_MINDMAP_MODEL: model }),
@@ -114,6 +114,18 @@ const stopIntake = Effect.fnUntraced(function* (r: Effect.Success<ReturnType<typ
 });
 
 describe("ライブの開始前の確かめ", () => {
+  it.live.each(["chatgpt", "openai-compatible", "apple"] as const)("%s のCLI startは補足なしの通知を標準エラーに1行だけ出す", (route) => Effect.gen(function* () {
+    const r = yield* resource(false);
+    const model = route === "apple" ? "apple" : "selected";
+    yield* Effect.tryPromise(() => writeFile(join(r.root, "config.json"), JSON.stringify({ models: route === "apple" ? {} : {
+      selected: { route, model: "synthetic", ...(route === "openai-compatible" ? { url: "http://127.0.0.1:1/v1" } : {}) },
+    } })));
+    const result = yield* cli(r.root, r.server.port, ["start", "--app", "us.zoom.xos", "--no-audio"], model, route === "apple" ? availableApple : unusedApple);
+    expect(result).toMatchObject({ code: 0, stderr: "補足なしで始めます\n" });
+    expect(yield* r.status).toMatchObject({ status: "running" });
+    expect(r.deps.load).not.toHaveBeenCalled();
+  }).pipe(Effect.scoped));
+
   it.live.each([false, true])("HTTP recorded noMap=%s は speech-ja 不足で開始を拒否する", (noMap) => Effect.gen(function* () {
     const r = yield* resource(false);
     r.helpers.control.speechStatus = "supported";
@@ -276,7 +288,7 @@ describe("ライブの開始前の確かめ", () => {
     const token = yield* readModelTransferToken(r.sessionsDir, r.server.port).pipe(Effect.provide(fakeExportServices()));
     const response = yield* r.request("POST", "/session/start", { ...startBody, model }, { [MODEL_TRANSFER_HEADER]: token! });
     expect(response.status).toBe(200);
-    expect(yield* Effect.tryPromise(() => response.json())).toMatchObject({ warnings: [] });
+    expect(yield* Effect.tryPromise(() => response.json())).toMatchObject({ warnings: ["補足なしで始めます"] });
     expect(yield* r.status).toMatchObject({ status: "running" });
     expect(r.deps.load).not.toHaveBeenCalled();
   }).pipe(Effect.scoped));

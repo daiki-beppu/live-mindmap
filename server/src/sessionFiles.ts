@@ -221,11 +221,12 @@ export type LoggedSessionOptions = {
   title?: string;
   criteria?: readonly string[];
   logShiftMs?: number;
+  carriedTerms?: readonly string[];
   send?: SendFrame;
   onDiff?: Effect.Effect<void>;
 };
 
-const openLogged = Effect.fnUntraced(function* ({ dir, title, criteria, logShiftMs = 0, send, onDiff, model }: Omit<LoggedSessionOptions, "model"> & { model: ExecutableModel | undefined }, updater: DiffUpdater["Service"] | undefined) {
+const openLogged = Effect.fnUntraced(function* ({ dir, title, criteria, logShiftMs = 0, carriedTerms, send, onDiff, model }: Omit<LoggedSessionOptions, "model"> & { model: ExecutableModel | undefined }, updater: DiffUpdater["Service"] | undefined) {
   const fs = yield* FileSystem.FileSystem;
   const writeLogLine = (event: LogEvent | IntakeLogEvent | SelfPauseLogEvent) =>
     Effect.suspend(() =>
@@ -258,10 +259,13 @@ const openLogged = Effect.fnUntraced(function* ({ dir, title, criteria, logShift
             yield* send({ type: "speaker-names", names: Object.entries(json.speakerNames ?? {}).map(([label, name]) => ({ label, name })) });
           }
           if (send && event.type === "discussion-notice") yield* send({ type: "discussion-notice", text: event.text });
-          if (event.type !== "diff") return;
-          if (!event.error && send) yield* Effect.flatMap(session.snapshot, (snapshot) => send({ type: "snapshot", snapshot }));
-          if (onDiff) yield* onDiff;
         }),
+      reflected: (success) => Effect.gen(function* () {
+        const session = yield* Ref.get(current);
+        if (session === undefined) return;
+        if (success && send) yield* Effect.flatMap(session.snapshot, (snapshot) => send({ type: "snapshot", snapshot }));
+        if (onDiff) yield* onDiff;
+      }),
       writeScreen: (file, bytes) =>
         Effect.gen(function* () {
           yield* fs.makeDirectory(join(dir, SCREENS_DIR), { recursive: true });
@@ -271,7 +275,7 @@ const openLogged = Effect.fnUntraced(function* ({ dir, title, criteria, logShift
     }),
   );
   const images = model === undefined || (model.route !== "apple" && model.images !== false);
-  const options = { title: title ?? basename(dir), criteria, images, logShiftMs };
+  const options = { title: title ?? basename(dir), criteria, images, logShiftMs, carriedTerms };
   const session = yield* (updater === undefined ? makeTranscriptSession(options) : makeSession(options).pipe(Effect.provideService(DiffUpdater, updater))).pipe(Effect.provide(log));
   yield* Ref.set(current, session);
   if (send) {

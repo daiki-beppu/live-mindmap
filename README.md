@@ -34,6 +34,7 @@ Read the [full descriptions in Japanese](README.ja.md#できること).
 - **Follow long meetings.** Finished topics fold away and the camera follows the current one.
 - **See what changed.** Press F during a meeting or review to switch between the whole map and the latest changes; Esc returns.
 - **Trace the evidence.** Select a node to see its source remarks, speakers and times.
+- **Read automatic supplements.** Claude adds explanations alongside the next map update. See [できること](README.ja.md#できること).
 - **Track TODOs.** A side panel lists TODOs with owner and due date; select one to see it on the map with its evidence.
 - **Share the live view** (`cli share`). Limit access by email or domain.
 - **Publish the review page** (`cli publish`). Use your own Cloudflare account, with an expiry and a passphrase by default.

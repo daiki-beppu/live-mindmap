@@ -60,4 +60,5 @@ export * from "./viewingShare.ts";
 export * from "./viewerFrame.ts";
 export * from "./vocabularyPool.ts";
 export * from "./words.ts";
+export type { SupplementInput, SupplementResult } from "./supplement.ts";
 export * from "./recordedProgress.ts";

@@ -1,7 +1,7 @@
 import { Context, Effect, Layer } from "effect";
 import { DiffUpdater, type DiffInput, type DiffResult, type DiffUpdateError } from "../../src/core/index.ts";
 
-export type FakeOpenedUpdater = { update: (input: DiffInput) => Effect.Effect<DiffResult, DiffUpdateError>; close: () => void };
+export type FakeOpenedUpdater = { update: (input: DiffInput) => Effect.Effect<DiffResult, DiffUpdateError>; supplement?: DiffUpdater["Service"]["supplement"]; close: () => void };
 
 class AgentSdk extends Context.Service<AgentSdk, {
   readonly query: typeof import("@anthropic-ai/claude-agent-sdk")["query"];
@@ -19,6 +19,7 @@ export const fakeClaudeModule = (open: () => FakeOpenedUpdater) => ({
       );
       return DiffUpdater.of({
         update: (input) => opened.update(input),
+        supplement: opened.supplement ?? (() => Effect.succeed({ op: null, category: null })),
       });
     }),
   ),

@@ -30,7 +30,7 @@ const sdk = vi.hoisted(() => ({ created: [] as QueryRecord[], responses: [] as D
 // 実装前の通常依存経路でも、本物のモデルを呼ばない。
 vi.mock("@anthropic-ai/claude-agent-sdk", () => ({ query: () => { throw new Error("通常依存の SDK を呼びました"); } }));
 const managedSdk = {
-  query: (params: { prompt: AsyncIterable<Message>; options: { model: string } }) => {
+  query: (params: { prompt: AsyncIterable<Message>; options: { model: string; outputFormat: { schema: { properties: Record<string, unknown> } } } }) => {
     const record: QueryRecord = { model: params.options.model, messages: [], closed: 0 };
     sdk.created.push(record);
     const gen = (async function* () {
@@ -38,7 +38,10 @@ const managedSdk = {
         record.messages.push(message);
         sdk.afterMessage();
         yield { type: "assistant", message: { model: record.model, usage: { input_tokens: 1, output_tokens: 1, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 } } };
-        yield { type: "result", subtype: "success", structured_output: sdk.responses.shift() ?? { ops: [{ op: "noop", reason: "合成テスト" }] } };
+        const output = "op" in params.options.outputFormat.schema.properties
+          ? { op: null, category: null }
+          : sdk.responses.shift() ?? { ops: [{ op: "noop", reason: "合成テスト" }] };
+        yield { type: "result", subtype: "success", structured_output: output };
       }
     })();
     return Object.assign(gen, { close: () => { record.closed++; } });
@@ -287,7 +290,8 @@ describe("選択したモデルの実行と記録（Issue #663）", () => {
 
     yield* runCli(["eval", source, "--model", "fast"]).pipe(Effect.provide(deps.layer));
 
-    expect(sdk.created.map((query) => query.model)).toEqual(["claude-haiku-5-5"]);
+    expect(sdk.created.length).toBeGreaterThan(0);
+    expect([...new Set(sdk.created.map((query) => query.model))]).toEqual(["claude-haiku-5-5"]);
     expect(sdk.created[0]!.messages).toHaveLength(3);
     expect(sdk.created[0]!.messages[0]!.message.content).toContain("今日は採用の進め方を決めます");
     const after = Object.fromEntries(readdirSync(source).map((name) => [name, readFileSync(join(source, name), "utf8")]));

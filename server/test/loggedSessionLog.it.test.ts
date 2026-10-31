@@ -6,6 +6,9 @@ import { basename, join } from "node:path";
 import { NodeFileSystem } from "@effect/platform-node";
 import { describe, expect, it } from "@effect/vitest";
 import { Cause, DateTime, Deferred, Effect, Exit, Fiber, FileSystem, Layer } from "effect";
+import { TestClock } from "effect/testing";
+import { DiffUpdater, mapOnlyReviewEvents, restoreState } from "../src/core/index.ts";
+import { buildReviewTimeline, snapshotAt } from "../../web/src/reviewTimeline.ts";
 import type { DiffInput, IntakeLogEvent, Remark, SpeakerNamesFrame } from "../src/core/index.ts";
 import { createSessionDir, EXPORT_FILE, LOG_FILE, openLoggedSession, openLoggedTranscriptSession } from "../src/sessionFiles.ts";
 import { updaterLayer } from "./fixtures/sessionLayers.ts";
@@ -41,6 +44,111 @@ const sessionsDir = Effect.acquireRelease(
   Effect.tryPromise(() => mkdtemp(join(tmpdir(), "live-mindmap-log-"))),
   (path) => Effect.promise(() => rm(path, { recursive: true, force: true })),
 );
+
+it.effect("補足は次のdiffと同じsnapshotで送り、保存したログとexportにも同じ結果を残す", () => Effect.gen(function* () {
+  const dir = yield* sessionsDir;
+  const completed = yield* Deferred.make<void>();
+  const frames: ViewerFrame[] = [];
+  const updater = DiffUpdater.of({
+    update: (input) => Effect.succeed({ ops: input.map.order.length === 1
+      ? [{ op: "add", ref: "topic", parent: "root", kind: "議題", text: "SLA", evidence: ["r1"] }] : [] }),
+    supplement: () => Effect.gen(function* () {
+      yield* Deferred.succeed(completed, undefined);
+      return { op: { op: "add" as const, parent: "n1", text: "サービス水準の合意", evidence: ["r1"], origin: "会議の外" as const }, category: "用語" as const, term: "SLA" };
+    }),
+  });
+  const { session } = yield* openLoggedSession({ model: defaultClaude, dir, send: (frame) => Effect.sync(() => { frames.push(frame); }) })
+    .pipe(Effect.provide(Layer.merge(NodeFileSystem.layer, Layer.succeed(DiffUpdater, updater))));
+  yield* session.push(remark(1));
+  yield* session.idle;
+  yield* Deferred.await(completed);
+  yield* TestClock.adjust(0);
+  expect(frames.filter((frame) => frame.type === "snapshot")).toHaveLength(2);
+  yield* session.push(remark(2));
+  yield* session.idle;
+  const snapshots = frames.flatMap((frame) => frame.type === "snapshot" ? [frame.snapshot] : []);
+  expect(snapshots).toHaveLength(3);
+  expect(snapshots[2]!.nodes).toContainEqual(expect.objectContaining({ kind: "補足", text: "サービス水準の合意", parent: "n1" }));
+  const events: unknown[] = readFileSync(join(dir, LOG_FILE), "utf8").trim().split("\n").map((line) => JSON.parse(line));
+  const restored = yield* restoreState(events);
+  expect(restored.map.order.map((id) => restored.map.nodes[id])).toEqual(snapshots[2]!.nodes);
+  const exported: { root: { children: unknown[] } } = JSON.parse(readFileSync(join(dir, EXPORT_FILE), "utf8"));
+  expect(exported.root.children).toContainEqual(expect.objectContaining({ text: "SLA", children: expect.arrayContaining([expect.objectContaining({ kind: "補足", text: "サービス水準の合意" })]) }));
+}));
+
+for (const scenario of [
+  { name: "後続受信なし", batch: false, later: false, processed: 1, at: 20 },
+  { name: "diff待機中に後続受信", batch: false, later: true, processed: 1, at: 20 },
+  { name: "2発言のうち1件を部分反映", batch: true, later: false, processed: 1, at: 20 },
+  { name: "2発言を全件反映", batch: true, later: false, processed: 2, at: 30 },
+]) {
+  it.effect(`${scenario.name}でも保存した補足は同梱diffの処理時刻で見返しに現れる`, () => Effect.gen(function* () {
+    const dir = yield* sessionsDir;
+    const firstStarted = yield* Deferred.make<void>();
+    const firstRelease = yield* Deferred.make<void>();
+    const secondStarted = yield* Deferred.make<void>();
+    const secondRelease = yield* Deferred.make<void>();
+    const remainingRelease = yield* Deferred.make<void>();
+    const supplementCompleted = yield* Deferred.make<void>();
+    const published = yield* Deferred.make<void>();
+    const frames: ViewerFrame[] = [];
+    let calls = 0;
+    const updater = DiffUpdater.of({
+      update: (input) => Effect.gen(function* () {
+        calls++;
+        if (calls === 1) {
+          yield* Deferred.succeed(firstStarted, undefined);
+          yield* Deferred.await(firstRelease);
+          return { ops: [{ op: "add" as const, ref: "topic", parent: "root", kind: "議題" as const, text: "SLA", evidence: ["r1"] }] };
+        }
+        if (calls === 2) {
+          expect(input.fresh.map((r) => r.id)).toEqual(scenario.batch ? ["r2", "r3"] : ["r2"]);
+          yield* Deferred.succeed(secondStarted, undefined);
+          yield* Deferred.await(secondRelease);
+          return { processedRemarks: scenario.processed, ops: [{ op: "add" as const, ref: "detail", parent: "n1", kind: "要点" as const, text: "運用水準", evidence: ["r2"] }] };
+        }
+        yield* Deferred.await(remainingRelease);
+        return { ops: [] };
+      }),
+      supplement: () => Effect.gen(function* () {
+        yield* Deferred.succeed(supplementCompleted, undefined);
+        return { op: { op: "add" as const, parent: "n1", text: "サービス水準の合意", evidence: ["r1"], origin: "会議の外" as const }, category: "用語" as const, term: "SLA" };
+      }),
+    });
+    const { session } = yield* openLoggedSession({ model: defaultClaude, dir, send: (frame) => Effect.gen(function* () {
+      frames.push(frame);
+      if (frame.type === "snapshot" && frame.snapshot.nodes.some((n) => n.text === "運用水準")) yield* Deferred.succeed(published, undefined);
+    }) }).pipe(Effect.provide(Layer.merge(NodeFileSystem.layer, Layer.succeed(DiffUpdater, updater))));
+    yield* session.push({ ...remark(1), start: 0, end: 10 });
+    yield* Deferred.await(firstStarted);
+    yield* session.push({ ...remark(2), start: 10, end: 20 });
+    if (scenario.batch) yield* session.push({ ...remark(3), start: 20, end: 30 });
+    yield* Deferred.succeed(firstRelease, undefined);
+    yield* Deferred.await(secondStarted);
+    yield* Deferred.await(supplementCompleted);
+    yield* TestClock.adjust(0);
+    expect(frames.filter((f) => f.type === "snapshot")).toHaveLength(2);
+    if (scenario.later) yield* session.push({ ...remark(3), start: 20, end: 30 });
+    expect(frames.filter((f) => f.type === "snapshot")).toHaveLength(2);
+    yield* Deferred.succeed(secondRelease, undefined);
+    yield* Deferred.await(published);
+    const snapshots = frames.flatMap((f) => f.type === "snapshot" ? [f.snapshot] : []);
+    expect(snapshots).toHaveLength(3);
+    expect(snapshots[2]!.nodes.map((n) => n.text)).toEqual(expect.arrayContaining(["運用水準", "サービス水準の合意"]));
+    const events: unknown[] = readFileSync(join(dir, LOG_FILE), "utf8").trim().split("\n").map((line) => JSON.parse(line));
+    expect.soft(events).toContainEqual(expect.objectContaining({ type: "supplement", reflectedAt: scenario.at }));
+    for (const rows of [events, mapOnlyReviewEvents(events)]) {
+      const timeline = buildReviewTimeline(rows);
+      const before = snapshotAt(timeline, scenario.at - 0.001);
+      expect(before.nodes.map((n) => n.text)).not.toContain("運用水準");
+      expect(before.nodes.filter((n) => n.kind === "補足")).toEqual([]);
+      const after = snapshotAt(timeline, scenario.at);
+      expect.soft(after.nodes).toEqual(snapshots[2]!.nodes);
+    }
+    yield* Deferred.succeed(remainingRelease, undefined);
+    yield* session.flush;
+  }).pipe(Effect.scoped));
+}
 
 const remark = (n: number): Remark => ({ id: `r${n}`, track: "相手", start: n, end: n + 1, text: `発言${n}` });
 const note = (n: number): IntakeLogEvent => ({ type: "intake-stopped", code: n, signal: null, stderrTail: [`行${n}`] });

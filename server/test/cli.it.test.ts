@@ -13,7 +13,7 @@ import { CaptureFailed, MapCapture } from "../src/capture.ts";
 import { runCli } from "../src/cli.ts";
 import { DiffUpdater, REVIEW_LOG_ELEMENT_ID } from "../src/core/index.ts";
 import { ReviewBuild, ReviewPageFailed } from "../src/review.ts";
-import type { DiffInput, Op, Snapshot } from "../src/core/index.ts";
+import type { DiffInput, Op, Snapshot, SupplementInput } from "../src/core/index.ts";
 import { fakeListener } from "./fakeListener.ts";
 import { embeddedAudio, fakeAudioMix, FAKE_MIX_BYTES } from "./fixtures/audioMix.ts";
 import { fakeScreenJpeg } from "./fixtures/screenJpeg.ts";
@@ -252,7 +252,9 @@ describe("ChatGPT の CLI（Issue #669）", () => {
     const deps = dependencies(sessions, "0", { LIVE_MINDMAP_CONFIG: config });
     yield* chatgptRun(["login", "chatgpt"], deps, oauth);
     deps.stdout.length = 0;
+    deps.stderr.length = 0;
     yield* chatgptRun(["play", fixture, "--model", "subscription"], deps, oauth);
+    expect(deps.stderr.join("")).toBe("補足なしで始めます\n");
     const dir = dirname(deps.stdout.join("").trim().split("\n")[0]!);
     const exported = JSON.parse(readFileSync(join(dir, "map.json"), "utf8")) as { root: { children: { kind: string; evidence: { id: string }[]; children: { evidence: { id: string }[] }[] }[] } };
     expect(changed).toBe(true);
@@ -1235,6 +1237,31 @@ describe("CLI", () => {
         writeFileSync(vocabularyPoolPath(root), pool);
         yield* runCli(["restore"]).pipe(Effect.provide(deps.layer));
         expect(readFileSync(vocabularyPoolPath(root), "utf8")).toBe(pool);
+      }));
+
+      it.effect("playの補足には元ログのcarriedだけを渡し、画面とその会議のuser語彙を混ぜない", () => Effect.gen(function* () {
+        const root = yield* temporaryDirectory;
+        const source = join(root, "saved");
+        mkdirSync(source);
+        const words = [
+          { surface: "前の会議の語", romaji: null, source: "carried" },
+          { surface: "画面だけ", romaji: null, source: "screen" },
+          { surface: "その場の入力", romaji: null, source: "user" },
+        ];
+        writeFileSync(join(source, "log.jsonl"), [
+          { type: "start", title: "合成会議" },
+          { type: "vocab", words },
+          { type: "remark", remark: { id: "r1", track: "相手", start: 0, end: 1, text: "前の会議の語を確認します" } },
+        ].map((line) => JSON.stringify(line)).join("\n") + "\n");
+        const calls: SupplementInput[] = [];
+        external.openClaudeUpdater.mockReturnValue({
+          update: () => Effect.succeed({ ops: [{ op: "add", ref: "topic", parent: "root", kind: "議題", text: "確認", evidence: ["r1"] }] }),
+          supplement: (input: SupplementInput) => Effect.sync(() => { calls.push(input); return { op: null, category: null }; }),
+          close: () => {},
+        });
+        yield* runCli(["play", source]).pipe(Effect.provide(dependencies(root).layer));
+        expect(calls).toHaveLength(1);
+        expect(calls[0]!.carriedTerms).toEqual(["前の会議の語"]);
       }));
 
       it.effect("play は溜まりを読まず、書き換えない（play で作ったセッションに vocab-pool の行も carried の行も無い）", () => Effect.gen(function* () {

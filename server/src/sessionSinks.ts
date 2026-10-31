@@ -95,12 +95,14 @@ export class SessionSinks extends Context.Service<SessionSinks, {
           // updater を開く。Layer はメモ化されるので、Layer.fresh でセッションごとに別の実体にする（query を使い回さない）。
           const updaterContext = args.noMap === true ? undefined : yield* Layer.build(Layer.fresh(args.updaterLayer)).pipe(Effect.orDie);
           const baseUpdater = updaterContext === undefined ? undefined : Context.get(updaterContext, DiffUpdater);
+          const started = yield* startPoolSession(dirname(dir)).pipe(Effect.provideContext(exportServices));
           let observe: RecordedFeed["observe"] | undefined;
           const loggedOptions = {
             dir,
             title,
             criteria,
             logShiftMs,
+            carriedTerms: started?.words.map((word) => word.surface) ?? [],
             send: (frame: ViewerFrame) => Effect.gen(function* () {
               yield* send(frame);
               if ("type" in frame && frame.type === "diff-update" && observe !== undefined) yield* observe(frame);
@@ -110,7 +112,6 @@ export class SessionSinks extends Context.Service<SessionSinks, {
           const { session, appendLog: appendRecordedLog } = yield* (args.noMap === true
             ? openLoggedTranscriptSession(loggedOptions)
             : openLoggedSession({ ...loggedOptions, model: args.model }).pipe(Effect.provideService(DiffUpdater, baseUpdater!))).pipe(Effect.provideContext(exportServices));
-          const started = yield* startPoolSession(dirname(dir)).pipe(Effect.provideContext(exportServices));
           if (started !== undefined) yield* appendRecordedLog({ type: "vocab-pool", session: started.session });
           const vocabulary = yield* makeSessionVocabulary({
             read: modelReadings(baseUpdater?.katakana, readings),
