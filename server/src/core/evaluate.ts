@@ -4,6 +4,7 @@ import { logMetrics } from "./logMetrics.ts";
 import { KINDS, type Kind } from "./map.ts";
 import { escapeCell } from "./markdownTable.ts";
 import type { LogEvent } from "./session.ts";
+import { supplementMetrics, type EvaluationLogEvent } from "./supplementMetrics.ts";
 
 const normalize = (s: string) => s.normalize("NFKC").replace(/\s/g, "");
 
@@ -64,7 +65,10 @@ type KindList<S extends Schema.Top> = ReturnType<typeof kindList<S>>;
 const kindLists = <F extends { readonly [kind: string]: Schema.Top }>(items: F) =>
   Rec.map(items, kindList) as { readonly [K in keyof F]: KindList<F[K]> };
 
-export const Truth = Schema.Struct(kindLists(Struct.Record(TRUTH_KINDS, TruthItem))).annotate({
+export const Truth = Schema.Struct({
+  ...kindLists(Struct.Record(TRUTH_KINDS, TruthItem)),
+  補足: Schema.optionalKey(kindList(TruthItem, "補足")),
+}).annotate({
   message: TRUTH_OBJECT_RULE,
 });
 export type Truth = typeof Truth["Type"];
@@ -97,7 +101,7 @@ export type ScreenTruth = typeof ScreenTruth["Type"];
 
 export type Metrics = { nodes: number; depth: number; byKind: Record<Kind, number> };
 export type Recall = { hit: number; total: number };
-export type Run = { name: string; title: string; exp: JsonExport; log?: readonly LogEvent[] };
+export type Run = { name: string; title: string; exp: JsonExport; log?: readonly EvaluationLogEvent[] };
 
 const walk = (node: ExportNode, depth: number, visit: (n: ExportNode, depth: number) => void) => {
   for (const c of node.children) {
@@ -111,6 +115,7 @@ export function measure(exp: JsonExport): Metrics {
   let nodes = 0;
   let depth = 0;
   walk(exp.root, 0, (n, d) => {
+    if (n.kind === "補足") return;
     nodes++;
     depth = Math.max(depth, d);
     if (n.kind !== "会議") byKind[n.kind]++;
@@ -148,7 +153,10 @@ const allNodes = (exp: JsonExport): ExportNode[] => {
 };
 
 export function matchTruth<T extends TruthItem>(exp: JsonExport, kind: Kind, items: readonly T[]): Array<{ truth: T; node: ExportNode }> {
-  const nodes = allNodes(exp).filter((n) => n.kind === kind);
+  return matchItems(allNodes(exp).filter((n) => n.kind === kind), items);
+}
+
+function matchItems<T extends TruthItem>(nodes: readonly ExportNode[], items: readonly T[]): Array<{ truth: T; node: ExportNode }> {
   const candidates = items.map((item) => nodes.flatMap((n, i) => matches(n, item) ? [i] : []));
   return maxMatching(candidates, nodes.length).map(({ truth, node }) => ({ truth: items[truth]!, node: nodes[node]! }));
 }
@@ -162,7 +170,7 @@ export function recall(exp: JsonExport, truth: Truth): Record<TruthKind, Recall>
 }
 
 export function wrongKind(exp: JsonExport, truth: Truth): Record<TruthKind, number> {
-  const nodes = allNodes(exp);
+  const nodes = allNodes(exp).filter((node) => node.kind !== "補足");
   const same = recall(exp, truth);
   return Object.fromEntries(
     TRUTH_KINDS.map((kind) => {
@@ -180,7 +188,7 @@ export type ScreenScore = {
 };
 
 export function screenScore(exp: JsonExport, screen: ScreenTruth): ScreenScore {
-  const nodes = allNodes(exp);
+  const nodes = allNodes(exp).filter((node) => node.kind !== "補足");
   const candidatesOf = (items: readonly ScreenTruthItem[]) =>
     items.map((item) => nodes.flatMap((n, i) => (matches(n, item) ? [i] : [])));
   const pointing = candidatesOf(screen.指す発言);
@@ -216,25 +224,47 @@ const formatRecall = ({ hit, total }: Recall) => (total === 0 ? "0/0" : `${hit}/
 
 const USAGE_HEADERS = ["入力トークン", "キャッシュ書き込みトークン", "キャッシュ読み出しトークン", "出力トークン"];
 const TABLE_KINDS = KINDS.filter((kind) => kind !== "補足");
-function formatUsage(log: readonly LogEvent[] | undefined): string[] {
-  const usages = (log ?? []).flatMap((e) => (e.type === "diff" && e.usage ? [e.usage] : []));
+function formatUsage(log: readonly LogEvent[] | undefined, type: "diff" | "supplement"): string[] {
+  const usages = (log ?? []).flatMap((e) => (e.type === type && e.usage ? [e.usage] : []));
   if (usages.length === 0) return USAGE_HEADERS.map(() => "-");
   const sum = (pick: (u: (typeof usages)[number]) => number) => String(usages.reduce((a, u) => a + pick(u), 0));
   return [sum((u) => u.input), sum((u) => u.cacheWrite), sum((u) => u.cacheRead), sum((u) => u.output)];
 }
+
+const SUPPLEMENT_HEADERS = [
+  "補足数", "補足/時", "補足が付いた割合", "補足の同語重複", "補足の区分", "補足の出どころ",
+  "補足の遅れ件数", "補足の遅れ p50 (秒)", "補足の遅れ p90 (秒)", ...USAGE_HEADERS.map((header) => `補足の${header}`),
+];
+const formatCounts = (counts: ReadonlyMap<string, number> | undefined) => counts === undefined ? "-"
+  : counts.size === 0 ? "0" : [...counts].map(([name, count]) => `${name}: ${count}`).join(" / ");
+const formatMeasured = (value: number | undefined) => value === undefined ? "-" : value.toFixed(1);
+const formatSupplements = Effect.fnUntraced(function* (exp: JsonExport, log: readonly EvaluationLogEvent[] | undefined, items: readonly TruthItem[] | undefined) {
+  const nodes = allNodes(exp);
+  const m = yield* supplementMetrics(nodes, log);
+  const recallCells = items === undefined ? [] : [formatRecall({
+    hit: matchItems(nodes.filter((node) => node.kind !== "補足" && node.children.some((child) => child.kind === "補足")), items).length,
+    total: items.length,
+  })];
+  return [
+    m.count, formatMeasured(m.perHour), `${Math.round(m.attachedRatio * 100)}%`, m.duplicates ?? "-",
+    formatCounts(m.categories), formatCounts(m.origins), m.delayCount ?? "-", formatMeasured(m.p50), formatMeasured(m.p90),
+    ...formatUsage(log, "supplement"), ...recallCells,
+  ];
+});
 
 export const formatTable = Effect.fnUntraced(function* (runs: Run[], truth?: Truth, screen?: ScreenTruth) {
   const header = [
     "ラン", "会議", "ノード", "深さ", ...TABLE_KINDS, ...LOG_HEADERS, ...USAGE_HEADERS,
     ...(truth ? [...TRUTH_KINDS.map((k) => RECALL_HEADERS[k]), ...TRUTH_KINDS.map((k) => WRONG_KIND_HEADERS[k])] : []),
     ...(screen ? SCREEN_HEADERS : []),
+    ...SUPPLEMENT_HEADERS, ...(truth?.補足 === undefined ? [] : ["補足の再現率"]),
   ];
   const rows = yield* Effect.forEach(runs, Effect.fnUntraced(function* ({ name, title, exp, log }) {
     const m = measure(exp);
     const recalls = truth ? TRUTH_KINDS.map((k) => formatRecall(recall(exp, truth)[k])) : [];
     const wrongKinds = truth ? TRUTH_KINDS.map((k) => String(wrongKind(exp, truth)[k])) : [];
     const scores = screen ? Object.values(screenScore(exp, screen)).map(formatCount) : [];
-    return [name, title, m.nodes, m.depth, ...TABLE_KINDS.map((k) => m.byKind[k]), ...(yield* formatLogMetrics(log)), ...formatUsage(log), ...recalls, ...wrongKinds, ...scores].map(String);
+    return [name, title, m.nodes, m.depth, ...TABLE_KINDS.map((k) => m.byKind[k]), ...(yield* formatLogMetrics(log)), ...formatUsage(log, "diff"), ...recalls, ...wrongKinds, ...scores, ...(yield* formatSupplements(exp, log, truth?.補足))].map(String);
   }));
   const line = (cells: string[]) => `| ${cells.map(escapeCell).join(" | ")} |`;
   return [line(header), line(header.map(() => "---")), ...rows.map(line)].join("\n") + "\n";

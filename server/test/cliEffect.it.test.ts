@@ -257,7 +257,11 @@ describe("CLI の Effect 境界", () => {
     }));
     const deps = dependencies(dir);
     yield* runCli(["eval", "--truth", truth, dir]).pipe(Effect.provide(deps.layer));
-    expect(deps.stdout.join("").trimEnd().split("\n").at(-1)).toMatch(/\| 0\/0 \| 1\/1 \(100%\) \| 0 \| 0 \|$/);
+    const lines = deps.stdout.join("").trimEnd().split("\n");
+    const headers = lines[0]!.split("|").map((cell) => cell.trim());
+    const row = lines.at(-1)!.split("|").map((cell) => cell.trim());
+    expect(["決定の再現率", "TODO の再現率", "決定の種別違い", "TODO の種別違い"].map((header) => row[headers.indexOf(header)]))
+      .toEqual(["0/0", "1/1 (100%)", "0", "0"]);
     expect(deps.stderr).toEqual([]);
   }));
 

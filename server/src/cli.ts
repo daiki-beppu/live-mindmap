@@ -895,7 +895,15 @@ const evaluatedRun = Effect.fnUntraced(function* (fs: FileSystem.FileSystem, dir
   );
   if (saved === undefined) return { name: basename(dir), title: exp.root.text, exp };
   yield* restoreState(saved.events).pipe(Effect.mapError(saved.brokenAt));
-  const log = yield* saved.select([StartEvent, RemarkEvent, DiffEvent, SupplementEvent]);
+  const schemas = [StartEvent, RemarkEvent, DiffEvent, SupplementEvent];
+  const selected = Schema.is(Schema.Struct({ type: Schema.Literals(schemas.map((schema) => schema.fields.type.literal)) }));
+  const raw = saved.events.filter(selected);
+  const events = yield* saved.select(schemas);
+  const timestamp = Schema.decodeUnknownEffect(Schema.Struct({ at: Schema.optionalKey(Schema.DateTimeUtcFromString) }));
+  const log = yield* Effect.forEach(events, (event, index) => timestamp(raw[index]).pipe(
+    Effect.map(({ at }) => ({ ...event, ...(at === undefined ? {} : { loggedAt: at }) })),
+    Effect.mapError(() => new BrokenLogLine({ path: saved.path, line: saved.lineOf(event), kind: "event", reason: "at は実時刻の文字列で書く" })),
+  ));
   return { name: basename(dir), title: exp.root.text, exp, log };
 });
 

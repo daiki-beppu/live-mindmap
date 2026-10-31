@@ -76,7 +76,7 @@ function countKinds(nodes: readonly SnapshotNode[], byId: Map<string, SnapshotNo
 }
 
 export function mapShape(events: readonly unknown[]): MapShape {
-  const nodes = reviewSnapshot(events).nodes;
+  const nodes = reviewSnapshot(events).nodes.filter((node) => node.kind !== "補足");
   const minutes = lastRemarkEnd(events) / 60;
   const byId = new Map(nodes.map((n) => [n.id, n]));
   const kids = childrenByParent(nodes);

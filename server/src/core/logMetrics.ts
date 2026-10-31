@@ -21,7 +21,8 @@ export function openChildCounts(map: MeetingMap): Map<string, number> {
 }
 
 function openSiblings(map: MeetingMap): number {
-  return Math.max(0, ...openChildCounts(map).values());
+  const nodes = Object.fromEntries(Object.entries(map.nodes).filter(([, node]) => node.kind !== "補足"));
+  return Math.max(0, ...openChildCounts({ ...map, nodes }).values());
 }
 
 type DiffLogEvent = Extract<LogEvent, { readonly type: "diff" }>;

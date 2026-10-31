@@ -1,6 +1,7 @@
 import AVFoundation
 import Foundation
 import Speech
+import Synchronization
 import Testing
 @testable import HelperCore
 
@@ -155,22 +156,50 @@ struct FileReadingAlignmentITTests {
         // 読み始める前の時計は開始位置（0 だと、互いに 10 秒の位置の入力を待ち続けて止まる）
         #expect(abs(await alignment.now() - 10) < 0.001)
         let log = PullLog()
-        let theirsDone = Flag()
-        let mineDone = Flag()
+        let outcomes = Mutex<[String: Result<Void, Error>]>([:])
 
         let theirsTask = Task {
-            try await drain(try await transcribeFile(at: theirs, with: PacedFileTranscriber("相手", log: log), alignment: theirsReader, from: 10))
-            theirsDone.raise()
+            do {
+                try await drain(try await transcribeFile(at: theirs, with: PacedFileTranscriber("相手", log: log), alignment: theirsReader, from: 10))
+                outcomes.withLock { $0["相手"] = .success(()) }
+            } catch {
+                outcomes.withLock { $0["相手"] = .failure(error) }
+            }
         }
         let mineTask = Task {
-            try await drain(try await transcribeFile(at: mine, with: PacedFileTranscriber("自分", log: log), alignment: mineReader, from: 10))
-            mineDone.raise()
+            do {
+                try await drain(try await transcribeFile(at: mine, with: PacedFileTranscriber("自分", log: log), alignment: mineReader, from: 10))
+                outcomes.withLock { $0["自分"] = .success(()) }
+            } catch {
+                outcomes.withLock { $0["自分"] = .failure(error) }
+            }
         }
         defer {
             theirsTask.cancel()
             mineTask.cancel()
         }
-        try await waitUntil("2 本とも読み切る") { theirsDone.isRaised && mineDone.isRaised }
+        do {
+            try await waitUntil("2 本とも読み切る（Taskが失敗した場合は元のエラーを伝える）") {
+                outcomes.withLock { results in
+                    results.count == 2 || results.values.contains {
+                        if case .failure = $0 { return true }
+                        return false
+                    }
+                }
+            }
+            for result in outcomes.withLock({ Array($0.values) }) {
+                try result.get()
+            }
+        } catch {
+            let results = outcomes.withLock { $0 }
+            let pulls = log.values
+            for reader in ["相手", "自分"] {
+                let inputs = pulls.filter { $0.reader == reader }
+                let result = results[reader].map { String(describing: $0) } ?? "未完了"
+                print("FileReadingAlignment診断: reader=\(reader), task=\(result), inputs=\(inputs.count), firstStart=\(String(describing: inputs.first?.start)), lastEnd=\(String(describing: inputs.last?.end))")
+            }
+            throw error
+        }
 
         for reader in ["相手", "自分"] {
             let starts = log.values.filter { $0.reader == reader }.map(\.start)

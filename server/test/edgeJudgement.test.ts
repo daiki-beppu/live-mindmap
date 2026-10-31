@@ -13,6 +13,28 @@ const PROMPT = `会議のマインドマップの親子の辺を判定してく�
 番号の順に、ラベルだけの JSON 配列を返してください（例: ["具体化","なし"]）。説明は書かないでください。`;
 
 describe("辺の意味の判定", () => {
+  it.effect("補足を40辺のバッチ境界から除き、本文に補足とある通常の辺は判定する", () => Effect.gen(function* () {
+    const events = [...edgeEvents(40), {
+      type: "diff", input: { recent: [], fresh: [], nodeCount: 41 }, dropped: [],
+      ops: [{ op: "update", node: "n2", text: "補足の方法", evidence: ["r1"] }],
+    }, {
+      type: "supplement", category: "背景", ms: 1, reflectedAt: 1,
+      op: { op: "add", parent: "n2", text: "判定対象外の説明", evidence: ["r1"], origin: "会議の外" },
+    }];
+    const prompts: string[] = [];
+    const result = yield* judgeEdges(events, (prompt) => Effect.sync(() => {
+      prompts.push(prompt);
+      const lines = prompt.split("\n\n")[1]!.split("\n");
+      expect(lines).toHaveLength(40);
+      expect(lines[0]).toContain("[論点] 補足の方法");
+      expect(lines.every((line) => !line.includes("[補足]"))).toBe(true);
+      return JSON.stringify(lines.map(() => "答え"));
+    }));
+    expect(prompts).toHaveLength(1);
+    expect(result.total).toBe(40);
+    expect(result.edges.map((edge) => edge.id)).toEqual(Array.from({ length: 40 }, (_, i) => `n${i + 2}`));
+  }));
+
   it.effect("C1・C2: ルート直下を除き、引数の判定器へ指定プロンプトを渡し、なしの分母を対象辺にする", () => Effect.gen(function* () {
     const prompts: string[] = [];
     const labels = ["具体化", "答え", "派生", "なし", "なし"];

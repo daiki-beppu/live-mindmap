@@ -54,6 +54,62 @@ function baseMap(): Built {
 const A_LABELS = ["別", "別", "具体化", "重なり", "外れ"];
 
 describe("兄弟の意味の判定: 全体とラベル件数", () => {
+  it.effect("通常の子4件と補足1件では全体判定せず、指定親では通常の子だけを判定する", () => Effect.gen(function* () {
+    const map = build([{ ref: "T", parent: "root", kind: "議題" }, ...kids("T", "案", 4)]);
+    const events = [...map.events, {
+      type: "supplement", category: "背景", ms: 1, reflectedAt: 60,
+      op: { op: "add", parent: map.id("T"), text: "説明", evidence: ["r1"], origin: "会議の外" },
+    }];
+    const fake = fakeJudge({ [parentText("T")]: (_, n) => {
+      expect(n).toBe(4);
+      return withNotSeparate(0, n);
+    } });
+    const result = yield* judgeSiblings(events, fake.judge, { parent: map.id("T") });
+    expect(result.parents).toEqual([]);
+    expect(result.total).toBe(0);
+    expect(result.target?.children.map((child) => child.id)).toEqual([0, 1, 2, 3].map((i) => map.id(`T_${i}`)));
+    expect(fake.total()).toBe(1);
+  }));
+
+  it.effect("本文に補足とある案も5件の兄弟に含め、補足ノードは含めない", () => Effect.gen(function* () {
+    const map = build([{ ref: "T", parent: "root", kind: "議題" }, ...kids("T", "案", 5)]);
+    const events = [...map.events, {
+      type: "diff", input: { recent: [], fresh: [], nodeCount: 6 }, dropped: [],
+      ops: [{ op: "update", node: map.id("T_0"), text: "補足の方法", evidence: ["r1"] }],
+    }, {
+      type: "supplement", category: "背景", ms: 1, reflectedAt: 60,
+      op: { op: "add", parent: map.id("T"), text: "説明", evidence: ["r1"], origin: "会議の外" },
+    }];
+    const fake = fakeJudge({ [parentText("T")]: (_, n) => withNotSeparate(0, n) });
+    const result = yield* judgeSiblings(events, fake.judge);
+    expect(result.total).toBe(5);
+    expect(result.parents[0]?.children.map((child) => child.id)).toEqual([0, 1, 2, 3, 4].map((i) => map.id(`T_${i}`)));
+    expect(fake.prompts[0]?.split("\n\n")[1]?.split("\n").slice(1)).toEqual([
+      "1. [案] 補足の方法", ...[1, 2, 3, 4].map((i) => `${i + 1}. [案] ${childText(`T_${i}`)}`),
+    ]);
+  }));
+
+  it.effect.each([
+    { cases: 8, size: 40, calls: 1 }, { cases: 9, size: 41, calls: 6 },
+  ])("最大まとまり $size : 補足を除いて追加判定の要否と5回の対象を決める", ({ cases, size, calls }) => Effect.gen(function* () {
+    const map = groupMap(cases, 8);
+    const events = [...map.events, {
+      type: "supplement", category: "背景", ms: 1, reflectedAt: 60,
+      op: { op: "add", parent: map.id("P"), text: "説明", evidence: ["r1"], origin: "会議の外" },
+    }];
+    const fake = passFake([]);
+    const result = yield* judgeSiblings(events, fake.judge);
+    expect(result.maxGroup).toMatchObject({ parent: map.id("P"), size });
+    expect(fake.calls("P")).toBe(calls);
+    if (size === 40) expect(result.maxGroup?.check).toBeNull();
+    else {
+      expect(result.maxGroup?.check?.runs).toHaveLength(5);
+      for (const run of result.maxGroup!.check!.runs) {
+        expect(run.children.map((child) => child.id)).toEqual(Array.from({ length: cases }, (_, i) => map.id(`P_${i}`)));
+      }
+    }
+  }));
+
   it.effect("C1: 子が 5 以上の非ルート親だけを判定し、指定プロンプトで渡し、件数と割合を出す", () => Effect.gen(function* () {
     const map = baseMap();
     const fake = fakeJudge({ [parentText("A")]: () => JSON.stringify(A_LABELS) });
@@ -87,6 +143,17 @@ describe("兄弟の意味の判定: 全体とラベル件数", () => {
 });
 
 describe("兄弟の意味の判定: 指定した親の直下", () => {
+  it.effect("補足IDを親に指定すると判定器を呼ばず失敗する", () => Effect.gen(function* () {
+    const map = build([{ ref: "T", parent: "root", kind: "議題" }]);
+    const fake = fakeJudge({});
+    const result = yield* Effect.result(judgeSiblings([...map.events, {
+      type: "supplement", category: "背景", ms: 1, reflectedAt: 60,
+      op: { op: "add", parent: "n1", text: "説明", evidence: ["r1"], origin: "会議の外" },
+    }], fake.judge, { parent: "n2" }));
+    expect(Result.isFailure(result)).toBe(true);
+    expect(fake.total()).toBe(0);
+  }));
+
   it.effect("C2: 子が 5 未満の親も判定し、全体の件数・割合へは加えない", () => Effect.gen(function* () {
     const map = baseMap();
     const fake = fakeJudge({
