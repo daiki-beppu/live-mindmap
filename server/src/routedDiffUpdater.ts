@@ -54,12 +54,13 @@ export const routedUpdater = (parts: Parts) => Effect.sync(() => {
     const judge = outcome.ok
       ? { model: destination, ms, ...(likelihood !== undefined ? { confidence: likelihood } : {}) }
       : { model: destination, ms, failure: outcome.reason };
-    const result = yield* (destination === HAIKU ? parts.haiku : parts.sonnet).update({
+    const selected = destination === HAIKU ? parts.haiku : parts.sonnet;
+    const result = yield* selected.update({
       ...rest,
       ...(screens.length ? { screens } : {}),
       ...(handed ? { previousResponse: handed } : {}),
     }).pipe(Effect.mapError((error) => ({ _tag: error._tag, message: error.message, judge })));
-    return { ...result, judge };
+    return { ...result, judge, ...(selected.supplement === undefined ? {} : { supplement: selected.supplement }) };
   });
 
   return DiffUpdater.of({ update, ...(parts.sonnet.katakana ? { katakana: parts.sonnet.katakana } : {}) });

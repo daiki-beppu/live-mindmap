@@ -1,0 +1,16 @@
+{
+  "model": "claude-sonnet-5-5",
+  "route": "claude",
+  "judge": "off",
+  "remarks": 4,
+  "diffRows": 4,
+  "supplementRows": 1,
+  "supplementAdds": 1,
+  "supplementNoops": 0,
+  "nodeVersion": "v26.13.0",
+  "pnpmVersion": "12.11.2",
+  "files": {
+    "input.transcript.json": "d94fa413962ac9cd273393ebcfb431248d96b2769aa11996825f8bf753b8021f",
+    "map.png": "278b4e839767995f48cdad3ed2ffae02d37ae579716f3135f67741e28b0490fe"
+  }
+}

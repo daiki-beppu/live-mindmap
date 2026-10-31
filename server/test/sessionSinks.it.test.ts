@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "@effect/vitest";
 import { Cause, Console, Deferred, Effect, Exit, Fiber, Layer, Scope } from "effect";
 import { TestClock } from "effect/testing";
-import { DiffUpdatePaused, DiffUpdater, REVIEW_LOG_ELEMENT_ID, type DiffInput, type Snapshot, type CaptionsFrame } from "../src/core/index.ts";
+import { DiffUpdatePaused, DiffUpdater, REVIEW_LOG_ELEMENT_ID, type DiffInput, type Snapshot, type CaptionsFrame, type SupplementInput } from "../src/core/index.ts";
 import { SessionSinks } from "../src/sessionSinks.ts";
 import { vocabularyPoolPath } from "../src/vocabularyPool.ts";
 import { SPEAKING_INTERVAL_MS } from "../src/speakingRelay.ts";
@@ -903,6 +903,27 @@ describe("SessionSinks（実物 Layer）: 過去のセッションの語彙を�
       yield* sink.final({ track: "相手", start: 2, end: 4, text: correct.text, words: correct.words });
     });
   const layerWith = (readings = fakeReadings(READINGS)) => ({ readings, layer: sinksLayer({ updaterLayer: makeRecordingUpdater().updaterLayer, readings }) });
+
+  it.effect("補足には溜まりのspokenとuserだけを渡し、この会議の入力語彙と画面語彙を混ぜない", () => {
+    const calls: SupplementInput[] = [];
+    const updaterLayer = Layer.succeed(DiffUpdater, DiffUpdater.of({
+      update: (input) => Effect.succeed({ ops: [{ op: "add", ref: "topic", parent: "root", kind: "議題", text: "港南店", evidence: [input.fresh[0]!.id] }] }),
+      supplement: (input) => Effect.sync(() => { calls.push(input); return { op: null, category: null }; }),
+    }));
+    return Effect.gen(function* () {
+      const sessionsDir = yield* withTmpSessionsDir();
+      writeFileSync(vocabularyPoolPath(sessionsDir), JSON.stringify({ sessions: 1, words: [
+        { surface: "港南店", romaji: "kounanten", source: "spoken", lastSpoken: 1 },
+        { surface: "Zendesk", romaji: "zendesuku", source: "user", lastSpoken: 0 },
+      ] }));
+      yield* runSession(sessionsDir, ({ sink }) => Effect.gen(function* () {
+        yield* showScreen(sink, 1, ["画面だけ"]);
+        yield* sink.final({ track: "相手", start: 2, end: 4, text: correct.text, words: correct.words });
+      }), { vocab: ["今回入力"] });
+      expect(calls).toHaveLength(1);
+      expect(calls[0]!.carriedTerms).toEqual(["港南店", "Zendesk"]);
+    }).pipe(Effect.provide(sinksLayer({ updaterLayer, readings: fakeReadings(READINGS) })));
+  });
 
   it.effect("溜まりのファイルを次のセッションへ引き継ぎ番号とcarriedの行を記録する", () => {
     const { layer } = layerWith();

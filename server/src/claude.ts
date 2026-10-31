@@ -6,6 +6,8 @@ import { buildPrompt, CRITERIA_OUTPUT_SCHEMA, OUTPUT_SCHEMA, DIFF_SYSTEM as SYST
 import { fmtTime } from "./remarkLine.ts";
 import { KATAKANA_JSON_SCHEMA, KATAKANA_SYSTEM, KatakanaOutput, katakanaPrompt, toAnswers } from "./katakanaPrompt.ts";
 import { ManagedDeps } from "./managedDeps.ts";
+import { SupplementOutput, type SupplementInput } from "./core/supplement.ts";
+import { SUPPLEMENT_JSON_SCHEMA, SUPPLEMENT_SYSTEM, supplementPrompt } from "./supplementPrompt.ts";
 
 export { buildPrompt, NOOP_SCOPE } from "./claudePrompt.ts";
 
@@ -217,6 +219,19 @@ export const layerClaude = (model: string) => Layer.effect(
       }));
     });
 
-    return DiffUpdater.of({ update, katakana });
+    const supplement = Effect.fn("DiffUpdater.supplement")(function* (input: SupplementInput) {
+      if (yield* Ref.get(closed)) return yield* Effect.die(new Error("差分更新の updater は閉じています"));
+      return yield* Effect.scoped(Effect.gen(function* () {
+        const o = yield* acquireQuery(SUPPLEMENT_SYSTEM, SUPPLEMENT_JSON_SCHEMA);
+        yield* Queue.offer(o.input, { type: "user", message: { role: "user", content: supplementPrompt(input) }, parent_tool_use_id: null });
+        const { structured, usage } = yield* awaitStructured(o, "補足の生成");
+        const decoded = yield* Schema.decodeUnknownEffect(SupplementOutput)(structured).pipe(
+          Effect.mapError((e) => new DiffOutputInvalid({ message: `補足の出力が不正: ${e.message}`, issue: e.issue })),
+        );
+        return { ...decoded, ...(usage === undefined ? {} : { usage }) };
+      }));
+    });
+
+    return DiffUpdater.of({ update, katakana, supplement });
   }),
 );

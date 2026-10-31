@@ -60,6 +60,23 @@ const setup = (script: readonly Scripted[], options: { sonnetFails?: Set<number>
 const input = (fresh: readonly Remark[], extra: Partial<DiffInput> = {}): DiffInput => ({ map: emptyMap("定例"), recent: [], fresh: [...fresh], ...extra });
 
 describe("振り分け: 行き先（しきい値 0.3）", () => {
+  it.effect("補足を遅れて呼んでも引き金のdiffが使ったモデルを保持し、判定を呼び直さない", () => Effect.gen(function* () {
+    const judge = fakeAsk([0.1, 0.9]);
+    const called: string[] = [];
+    const service = (name: string) => DiffUpdater.of({ update: () => Effect.succeed({ ops: [] }), supplement: () => Effect.sync(() => {
+      called.push(name);
+      return { op: null, category: null };
+    }) });
+    const router = yield* routedUpdater({ ask: judge.ask, sonnet: service(SONNET), haiku: service(HAIKU) });
+    const first = yield* router.update(input([remark(1)]));
+    const second = yield* router.update(input([remark(2)]));
+    const context = { targets: [], carriedTerms: [], explainedTerms: [] };
+    yield* first.supplement!(context);
+    yield* second.supplement!(context);
+    expect(called).toEqual([HAIKU, SONNET]);
+    expect(judge.calls).toHaveLength(2);
+  }));
+
   it.effect("行き先を往復しても同じセッションの判断軸を両方の差分更新へ渡す", () => Effect.gen(function* () {
     const { router, haiku, sonnet } = yield* setup([0.9, 0.1, 0.9, 0.1]);
     const criteria = ["採用のしやすさ", "運用負荷"];

@@ -159,22 +159,32 @@ describe("開始前の確かめ", () => {
     expect(result).toMatchObject({ _tag: "Failure", failure: { _tag: "StartupDepsMissing", items: [expect.objectContaining({ name: "claude", state, need: "required" })] } });
   }).pipe(Effect.provide(checksLayer({ claude: state }))));
 
-  it.effect.each(nonClaudeRows)("$route は claude の欠けを報告に残すが警告しない", ({ route, plan }) => Effect.gen(function* () {
+  it.effect.each(nonClaudeRows)("$route の start は claude の欠けを報告に残し、補足なしの通知を一度だけ返す", ({ route, plan }) => Effect.gen(function* () {
     const checks = yield* StartupChecks;
     const input = { entry: "start", route, screen: false } as const;
     expect(yield* checks.report(input)).toMatchObject({ ready: true, items: expect.arrayContaining([
       { name: "claude", need: "optional", state: "missing", size: 224_000_000, install: "pnpm cli install claude" },
     ]) });
     const result = yield* checks.prepare({ ...input, plan });
-    expect(result.warnings).toEqual(["警告: chromium（Chromium、約 211MB） がありません。入れるには: pnpm cli install chromium"]);
+    expect(result.warnings).toEqual([
+      "警告: chromium（Chromium、約 211MB） がありません。入れるには: pnpm cli install chromium",
+      "補足なしで始めます",
+    ]);
     expect(Layer.isLayer(result.updaterLayer)).toBe(true);
   }).pipe(Effect.provide(checksLayer({ claude: "missing", chromium: "missing" }))));
 
-  it.effect.each(nonClaudeRows)("$route は claude の版違いも警告しない", ({ route, plan }) => Effect.gen(function* () {
+  it.effect.each(nonClaudeRows)("$route の start は claude の版違いを警告せず、補足なしの通知を一度だけ返す", ({ route, plan }) => Effect.gen(function* () {
     const result = yield* (yield* StartupChecks).prepare({ entry: "start", route, screen: false, plan });
-    expect(result.warnings).toEqual([]);
+    expect(result.warnings).toEqual(["補足なしで始めます"]);
     expect(Layer.isLayer(result.updaterLayer)).toBe(true);
   }).pipe(Effect.provide(checksLayer({ claude: "outdated" }))));
+
+  it.effect.each(nonClaudeRows)("$route の play は補足なしの通知と既存の判定通知を一度ずつ返す", ({ route, plan }) => Effect.gen(function* () {
+    const result = yield* (yield* StartupChecks).prepare({ entry: "play", route, plan });
+    expect(result.warnings).toHaveLength(2);
+    expect(result.warnings.filter((warning) => warning === "補足なしで始めます")).toEqual(["補足なしで始めます"]);
+    expect(result.warnings.filter((warning) => warning === "判定の鍵がありません")).toEqual(["判定の鍵がありません"]);
+  }).pipe(Effect.provide(checksLayer({}, readyHelper, Effect.succeed({ layer: updaterLayer, notice: "判定の鍵がありません" })))));
 
   it.effect.each(["start", "resume"] as const)("%s は共有画面なしなら画面収録の item も警告も返さない", (entry) => Effect.gen(function* () {
     const checks = yield* StartupChecks;

@@ -19,7 +19,7 @@ import { emptyMap, type DiffInput, type MeetingMap, type Op, type ScreenChange }
 //   readings: success で、英字の語のカタカナの読み（Issue #642）の structured_output を返す
 //   limit: rate_limit_event（rejected、resetsAt あり）の後に失敗の result / limitNoReset: 同じで resetsAt が無い
 //   warned: allowed_warning と allowed の rate_limit_event を流してから success の result
-type Behavior = "limit" | "limitNoReset" | "warned" | "readings" | "ok" | "fail" | "throw" | "end" | "missing" | "invalid" | "extra" | "names" | "badBasis" | "hang" | "retried" | "nullcache";
+type Behavior = "supplement" | "supplementMany" | "supplementNone" | "limit" | "limitNoReset" | "warned" | "readings" | "ok" | "fail" | "throw" | "end" | "missing" | "invalid" | "extra" | "names" | "badBasis" | "hang" | "retried" | "nullcache";
 type Message = { type: string; message?: { role?: string; content?: unknown }; parent_tool_use_id?: unknown };
 
 // assistant メッセージ 1 つ分（内容のブロックごとに 1 つ）。SDK では message が BetaMessage で、id・usage・model を持つ
@@ -75,6 +75,10 @@ function responsesFor(behavior: Behavior, queryIndex: number, messageIndex: numb
   }
   const first = assistant("msg_a", 3);
   const second = assistant("msg_a", 5);
+  const supplement = { op: { op: "add", parent: "n1", text: "サービス水準の合意", evidence: ["r1"], origin: "会議の外" }, category: "用語", term: "SLA" };
+  if (behavior === "supplement") return [first, { ...result, subtype: "success", structured_output: supplement }];
+  if (behavior === "supplementMany") return [first, { ...result, subtype: "success", structured_output: { ...supplement, op: [supplement.op, supplement.op] } }];
+  if (behavior === "supplementNone") return [first, { ...result, subtype: "success", structured_output: { op: null, category: null } }];
   if (behavior === "fail") return [first, { ...result, subtype: "error_during_execution" }];
   if (behavior === "readings") return [first, { ...result, subtype: "success", structured_output: { readings: [{ word: "Notion", katakana: "ノーション" }, { word: "Figma", katakana: "フィグマ" }] } }];
   if (behavior === "missing") return [first, { ...result, subtype: "success" }];
@@ -2518,4 +2522,43 @@ describe("Claude の利用上限（rate_limit_event）", () => {
 
       expect(output.ops).toEqual(noop("warned"));
     }));
+});
+
+describe("Claude の独立した補足問い合わせ", () => {
+  const context = {
+    targets: [{ node: { id: "n1", parent: "root", kind: "議題" as const, text: "SLA", evidence: ["r1"] }, ancestors: [], siblings: [], supplement: undefined,
+      evidence: [{ id: "r1", track: "相手" as const, start: 0, end: 1, text: "SLAを決めます", speakerName: "田中" }] }],
+    carriedTerms: ["社内の語"], explainedTerms: ["KPI"],
+  };
+  it.effect.each(["claude-sonnet-5-5", "claude-haiku-5-5"])("%sの補足を別queryで一度だけ呼び、文脈とusageを返して解放する", (model) => Effect.gen(function* () {
+    const h = yield* setup((q) => q === 1 ? "supplement" : "ok", model);
+    yield* h.updater.update(input(1));
+    const result = yield* h.updater.supplement!(context);
+    yield* h.updater.update(input(2));
+    expect(h.created).toHaveLength(2);
+    expect(h.created.map((q) => q.options.model)).toEqual([model, model]);
+    expect(h.created[0]!.messages).toHaveLength(2);
+    expect(h.created[0]!.closeCalls).toBe(0);
+    expect(h.created[1]!.messages).toHaveLength(1);
+    expect(h.created[1]!.closeCalls).toBe(1);
+    expect(JSON.parse(texts(h.created[1]!)[0]!)).toEqual(JSON.parse(JSON.stringify(context)));
+    expect(result).toMatchObject({ op: { op: "add", parent: "n1", evidence: ["r1"], origin: "会議の外" }, category: "用語", term: "SLA", usage: { output: 520 } });
+  }));
+
+  it.effect.each(["supplementMany", "invalid", "fail"] as const)("%sの補足を拒否してqueryを解放し、差分更新は同じqueryで続く", (behavior) => Effect.gen(function* () {
+    const h = yield* setup((q) => q === 1 ? behavior : "ok");
+    yield* h.updater.update(input(1));
+    const failed = yield* Effect.exit(h.updater.supplement!(context));
+    expect(Exit.isFailure(failed)).toBe(true);
+    yield* h.updater.update(input(2));
+    expect(h.created).toHaveLength(2);
+    expect(h.created[0]!.messages).toHaveLength(2);
+    expect(h.created[1]!.closeCalls).toBe(1);
+  }));
+
+  it.effect("不要な回の0件出力も受理する", () => Effect.gen(function* () {
+    const h = yield* setup(() => "supplementNone");
+    expect(yield* h.updater.supplement!(context)).toMatchObject({ op: null, category: null });
+    expect(h.created).toHaveLength(1);
+  }));
 });

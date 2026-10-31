@@ -105,12 +105,14 @@ const verifyMap = (dir: string) => {
 describe("apple を使う開始・再生の配線", () => {
   it.live("play --model apple は内蔵の推論先で複数回更新し、Apple の開始ログとマップを書き出して子を閉じる", () => Effect.gen(function* () {
     const root = yield* temporaryDirectory;
+    const stderr: string[] = [];
     const process = yield* appleProcess();
     const stdout: string[] = [];
     listener.modes.length = 0;
     const layer = Layer.mergeAll(readyManagedDeps, NodeServices.layer, NodeHttpClient.layerUndici, process.layer, fakeExportServices(), fakeScreenJpeg().layer,
-      environment(root, 0), Layer.succeed(Console.Console, { ...console, log: (...args: unknown[]) => { stdout.push(args.map(String).join(" ")); } }));
+      environment(root, 0), Layer.succeed(Console.Console, { ...console, log: (...args: unknown[]) => { stdout.push(args.map(String).join(" ")); }, error: (...args: unknown[]) => { stderr.push(args.map(String).join(" ") + "\n"); } }));
     yield* runCli(["play", join(import.meta.dirname, "fixtures/short.transcript.json"), "--model", "apple"]).pipe(Effect.provide(layer));
+    expect(stderr.flatMap((line) => line.trimEnd().split("\n")).filter((line) => line.includes("補足"))).toEqual(["補足なしで始めます"]);
     verifyMap(dirname(stdout.join("\n").trim().split("\n")[0]!));
     expect(process.state).toMatchObject({ opened: 1, closed: 1 });
     expect(process.requests.length).toBeGreaterThan(1);
