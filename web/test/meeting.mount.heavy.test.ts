@@ -184,6 +184,8 @@ describe("会議中（Foldkit 版）の Mount", () => {
             bodyEncoding: "utf-8", contentType: "application/json",
           });
           await page.locator('[data-node-id="n1"] .map-node').click();
+          // Enter は選んだ議題を開く。選びが画面に出る前に押すと、Enter はボタンの既定の動きに回って開かない
+          await expect.poll(() => page.locator('[data-node-id="n1"] .map-node__button').getAttribute("aria-pressed")).toBe("true");
           await page.keyboard.press("Enter");
           await expect.poll(() => page.locator('[data-node-id="n2"] .map-node__criteria-value').innerText()).toBe(links.join("\n"));
           await page.locator('[data-node-id="n1"]').getByRole("button", { name: "畳む", exact: true }).click();
