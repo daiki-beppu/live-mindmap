@@ -32,7 +32,7 @@ import {
 } from "../src/camera.ts";
 import { NODE_WIDTH } from "../src/layout.ts";
 
-const node = (id: string, parent: string | null, kind: SnapshotNode["kind"] = "議題"): SnapshotNode => ({
+const node = (id: string, parent: string | null, kind: Exclude<SnapshotNode["kind"], "補足"> = "議題"): Exclude<SnapshotNode, { kind: "補足" }> => ({
   id,
   parent,
   kind,

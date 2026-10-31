@@ -39,7 +39,7 @@ import { type ViewKey } from "../src/viewing.ts";
 
 type MapSurfaceModel = typeof Model.Type;
 
-const node = (id: string, parent: string | null, kind: SnapshotNode["kind"] = "議題", extra: Partial<SnapshotNode> = {}): SnapshotNode => ({ id, parent, kind, text: id, evidence: parent ? ["r1"] : [], ...extra });
+const node = (id: string, parent: string | null, kind: Exclude<SnapshotNode["kind"], "補足"> = "議題", extra: Partial<Exclude<SnapshotNode, { kind: "補足" }>> = {}): Exclude<SnapshotNode, { kind: "補足" }> => ({ id, parent, kind, text: id, evidence: parent ? ["r1"] : [], ...extra });
 const snap = (nodes: SnapshotNode[], extra: Partial<Snapshot> = {}): Snapshot => ({ nodes, round: 1, changes: [], remarks: [], ...extra });
 
 // 会議 root > 議題 A（論点 A1・A2）・議題 B（論点 B1・B2・B3）。済みも古いものも無いので、畳まれるノードは無い。今の議題は A
@@ -135,6 +135,30 @@ const expectDifferent = (a: Viewport, b: Viewport) => expect(Math.abs(a.x - b.x)
 const manualAt = (topic: string | undefined) => ({ mode: "manual", topic });
 const cameraViewOf = (m: MapSurfaceModel) => m.camera.mode === "auto" ? { mode: "auto" } : { mode: m.camera.mode, topic: m.camera.topic };
 const withViewport = (m: MapSurfaceModel, viewport: Viewport): MapSurfaceModel => ({ ...m, camera: { ...m.camera, viewport } });
+
+describe("補足とカメラ", () => {
+  it("変更一覧の最後が補足でも、通常ノードを中心に選ぶ", () => {
+    const supplement = { id: "s", parent: "B1", kind: "補足", text: "背景", evidence: ["r1"], origin: "会議の中" } satisfies SnapshotNode;
+    const snapshot = snap([...baseNodes(), supplement], {
+      round: 2, currentTopic: "B",
+      changes: [change("B1", 2), { change: "追加", node: "s", kind: "補足", text: "背景", round: 2, at: 2 }],
+    });
+    expect(changedFocus(snapshot, (id) => id)?.center).toBe("B1");
+    expect(cameraFocus({ ...snapshot, lastChanged: "s" })?.center).toBe("B1");
+  });
+
+  it("通常更新の後に補足だけ届いて高さを測り直しても、同じ画面の中心を補足へ移さない", () => {
+    const normal = withChanges(["B1"], 2, { currentTopic: "B" });
+    const supplement = { id: "s", parent: "B1", kind: "補足", text: "高さのある補足", evidence: ["r1"], origin: "会議の外" } satisfies SnapshotNode;
+    const supplemented: Snapshot = { ...normal, nodes: [...normal.nodes, supplement] };
+    let viewport: Viewport;
+    story(update, given(settle(tree())),
+      message(changed(normal)), message(tick(1000)),
+      model((m) => { viewport = m.camera.viewport; }),
+      message(changed(supplemented)), message(measure(SIZE, { ...HEIGHTS, s: 2000 })), message(tick(1000)),
+      model((m) => expectViewport(m.camera.viewport, viewport)));
+  });
+});
 
 describe("入力と前の見方から決まるカメラ", () => {
   type Mode = MapSurfaceModel["camera"]["mode"];

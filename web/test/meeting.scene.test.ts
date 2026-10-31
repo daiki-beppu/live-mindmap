@@ -1044,7 +1044,7 @@ describe("会議中の Scene: 題材の前提", () => {
 
 // Issue #1026: 話者の名前。名前の表は /ws の speaker-names の frame でだけ変わる。同じ画面（1 つの Model）の上で 前 → frame → 後 を続けて見る。
 describe("会議中の Scene: 話者の名前（Issue #1026）", () => {
-  const node = (id: string, parent: string | null, kind: Snapshot["nodes"][number]["kind"], text: string, extra: Partial<Snapshot["nodes"][number]> = {}): Snapshot["nodes"][number] => ({ id, parent, kind, text, evidence: [], ...extra });
+  const node = (id: string, parent: string | null, kind: Exclude<Snapshot["nodes"][number]["kind"], "補足">, text: string, extra: Partial<Exclude<Snapshot["nodes"][number], { kind: "補足" }>> = {}): Snapshot["nodes"][number] => ({ id, parent, kind, text, evidence: [], ...extra });
   // 案 A1 は相手 A が出し、TODO B は相手 B が担当（期限 10/15）。高さの分かるノード id（HEIGHTS）だけを使う
   const PEOPLE: Snapshot = {
     nodes: [node("root", null, "会議", "定例"), node("A", "root", "議題", "採用"), node("A1", "A", "案", "週 1", { proposer: "相手 A" }), node("B", "root", "TODO", "見積もり", { assigneeSpeaker: "相手 B", due: "10/15" })],

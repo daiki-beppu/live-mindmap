@@ -1,5 +1,5 @@
 import { HashMap, Option } from "effect";
-import { expect as expectScene, findAll, given, Mount, scene, selector, tap, textContent } from "foldkit/scene";
+import { click, expect as expectScene, findAll, given, Mount, scene, selector, Subscription, tap, textContent } from "foldkit/scene";
 import { describe, expect, it } from "vitest";
 import { Message as MapSurfaceMessage } from "../src/app/mapSurface/message.ts";
 import { SlideCaptions } from "../src/app/sessionLayout/mount.ts";
@@ -41,6 +41,46 @@ const renderedIds = (html: { children?: unknown }): string[] => {
 };
 
 describe("見返しの Scene: 時刻のマップが表示面に出る", () => {
+  const supplementContext = () => makeContext([
+    { type: "start", title: "定例" },
+    remark("r1", 10, "サービス水準を決めます"),
+    remark("r2", 10, "月間の稼働率を使います"),
+    diff(["r1", "r2"], [add("t1", "root", "議題", "サービス水準", ["r1", "r2"])]),
+    { type: "supplement", op: { op: "add", parent: "n1", text: "月間稼働率による目標", evidence: ["r2"], origin: "会議の中" }, category: "用語", term: "SLO", ms: 1, reflectedAt: 15 },
+    { type: "supplement", op: { op: "delete", node: "n2" }, category: "用語", ms: 1, reflectedAt: 20 },
+  ]);
+
+  it.each([
+    { from: 19, to: 20, button: "反映 1 つ進む", operation: "削除時刻へ進む" },
+    { from: 15, to: 10, button: "反映 1 つ戻る", operation: "追加前へ戻る" },
+  ])("補足を選んで同じ round の $operation と、親の選択表示と根拠へ切り替わる", ({ from, to, button }) => {
+    const context = supplementContext();
+    const start = init(context);
+    const model = { ...start, playback: { ...start.playback, time: from } };
+    const before = snapshotOf(context, model);
+    const after = snapshotOf(context, { ...model, playback: { ...model.playback, time: to } });
+    expect(before.round).toBe(after.round);
+    expect(before.nodes.some((node) => node.id === "n2")).toBe(true);
+    expect(after.nodes.some((node) => node.id === "n2")).toBe(false);
+    scene({ update: makeUpdate(context), view: makeView(context) }, given(model),
+      Mount.resolve(ObserveMapSurface, MapSurfaceMessage.MeasuredMapSurface({ width: 800, height: 600, nodeHeights: { root: 40, n1: 40, n2: 40 } })),
+      settle,
+      expectScene(selector('[data-node-id="n2"] button.map-node__button')).toExist(),
+      Subscription.emit(ReviewMessage.GotMapSurfaceMessage({ message: MapSurfaceMessage.ClickedNodeButton({ nodeId: "n2", clientX: 0, clientY: 0 }) })),
+      settle,
+      expectScene(selector('[data-node-id="n2"] .map-node')).toHaveClass("map-node--selected"),
+      expectScene(selector(".evidence__text")).toHaveText("月間稼働率による目標"),
+      expectScene(selector(".evidence__remark-text")).toHaveText("月間の稼働率を使います"),
+      click(selector(`[aria-label="${button}"]`)),
+      settle,
+      expectScene(selector('[aria-label="時刻"]')).toHaveAttr("aria-valuenow", String(to)),
+      expectScene(selector('[data-node-id="n2"]')).toBeAbsent(),
+      expectScene(selector('[data-node-id="n1"] .map-node')).toHaveClass("map-node--selected"),
+      expectScene(selector(".evidence__text")).toHaveText("サービス水準"),
+      tap((sim) => expect(findAll(sim.html, ".evidence__remark-text").map(textContent)).toEqual(["サービス水準を決めます", "月間の稼働率を使います"])),
+    );
+  });
+
   it("判断軸を一度表示し、通知を表示しない", () => {
     const withCriteria = makeContext([{ type: "start", title: "定例", criteria: ["採用のしやすさ", "運用負荷"] }, ...events.slice(1)]);
     scene({ update: makeUpdate(withCriteria), view: makeView(withCriteria) }, given(init(withCriteria)), settle,

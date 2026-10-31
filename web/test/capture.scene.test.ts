@@ -13,7 +13,7 @@ import type { VNode } from "./sceneTree.ts";
 // 比べる相手は @xyflow の getViewportForBounds（全体を収める式。撮影の下限 0.02）と、server が共有する属性名（server/src/core/capture.ts）
 
 
-const node = (id: string, parent: string | null, kind: SnapshotNode["kind"], text: string, extra: Partial<SnapshotNode> = {}): SnapshotNode => ({
+const node = (id: string, parent: string | null, kind: Exclude<SnapshotNode["kind"], "補足">, text: string, extra: Partial<Exclude<SnapshotNode, { kind: "補足" }>> = {}): Exclude<SnapshotNode, { kind: "補足" }> => ({
   id,
   parent,
   kind,

@@ -37,7 +37,7 @@ function evidencePanel(h: HtmlBuilder<Message>, model: Model): Html {
   return h.section(
     [h.Class("evidence flex-1 min-h-0 box-border p-[12px] overflow-y-auto "+"[border-bottom:1px_solid_var(--color-gray-200)]"), h.AriaLabelledBy("evidence-heading")],
     [
-      h.h2([h.Id("evidence-heading")], ["根拠"]),
+      h.h2([h.Id("evidence-heading")], [evidence?.node.origin === "会議の外" ? "この語が話された発言" : "根拠"]),
       selectedId === null ? null : h.button([h.Type("button"), h.Class("side__close"), h.OnClick(Message.ClickedEvidenceClose())], ["閉じる"]),
       ...(selectedId === null
         ? [h.p([h.Class("evidence__empty text-gray-500")], ["ノードを選ぶと、根拠の発言が出ます"])]

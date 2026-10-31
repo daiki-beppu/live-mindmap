@@ -3,7 +3,7 @@ import type { SnapshotNode } from "../../server/src/core/index.ts";
 import type { Position } from "../src/layout.ts";
 import { interpolate, startPositions } from "../src/motion.ts";
 
-const node = (id: string, parent: string | null): SnapshotNode => ({
+const node = (id: string, parent: string | null): Exclude<SnapshotNode, { kind: "補足" }> => ({
   id,
   parent,
   kind: parent ? "議題" : "会議",

@@ -215,6 +215,7 @@ const formatLogMetrics = Effect.fnUntraced(function* (log: readonly LogEvent[] |
 const formatRecall = ({ hit, total }: Recall) => (total === 0 ? "0/0" : `${hit}/${total} (${Math.round((hit / total) * 100)}%)`);
 
 const USAGE_HEADERS = ["入力トークン", "キャッシュ書き込みトークン", "キャッシュ読み出しトークン", "出力トークン"];
+const TABLE_KINDS = KINDS.filter((kind) => kind !== "補足");
 function formatUsage(log: readonly LogEvent[] | undefined): string[] {
   const usages = (log ?? []).flatMap((e) => (e.type === "diff" && e.usage ? [e.usage] : []));
   if (usages.length === 0) return USAGE_HEADERS.map(() => "-");
@@ -224,7 +225,7 @@ function formatUsage(log: readonly LogEvent[] | undefined): string[] {
 
 export const formatTable = Effect.fnUntraced(function* (runs: Run[], truth?: Truth, screen?: ScreenTruth) {
   const header = [
-    "ラン", "会議", "ノード", "深さ", ...KINDS, ...LOG_HEADERS, ...USAGE_HEADERS,
+    "ラン", "会議", "ノード", "深さ", ...TABLE_KINDS, ...LOG_HEADERS, ...USAGE_HEADERS,
     ...(truth ? [...TRUTH_KINDS.map((k) => RECALL_HEADERS[k]), ...TRUTH_KINDS.map((k) => WRONG_KIND_HEADERS[k])] : []),
     ...(screen ? SCREEN_HEADERS : []),
   ];
@@ -233,7 +234,7 @@ export const formatTable = Effect.fnUntraced(function* (runs: Run[], truth?: Tru
     const recalls = truth ? TRUTH_KINDS.map((k) => formatRecall(recall(exp, truth)[k])) : [];
     const wrongKinds = truth ? TRUTH_KINDS.map((k) => String(wrongKind(exp, truth)[k])) : [];
     const scores = screen ? Object.values(screenScore(exp, screen)).map(formatCount) : [];
-    return [name, title, m.nodes, m.depth, ...KINDS.map((k) => m.byKind[k]), ...(yield* formatLogMetrics(log)), ...formatUsage(log), ...recalls, ...wrongKinds, ...scores].map(String);
+    return [name, title, m.nodes, m.depth, ...TABLE_KINDS.map((k) => m.byKind[k]), ...(yield* formatLogMetrics(log)), ...formatUsage(log), ...recalls, ...wrongKinds, ...scores].map(String);
   }));
   const line = (cells: string[]) => `| ${cells.map(escapeCell).join(" | ")} |`;
   return [line(header), line(header.map(() => "---")), ...rows.map(line)].join("\n") + "\n";

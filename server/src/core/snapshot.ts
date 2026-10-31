@@ -3,10 +3,7 @@ import { Change } from "./changes.ts";
 import { MapNode, PointStatus } from "./map.ts";
 import { Remark } from "./remark.ts";
 
-export const SnapshotNode = Schema.Struct({
-  ...MapNode.fields,
-  pointStatus: Schema.optionalKey(Schema.mutableKey(PointStatus)),
-});
+export const SnapshotNode = MapNode.mapMembers(Tuple.map(Schema.fieldsAssign({ pointStatus: Schema.optionalKey(Schema.mutableKey(PointStatus)) })));
 export type SnapshotNode = typeof SnapshotNode["Type"];
 export const ChangeEntry = Change.mapMembers(Tuple.map(Schema.fieldsAssign({
   round: Schema.mutableKey(Schema.Finite),

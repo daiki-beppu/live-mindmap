@@ -30,6 +30,7 @@ import {
   formatTable,
   forgetPoolWord,
   DiffEvent,
+  SupplementEvent,
   DiffUpdater,
   fromTranscript,
   JsonExport,
@@ -894,7 +895,7 @@ const evaluatedRun = Effect.fnUntraced(function* (fs: FileSystem.FileSystem, dir
   );
   if (saved === undefined) return { name: basename(dir), title: exp.root.text, exp };
   yield* restoreState(saved.events).pipe(Effect.mapError(saved.brokenAt));
-  const log = yield* saved.select([StartEvent, RemarkEvent, DiffEvent]);
+  const log = yield* saved.select([StartEvent, RemarkEvent, DiffEvent, SupplementEvent]);
   return { name: basename(dir), title: exp.root.text, exp, log };
 });
 

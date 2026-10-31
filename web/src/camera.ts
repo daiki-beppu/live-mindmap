@@ -27,15 +27,17 @@ export function cameraFocus(snapshot: Snapshot): { ids: string[]; center: string
   }
   for (const n of snapshot.nodes) if (isUnder(byId, n.id, topic)) ids.add(n.id);
 
-  return { ids: [...ids], center: snapshot.lastChanged ?? topic };
+  const normalChange = [...changedNodeIds(snapshot)].findLast((id) => byId.has(id) && byId.get(id)!.kind !== "補足");
+  const center = snapshot.lastChanged !== undefined && byId.get(snapshot.lastChanged)?.kind !== "補足" ? snapshot.lastChanged : normalChange ?? topic;
+  return { ids: [...ids], center };
 }
 
 export function changedFocus(snapshot: Snapshot, shownIdOf: (id: string) => string): { ids: string[]; center: string } | null {
-  const present = new Set(snapshot.nodes.map((n) => n.id));
+  const present = new Set(snapshot.nodes.filter((n) => n.kind !== "補足").map((n) => n.id));
   const changed = [...changedNodeIds(snapshot)].filter((id) => present.has(id));
   if (changed.length === 0) return null;
   const ids = [...new Set(changed.map(shownIdOf))];
-  const last = snapshot.lastChanged !== undefined ? shownIdOf(snapshot.lastChanged) : ids[ids.length - 1]!;
+  const last = snapshot.lastChanged !== undefined && present.has(snapshot.lastChanged) ? shownIdOf(snapshot.lastChanged) : ids[ids.length - 1]!;
   return { ids, center: last };
 }
 

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { mapOnlyReviewEvents, reviewSnapshot } from "../../server/src/core/index.ts";
 import { buildReviewTimeline, captionBubblesAt, chapterNameAt, formatHms, reviewChapters, reviewMarks, snapshotAt, topicNameOf } from "../src/reviewTimeline.ts";
+import { supplementLog } from "../../server/test/fixtures/supplement.ts";
 
 // 見返しの時間軸（純粋なモジュール）。ログ（log.jsonl の行）の配列だけを入れて確かめる。
 // 時刻の軸は発言の end（会議の中の秒）で、ログの at は使わない（at はわざと逆順・無関係な値にしてある）。
@@ -86,6 +87,30 @@ describe("buildReviewTimeline（反映の一覧・会議の長さ）", () => {
 });
 
 describe("snapshotAt（時刻 t のスナップショット）", () => {
+  it.each([false, true])("見返しでも言い直しの許可・拒否と根拠の保持を共通反映から受け取る（本文なし=%s）", (mapOnly) => {
+    const log = supplementLog("SLO", ["r2"]);
+    const timeline = buildReviewTimeline(mapOnly ? mapOnlyReviewEvents(log) : log);
+    expect(snapshotAt(timeline, 25).nodes.find((n) => n.id === "n4")).toMatchObject({ text: "サービス水準の目標", evidence: ["r1"] });
+    const after = snapshotAt(timeline, 30);
+    expect(after.nodes.find((n) => n.id === "n4")).toMatchObject({ text: "月間稼働率による目標", evidence: ["r1", "r2"] });
+    expect(after.remarks.map((r) => r.text)).toEqual(mapOnly ? ["", ""] : ["サービス水準を決めます", "月間の稼働率を使います"]);
+    const rejectedLog = supplementLog("SLA", ["r2"]);
+    const rejectedTimeline = buildReviewTimeline(mapOnly ? mapOnlyReviewEvents(rejectedLog) : rejectedLog);
+    expect(snapshotAt(rejectedTimeline, 30).nodes.find((n) => n.id === "n4")).toMatchObject({ text: "サービス水準の目標", evidence: ["r1"] });
+    expect(snapshotAt(timeline, 25).nodes.find((n) => n.id === "n4")).toMatchObject({ evidence: ["r1"] });
+  });
+
+  it.each([false, true])("同じ時間軸で補足の前後を往復し、過去へ先出しせずキャッシュを区別する（本文なし=%s）", (mapOnly) => {
+    const row = { type: "supplement", op: { op: "add", parent: "n1", text: "用語の説明", evidence: ["r1"], origin: "会議の外" }, category: "用語", term: "用語", ms: 2, reflectedAt: 15 };
+    const log = [...events.slice(0, 4), row, ...events.slice(4)];
+    const timeline = buildReviewTimeline(mapOnly ? mapOnlyReviewEvents(log) : log);
+    expect(snapshotAt(timeline, 10).nodes.filter((n) => n.kind === "補足")).toEqual([]);
+    expect(snapshotAt(timeline, 15).nodes.find((n) => n.kind === "補足")).toMatchObject({ parent: "n1", text: "用語の説明", origin: "会議の外" });
+    expect(snapshotAt(timeline, 10).nodes.filter((n) => n.kind === "補足")).toEqual([]);
+    expect(snapshotAt(timeline, 30).nodes.find((n) => n.kind === "補足")).toMatchObject({ text: "用語の説明" });
+    expect(snapshotAt(timeline, 30).round).toBe(2);
+  });
+
   const tl = buildReviewTimeline(events);
 
   it("未処理の発言が残る差分でも、同じ時間軸を往復したときに処理済み時刻の関係づけを表示する", () => {

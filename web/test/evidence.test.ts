@@ -17,6 +17,14 @@ const snapshot: Snapshot = {
 };
 
 describe("evidenceOf: 選んだノードの表示内容", () => {
+  it.each(["会議の中", "会議の外"] as const)("%s の補足を選ぶと、参照した発言だけを返す", (origin) => {
+    const supplement = { id: "s", parent: "n2", kind: "補足", text: "回数の背景", evidence: ["r2"], origin } satisfies Snapshot["nodes"][number];
+    const current: Snapshot = { ...snapshot, nodes: [...snapshot.nodes, supplement] };
+    const evidence = evidenceOf(current, "s", undefined)!;
+    expect(evidence.node).toEqual(supplement);
+    expect(evidence.remarks).toEqual([snapshot.remarks[1]]);
+  });
+
   it("ノードと、その根拠の発言を開始時刻の昇順で返す（evidence の並びではなく）", () => {
     const e = evidenceOf(snapshot, "n1", undefined)!;
     expect(e.node).toMatchObject({ id: "n1", kind: "論点", text: "面接は何回か", pointStatus: "未決" });
@@ -110,7 +118,7 @@ describe("evidenceOf: 「議題 N 件」（まとめのノード）", () => {
 
 describe("evidenceOf: 人が開いた・畳んだノードも、マップと同じ入力で「議題 N 件」に数える", () => {
   const done = { talkStatus: "済み" } as const;
-  const topic = (id: string, extra: Partial<Snapshot["nodes"][number]> = {}) => ({ id, parent: "root", kind: "議題" as const, text: id, evidence: ["r1"], ...extra });
+  const topic = (id: string, extra: Partial<Exclude<Snapshot["nodes"][number], { kind: "補足" }>> = {}) => ({ id, parent: "root", kind: "議題" as const, text: id, evidence: ["r1"], ...extra });
   const snapshotOf = (...topics: Snapshot["nodes"]): Snapshot => ({
     nodes: [{ id: "root", parent: null, kind: "会議", text: "定例", evidence: [] }, ...topics],
     round: 1,
@@ -138,7 +146,7 @@ describe("evidenceOf: 人が開いた・畳んだノードも、マップと同�
 
 describe("evidenceOf: 解いた「議題 N 件」も、マップと同じ人の操作で引く", () => {
   const done = { talkStatus: "済み" } as const;
-  const topic = (id: string, extra: Partial<Snapshot["nodes"][number]> = {}) => ({ id, parent: "root", kind: "議題" as const, text: id, evidence: ["r1"], ...extra });
+  const topic = (id: string, extra: Partial<Exclude<Snapshot["nodes"][number], { kind: "補足" }>> = {}) => ({ id, parent: "root", kind: "議題" as const, text: id, evidence: ["r1"], ...extra });
   const s: Snapshot = {
     nodes: [{ id: "root", parent: null, kind: "会議", text: "定例", evidence: [] }, topic("A", done), topic("B", done), topic("C")],
     round: 1,

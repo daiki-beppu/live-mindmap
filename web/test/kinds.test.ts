@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { SnapshotNode } from "../../server/src/core/index.ts";
 import { KIND_COLOR, markOf } from "../src/kinds.ts";
 
-const n = (kind: SnapshotNode["kind"], extra: Partial<SnapshotNode> = {}): SnapshotNode => ({
+const n = (kind: Exclude<SnapshotNode["kind"], "補足">, extra: Partial<Exclude<SnapshotNode, { kind: "補足" }>> = {}): Exclude<SnapshotNode, { kind: "補足" }> => ({
   id: "x",
   parent: "root",
   kind,

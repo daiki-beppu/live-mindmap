@@ -8,6 +8,7 @@ export const KIND_COLOR: Record<SnapshotNode["kind"], string> = {
   案: "#a855f7",
   決定: "#22c55e",
   TODO: "#14b8a6",
+  補足: "#0f766e",
   要点: "#94a3b8",
 };
 

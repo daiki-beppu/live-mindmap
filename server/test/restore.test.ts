@@ -1,7 +1,9 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Deferred, Effect, Layer } from "effect";
 import { TestClock } from "effect/testing";
-import { DIFF_UPDATE_RETRY_MS, DiffUpdatePaused, InvalidLogEvent, makeSession, restoreSession, type DiffInput, type DiffOutput, type LogEvent, type Op, type Remark, type ScreenChange, type Session } from "../src/core/index.ts";
+import { DIFF_UPDATE_RETRY_MS, DiffUpdatePaused, InvalidLogEvent, makeSession, restoreSession, restoreState, type DiffInput, type DiffOutput, type LogEvent, type Op, type Remark, type ScreenChange, type Session } from "../src/core/index.ts";
+import { reflectSupplement, type ReflectionState } from "../src/core/reflection.ts";
+import { Result } from "effect";
 import { playBatches } from "./fixtures/batches.ts";
 import { remark, restore, scripted, type Step } from "./fixtures/restore.ts";
 import { collectLog, forbiddenUpdater, logLayer, settleUntil, silentLog, updaterLayer, type UpdateFailure } from "./fixtures/sessionLayers.ts";
@@ -58,6 +60,37 @@ const original = Effect.fn("original")(function* () {
 });
 
 describe("ログからの復元", () => {
+  it.effect("補足行をJSONLで往復すると、補足と消した語を含む説明済み集合が戻る", () => Effect.gen(function* () {
+    const { events } = yield* original();
+    const before = yield* restoreState(events);
+    const parent = before.map.nodes.n3!;
+    const otherParent = before.map.nodes.n4!;
+    const id = `n${before.map.nextId}`;
+    const rows: Extract<LogEvent, { type: "supplement" }>[] = [
+      { type: "supplement", op: { op: "add", parent: parent.id, text: "消す説明", evidence: [...parent.evidence], origin: "会議の外" }, category: "用語", term: "最初の語", ms: 1, reflectedAt: 99 },
+      { type: "supplement", op: { op: "delete", node: id }, category: null, ms: 1, reflectedAt: 100 },
+      { type: "supplement", op: { op: "add", parent: parent.id, text: "残す説明", evidence: [...parent.evidence], origin: "会議の中" }, category: "用語", term: "次の語", ms: 2, reflectedAt: 101, usage: { input: 3, output: 4, cacheRead: 0, cacheWrite: 0, model: "synthetic" } },
+      { type: "supplement", op: { op: "add", parent: otherParent.id, text: "別の説明", evidence: [...otherParent.evidence], origin: "会議の外" }, category: "用語", term: "別の語", ms: 1, reflectedAt: 102 },
+    ];
+    const start: ReflectionState = { map: before.map, explainedTerms: before.explainedTerms, history: before, ledger: { byId: new Map(before.remarks.map((r) => [r.id, r])), known: before.known, processed: before.processed } };
+    const folded = rows.reduce((s, event) => Result.getOrThrow(reflectSupplement(s, event)).state, start);
+    const restored = yield* restoreState(viaJsonl([...events, ...rows]));
+    expect(restored.map).toEqual(folded.map);
+    expect(restored.explainedTerms).toEqual(folded.explainedTerms);
+    const session = yield* restore(viaJsonl([...events, ...rows]));
+    const snapshot = yield* session.snapshot;
+    const ownId = `n${before.map.nextId + 1}`;
+    const otherId = `n${before.map.nextId + 2}`;
+    const next: ReflectionState = { map: restored.map, explainedTerms: restored.explainedTerms, history: restored, ledger: { byId: new Map(restored.remarks.map((r) => [r.id, r])), known: restored.known, processed: restored.processed } };
+    const own: Extract<LogEvent, { type: "supplement" }> = { type: "supplement", op: { op: "update", node: ownId, text: "本人の言い直し", evidence: [...parent.evidence], origin: "会議の中" }, category: "用語", term: "次の語", ms: 1, reflectedAt: 103 };
+    const accepted = Result.getOrThrow(reflectSupplement(next, own));
+    expect(accepted.dropped).toEqual([]);
+    expect(accepted.state.map.nodes[ownId]!.text).toBe("本人の言い直し");
+    const blocked = Result.getOrThrow(reflectSupplement(next, { ...own, term: "最初の語", op: { op: "update", node: otherId, text: "拒否する言い直し", evidence: [...otherParent.evidence], origin: "会議の外" } }));
+    expect(blocked.dropped).toHaveLength(1);
+    expect(blocked.state.map.nodes[otherId]!.text).toBe(snapshot.nodes.find((n) => n.id === otherId)!.text);
+  }));
+
   it.effect("ログのイベントを順に適用して、ノードの ID を含め元のマップと一致するマップに戻す", () =>
     Effect.gen(function* () {
       const { session, events } = yield* original();

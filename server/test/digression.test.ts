@@ -8,12 +8,12 @@ import { playBatches } from "./fixtures/batches.ts";
 
 const known = new Set(["r1", "r2"]);
 const apply = (map: MeetingMap, ops: Op[]) => applyOps(map, ops, known, { round: 3, at: 30 }, new Map());
-const add = (ref: string, parent: string, kind: Kind, digression?: boolean) => ({
+const add = (ref: string, parent: string, kind: Exclude<Kind, "補足">, digression?: boolean) => ({
   op: "add" as const, ref, parent, kind, text: ref, evidence: ["r1"],
   ...(digression === undefined ? {} : { digression }),
 });
 const update = (node: string, digression: boolean) => ({ op: "update" as const, node, evidence: ["r1"], digression });
-const node = (id: string, parent: string, kind: Kind, digression?: boolean): MapNode => ({
+const node = (id: string, parent: string, kind: Exclude<Kind, "補足">, digression?: boolean): MapNode => ({
   id, parent, kind, text: id, evidence: ["r1"], touchedAt: 1, evidenceRound: 1,
   ...(digression === undefined ? {} : { digression }),
 });
@@ -45,7 +45,7 @@ describe("議題の脱線: 公開の差分操作", () => {
     expect(cleared.map.nodes.n1).toMatchObject({ id: "n1", text: "旅行先", evidence: ["r1"] });
   });
 
-  it.each(KINDS.filter((kind) => kind !== "議題"))("%s への true・false の追加と更新を拒み、一部だけ反映しない", (kind) => {
+  it.each(KINDS.filter((kind) => kind !== "議題" && kind !== "補足"))("%s への true・false の追加と更新を拒み、一部だけ反映しない", (kind) => {
     const before = tree([node("n1", "root", "論点"), node("n2", "n1", kind)]);
     for (const value of [true, false]) {
       const added = apply(before, [add("不正", "n1", kind, value)]);
@@ -167,7 +167,7 @@ describe("議題の脱線: 変更履歴・保存形式", () => {
     const json: unknown = JSON.parse(exportFiles(exported)["map.json"]);
     const decoded = Schema.decodeUnknownSync(JsonExport)(json);
     expect(decoded.root.children[0]).toHaveProperty("digression", true);
-    const plain = toJsonExport({ ...snapshot, nodes: nodes.map((n) => ({ id: n.id, parent: n.parent, kind: n.kind, text: n.text, evidence: n.evidence })) }, []);
+    const plain = toJsonExport({ ...snapshot, nodes: nodes.map((n) => { const { digression: _digression, ...plain } = n; return plain; }) }, []);
     const marked = decoded.root.children[0]!;
     expect(Object.keys(marked).filter((key) => !(key in plain.root.children[0]!))).toEqual(["digression"]);
     expect(marked.children[0]).not.toHaveProperty("digression");

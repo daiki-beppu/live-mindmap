@@ -349,7 +349,7 @@ describe("reduceViewing: 選択でも入力を書き換えない", () => {
 
 // ---- #319: 選択と畳む見せ方のつなぎ ----
 
-const fnode = (id: string, parent: string | null, kind: SnapshotNode["kind"], evidence: string[], extra: Partial<SnapshotNode> = {}): SnapshotNode => ({
+const fnode = (id: string, parent: string | null, kind: Exclude<SnapshotNode["kind"], "補足">, evidence: string[], extra: Partial<Exclude<SnapshotNode, { kind: "補足" }>> = {}): Exclude<SnapshotNode, { kind: "補足" }> => ({
   id,
   parent,
   kind,

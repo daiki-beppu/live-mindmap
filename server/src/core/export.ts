@@ -1,31 +1,26 @@
-import { Schema } from "effect";
+import { Schema, Struct } from "effect";
 import { toDrawnix } from "./drawnix.ts";
-import { KINDS, PLAN_STATUSES, ROOT_ID } from "./map.ts";
+import { ROOT_ID } from "./map.ts";
 import { toMarkdown } from "./markdown.ts";
 import { Remark } from "./remark.ts";
-import type { Snapshot, SnapshotNode } from "./snapshot.ts";
+import { SnapshotNode, type Snapshot } from "./snapshot.ts";
 
-export type ExportNode = Omit<SnapshotNode, "parent" | "evidence" | "touchedAt" | "evidenceRound" | "talkStatus"> & {
+type HiddenFields = "parent" | "evidence" | "touchedAt" | "evidenceRound" | "talkStatus";
+export type ExportNode = (Omit<Exclude<SnapshotNode, { kind: "補足" }>, HiddenFields> | Omit<Extract<SnapshotNode, { kind: "補足" }>, HiddenFields>) & {
   evidence: Remark[];
   children: ExportNode[];
 };
 export type JsonExport = { root: ExportNode; criteria?: readonly string[]; speakerNames?: Readonly<Record<string, string>> };
 
-const ExportNode: Schema.Codec<ExportNode> = Schema.Struct({
-  id: Schema.String,
-  kind: Schema.Literals([...KINDS, "会議"]),
-  text: Schema.mutableKey(Schema.String),
-  planStatus: Schema.optionalKey(Schema.mutableKey(Schema.Literals(PLAN_STATUSES))),
-  proposer: Schema.optionalKey(Schema.String),
-  criteria: Schema.optionalKey(Schema.Array(Schema.String)),
-  assignee: Schema.optionalKey(Schema.String),
-  assigneeSpeaker: Schema.optionalKey(Schema.String),
-  due: Schema.optionalKey(Schema.String),
-  pointStatus: Schema.optionalKey(Schema.Literals(["未決", "決定済み"])),
-  digression: Schema.optionalKey(Schema.Boolean),
+const HIDDEN_FIELDS = ["parent", "evidence", "touchedAt", "evidenceRound", "talkStatus"] as const;
+const ExportFields = {
   evidence: Schema.mutable(Schema.Array(Remark)),
   children: Schema.mutable(Schema.Array(Schema.suspend((): Schema.Codec<ExportNode> => ExportNode))),
-});
+};
+const ExportNode: Schema.Codec<ExportNode> = SnapshotNode.mapMembers(([regular, supplement]) => [
+  regular.mapFields(Struct.omit(HIDDEN_FIELDS)).mapFields(Struct.assign(ExportFields)),
+  supplement.mapFields(Struct.omit(HIDDEN_FIELDS)).mapFields(Struct.assign({ ...ExportFields, evidence: ExportFields.evidence.check(Schema.isMinLength(1)) })),
+]);
 
 export const JsonExport: Schema.Codec<JsonExport> = Schema.Struct({ root: ExportNode, criteria: Schema.optionalKey(Schema.Array(Schema.String)), speakerNames: Schema.optionalKey(Schema.Record(Schema.String, Schema.String)) });
 

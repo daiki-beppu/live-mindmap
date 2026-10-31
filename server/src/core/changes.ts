@@ -1,12 +1,12 @@
 import { Schema } from "effect";
-import { MapNode, pointStatus, ROOT_ID, type AppliedOps, type MeetingMap } from "./map.ts";
+import { NodeKind, pointStatus, ROOT_ID, type MapNode, type AppliedOps, type MeetingMap } from "./map.ts";
 
 export const ChangeType = Schema.Literals(["追加", "更新", "決定済み化", "却下", "移動", "統合"]);
 export type ChangeType = typeof ChangeType["Type"];
 
 const ChangeBody = {
   node: Schema.mutableKey(Schema.String),
-  kind: Schema.mutableKey(MapNode.fields.kind),
+  kind: Schema.mutableKey(NodeKind),
   text: Schema.mutableKey(Schema.String),
 };
 export const Change = Schema.Union([

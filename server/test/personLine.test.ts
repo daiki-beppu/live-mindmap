@@ -3,7 +3,7 @@ import { personLine, speakerName, type SnapshotNode } from "../src/core/index.ts
 
 // Issue #1023: 案の出した人と TODO の担当者を、ノードの本文の後ろに出す 1 行。表示名は speakerName の 1 か所で決める（後の名前の sub-issue はここだけを変える）。
 
-const n = (kind: SnapshotNode["kind"], extra: Partial<SnapshotNode> = {}): SnapshotNode => ({ id: "x", parent: "root", kind, text: "t", evidence: ["r1"], ...extra });
+const n = (kind: Exclude<SnapshotNode["kind"], "補足">, extra: Partial<Exclude<SnapshotNode, { kind: "補足" }>> = {}): Exclude<SnapshotNode, { kind: "補足" }> => ({ id: "x", parent: "root", kind, text: "t", evidence: ["r1"], ...extra });
 
 describe("speakerName: 話者の表示名（唯一の決め場所）", () => {
   it("話者なしの相手（「相手」）は出さない（null）", () => expect(speakerName("相手")).toBeNull());

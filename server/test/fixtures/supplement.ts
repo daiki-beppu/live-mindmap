@@ -1,0 +1,16 @@
+import type { LogEvent } from "../../src/core/index.ts";
+
+export function supplementLog(term: string, evidence: string[]): LogEvent[] {
+  return [
+    { type: "start", title: "サービス水準の会議" },
+    { type: "remark", remark: { id: "r1", track: "相手", start: 0, end: 10, text: "サービス水準を決めます" } },
+    { type: "remark", remark: { id: "r2", track: "自分", start: 10, end: 20, text: "月間の稼働率を使います" } },
+    { type: "diff", input: { recent: [], fresh: ["r1", "r2"], nodeCount: 0 }, ops: [
+      { op: "add", ref: "a", parent: "root", kind: "課題", text: "合意", evidence: ["r1", "r2"] },
+      { op: "add", ref: "b", parent: "root", kind: "課題", text: "目標", evidence: ["r1", "r2"] },
+    ], dropped: [] },
+    { type: "supplement", op: { op: "add", parent: "n1", text: "サービス水準の合意", evidence: ["r1"], origin: "会議の外" }, category: "用語", term: "SLA", ms: 1, reflectedAt: 21 },
+    { type: "supplement", op: { op: "add", parent: "n2", text: "サービス水準の目標", evidence: ["r1"], origin: "会議の外" }, category: "用語", term: "SLO", ms: 1, reflectedAt: 22 },
+    { type: "supplement", op: { op: "update", node: "n4", text: "月間稼働率による目標", evidence, origin: "会議の中" }, category: "用語", term, ms: 1, reflectedAt: 30 },
+  ];
+}
