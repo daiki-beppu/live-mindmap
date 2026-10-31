@@ -4,6 +4,8 @@ import {
   JsonExport,
   KINDS,
   exportFiles,
+  embedReviewLog,
+  reviewSnapshot,
   speakerNameMap,
   toDrawnix,
   toJsonExport,
@@ -17,6 +19,7 @@ import { KIND_COLORS } from "../src/core/drawnix.ts";
 import { playBatches } from "./fixtures/batches.ts";
 import { restore } from "./fixtures/restore.ts";
 import { supplementLog } from "./fixtures/supplement.ts";
+import { embeddedText, TEMPLATE } from "./fixtures/review.ts";
 
 it.effect("補足を言い直したログの復元後も、JSON文字列に以前と新しい根拠の発言が残る", () => Effect.gen(function* () {
   for (const evidence of [["r1"], ["r2"]]) {
@@ -67,6 +70,119 @@ const sample = (): JsonExport => ({
       node("n8", "TODO", "日程を決める", { evidence: [remark("r8", 3725), remark("r9", 3700)] }),
     ],
   }),
+});
+
+describe("補足の書き出し", () => {
+  const categories = ["用語", "背景", "案の違い", "理由", "前の決定とのつながり", "未確認", "推奨"] as const;
+
+  it.effect("map.json は復元した補足の種別・両方の出どころ・添える先と根拠を保持する", () => Effect.gen(function* () {
+    const session = yield* restore(supplementLog("SLO", ["r2"]));
+    const raw = JSON.parse(exportFiles(yield* session.exportJson)["map.json"]);
+    const json = Schema.decodeUnknownSync(JsonExport)(raw);
+    expect(json.root.children.map((parent) => ({ id: parent.id, supplements: parent.children }))).toEqual([
+      { id: "n1", supplements: [{ id: "n3", kind: "補足", text: "サービス水準の合意", origin: "会議の外", evidence: [{ id: "r1", track: "相手", start: 0, end: 10, text: "サービス水準を決めます" }], children: [] }] },
+      { id: "n2", supplements: [{ id: "n4", kind: "補足", text: "月間稼働率による目標", origin: "会議の中", evidence: [
+        { id: "r1", track: "相手", start: 0, end: 10, text: "サービス水準を決めます" },
+        { id: "r2", track: "自分", start: 10, end: 20, text: "月間の稼働率を使います" },
+      ], children: [] }] },
+    ]);
+    for (const parent of raw.root.children) for (const supplement of parent.children) expect(supplement).not.toHaveProperty("category");
+  }));
+
+  it("map.html の埋め込みは追加・更新の補足を種別と出どころ付きで持ち、最後のマップに復元できる", () => {
+    const log = supplementLog("SLO", ["r2"]);
+    const rows = JSON.parse(embeddedText(embedReviewLog(TEMPLATE, log)));
+    expect(rows.filter((row: { type: string }) => row.type === "supplement").map((row: { op: unknown }) => row.op)).toMatchObject([
+      { op: "add", kind: "補足", origin: "会議の外" },
+      { op: "add", kind: "補足", origin: "会議の外" },
+      { op: "update", kind: "補足", origin: "会議の中" },
+    ]);
+    expect(reviewSnapshot(rows)).toEqual(reviewSnapshot(log));
+  });
+
+  it.each(categories)("map.html は補足行の区分「%s」を出さず、元ログを保持する", (category) => {
+    const log = supplementLog("SLO", ["r2"]).map((row) => row.type === "supplement" ? { ...row, category } : row);
+    const before = JSON.stringify(log);
+    const rows = JSON.parse(embeddedText(embedReviewLog(TEMPLATE, log)));
+    const supplements = rows.filter((row: { type: string }) => row.type === "supplement");
+    expect(supplements).toHaveLength(3);
+    for (const row of supplements) expect(categories).not.toContain(row.category);
+    expect(reviewSnapshot(rows)).toEqual(reviewSnapshot(log));
+    expect(JSON.stringify(log)).toBe(before);
+  });
+
+  it("map.html は分類と同じ文字や引用・フェンスのある補足本文をそのまま復元する", () => {
+    const text = '背景を説明する\n> {"category":"用語"}\n`{"category":"用語"}`\n```json\n{"category":"用語"}\n```\n~~~json\n{"category":"用語"}\n~~~\n```json\n{"category":"用語"}';
+    const log = supplementLog("SLO", ["r2"]).map((row) => row.type === "supplement" && row.op !== null && row.op.op !== "delete" ? { ...row, op: { ...row.op, text } } : row);
+    const rows = JSON.parse(embeddedText(embedReviewLog(TEMPLATE, log)));
+    const supplements = reviewSnapshot(rows).nodes.filter((n) => n.kind === "補足");
+    expect(supplements).toHaveLength(2);
+    expect(supplements.map((n) => n.text)).toEqual([text, text]);
+  });
+
+  it("補足行のない map.html は埋め込みの出来事と復元結果を変えない", () => {
+    const log = supplementLog("SLO", ["r2"]).filter((row) => row.type !== "supplement");
+    const rows = JSON.parse(embeddedText(embedReviewLog(TEMPLATE, log)));
+    expect(rows).toEqual(log);
+    expect(reviewSnapshot(rows)).toEqual(reviewSnapshot(log));
+  });
+
+  it("map.html は補足の削除と操作なしの行を復元でき、本文や出どころを捏造しない", () => {
+    const log = [
+      ...supplementLog("SLO", ["r2"]),
+      { type: "supplement", op: { op: "delete", node: "n3" }, category: null, ms: 1, reflectedAt: 31 },
+      { type: "supplement", op: null, category: null, ms: 1, reflectedAt: 32 },
+    ];
+    const rows = JSON.parse(embeddedText(embedReviewLog(TEMPLATE, log)));
+    expect(rows.slice(-2).map((row: { op: unknown }) => row.op)).toEqual([{ op: "delete", node: "n3" }, null]);
+    expect(reviewSnapshot(rows).nodes.filter((n) => n.kind === "補足")).toMatchObject([{ id: "n4", origin: "会議の中" }]);
+  });
+
+  it.effect("map.drawnix は補足の data に種別と両方の出どころを持ち、添える先と表示文を保つ", () => Effect.gen(function* () {
+    const session = yield* restore(supplementLog("SLO", ["r2"]));
+    const file = JSON.parse(exportFiles(yield* session.exportJson)["map.drawnix"]);
+    const parents = file.elements[0].children;
+    expect(parents.map((parent: { id: string }) => parent.id)).toEqual(["n1", "n2"]);
+    for (const [index, origin, text] of [[0, "会議の外", "サービス水準の合意"], [1, "会議の中", "月間稼働率による目標"]] as const) {
+      const supplement = parents[index].children[0];
+      expect(supplement.data).toMatchObject({ kind: "補足", origin });
+      expect(supplement.data.topic.children.map((piece: { text: string }) => piece.text).join("")).toBe(`${text}（${origin}）`);
+      expect(supplement.data).not.toHaveProperty("category");
+      expect(parents[index].data).not.toHaveProperty("origin");
+      expect(parents[index].data).not.toHaveProperty("kind");
+    }
+  }));
+
+  const withSupplements = (): JsonExport => {
+    const attach = (n: ExportNode): ExportNode => ({
+      ...n,
+      children: [...n.children.map(attach), ...(["n2", "n3", "n6", "n7"].includes(n.id) ? [{
+        id: `s-${n.id}`, kind: "補足", origin: n.id === "n3" ? "会議の中" : "会議の外", text: `${n.text}の補足`, evidence: n.evidence, children: [],
+      } satisfies ExportNode] : [])],
+    });
+    return { root: attach(sample().root) };
+  };
+
+  it.each([
+    ["決定", "- 面接は何回か → 2 回にする（00:19）", ["面接は何回かの補足（会議の外）（00:09）", "2 回にするの補足（会議の中）（00:19）"]],
+    ["TODO", "- 求人票を直す（担当：佐藤・期限：来週）（00:28）", ["求人票を直すの補足（会議の外）（00:28）"]],
+    ["未決の論点", "- 評価基準（30:30）", ["評価基準の補足（会議の外）（30:30）"]],
+  ] as const)("Markdown の%s一覧では掲載した添付先の直下に出どころ付きの補足を添える", (heading, parent, supplements) => {
+    const md = exportFiles(withSupplements())["map.md"];
+    const section = md.split(`## ${heading}\n`)[1]!.split("\n## ")[0]!;
+    const lines = section.trim().split("\n");
+    const at = lines.indexOf(parent);
+    expect(at).toBeGreaterThanOrEqual(0);
+    expect(lines.slice(at + 1, at + 1 + supplements.length).map((line) => line.trim()).sort()).toEqual(supplements.map((text) => `- ${text}`).sort());
+    for (const text of supplements) expect(lines).not.toContain(`- ${text}`);
+  });
+
+  it("Markdown のアウトラインでは補足を添付先の子として載せ、外の知識を見分けられる", () => {
+    const outline = exportFiles(withSupplements())["map.md"].split("## アウトライン\n")[1]!;
+    expect(outline).toContain("    - → 決定：2 回にする（00:19）\n      - 2 回にするの補足（会議の中）（00:19）");
+    expect(outline).toContain("  - 評価基準（未決）（30:30）\n    - 評価基準の補足（会議の外）（30:30）");
+    expect(outline).toContain("  - 求人票を直す（担当：佐藤・期限：来週）（00:28）\n    - 求人票を直すの補足（会議の外）（00:28）");
+  });
 });
 
 describe("map.md（toMarkdown）", () => {

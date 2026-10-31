@@ -1,0 +1,57 @@
+{
+  "sourceCommit": "7108a16b3c2ea2195a42640e6e7c114570adee86",
+  "capturedAt": "2026-10-31 12:22:01 JST",
+  "node": "v26.13.0",
+  "pnpm": "12.11.2",
+  "playwright": "1.63.0",
+  "browser": "153.0.8010.12",
+  "lockfileSha256": "9958686f48583c3aa139c106b972ccfdea27000d524eb6191dd068402d8fe41d",
+  "input": {
+    "fixture": "server/test/fixtures/supplement.ts",
+    "call": "supplementLog(\"SLO\", [\"r2\"])",
+    "synthetic": true,
+    "file": "log.jsonl",
+    "sha256": "3ef3641b2ebe7aedf18be4140d8598ab11b09f5c85d2f082897b40c5e44aac10"
+  },
+  "html": {
+    "file": ".takt/issue-1771-session/map.html",
+    "sha256": "5a5950a3d65cffb72f5550f493035b0349a94c5d07a10e7039e0e93a79860e7a",
+    "generation": "pnpm --filter @live-mindmap/server cli review \"$PWD/.takt/issue-1771-session\""
+  },
+  "markdown": {
+    "file": "map.md",
+    "sha256": "e2afd06ee08699cfff7b3b73c2cbfc4197bcf49a1723b0cc253b13da122c3cf3",
+    "generation": "reviewSnapshot(events) -> toJsonExport(snapshot, snapshot.remarks) -> exportFiles(...)[\"map.md\"]"
+  },
+  "viewport": {
+    "width": 1280,
+    "height": 800,
+    "deviceScaleFactor": 1
+  },
+  "timeSeconds": 30,
+  "screenshots": [
+    {
+      "file": "supplement-external.png",
+      "text": "サービス水準の合意",
+      "parent": "合意",
+      "origin": "会議の外",
+      "fontStyle": "italic",
+      "color": "rgb(123, 168, 161)",
+      "boxShadow": "none",
+      "marks": 0,
+      "sha256": "d78417ddac2813ada12dadfb8463a9531bc37163629fa07f71bb60023898660a"
+    },
+    {
+      "file": "supplement-internal.png",
+      "text": "月間稼働率による目標",
+      "parent": "目標",
+      "origin": "会議の中",
+      "fontStyle": "normal",
+      "color": "rgb(15, 118, 110)",
+      "boxShadow": "none",
+      "marks": 0,
+      "sha256": "e8feb298e500e288657aa16be89c327e89fa45fcb4c288fbe6a2a3e73445f366"
+    }
+  ],
+  "pageErrors": []
+}
