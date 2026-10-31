@@ -10,11 +10,14 @@
     "cli": "cd server && node src/cli.ts",
     "dev": "pnpm -r --parallel run dev",
     "test": "pnpm -r test",
+    "test:linux": "pnpm --filter @live-mindmap/server --filter @live-mindmap/web test",
     "test:it": "pnpm -r run test:it",
+    "test:it:linux": "pnpm --filter @live-mindmap/server --filter @live-mindmap/web test:it",
     "test:it:heavy": "pnpm -r run test:it:heavy",
     "test:external": "pnpm --filter @live-mindmap/server test:external",
     "test:it:all": "pnpm -r run test:it:all",
-    "typecheck": "pnpm -r typecheck && pnpm fallow"
+    "typecheck": "pnpm -r typecheck && pnpm fallow",
+    "typecheck:linux": "pnpm --filter @live-mindmap/server --filter @live-mindmap/web --filter @live-mindmap/e2e typecheck && pnpm fallow"
   },
   "devDependencies": {
     "fallow": "3.33.1"
