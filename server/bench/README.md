@@ -1,6 +1,6 @@
 # bench: eval の道具
 
-eval は、本物のモデル・音声認識の出力を数字で測るもので、合否は出さず、手で回す。CI のチェックには含まれない。ここには `cli eval`・`edgeJudge`・`siblingJudge`・`mapShape`・`sttAccuracy`・`sttLatency`・`sttReplay`・`speechEnds`・`speakerReplay`・`speakerAccuracy`・`timelineReplay`・`peopleAccuracy` の手順と入出力の形を書く。使い方の細部（フラグの説明）は各コマンドの `--help` が正本。
+eval は、本物のモデル・音声認識の出力を数字で測るもので、合否は出さず、手で回す。CI のチェックには含まれない。ここには `cli eval`・`edgeJudge`・`siblingJudge`・`supplementJudge`・`mapShape`・`sttAccuracy`・`sttLatency`・`sttReplay`・`speechEnds`・`speakerReplay`・`speakerAccuracy`・`timelineReplay`・`peopleAccuracy` の手順と入出力の形を書く。使い方の細部（フラグの説明）は各コマンドの `--help` が正本。
 
 実会議の録音・文字起こしなどの素材はリポジトリの外にある。置き場所と中身は `~/live-mindmap-samples/README.md` を参照。リポジトリ内には `server/bench/meetings/`（正解・文字起こしの JSON と `lecture.timeline.tsv`）がある。
 
@@ -130,6 +130,59 @@ pnpm --filter @live-mindmap/server exec node bench/edgeJudge.ts --help
 目標は親子の関係を一言で言えることであり、「なし」の増減を同じ素材で比較する。数値の合格閾値は設けない。テストとTAKTでは偽判定器だけを使い、実モデルの判断品質は証明しない。マージ後に人が合成セッション1つをClaudeで判定し、出力が数だけであることを確認して、数をPRに記録する。
 
 辺判定の `judgeEdges(events, judge)` は `edges`（id・parent・label）、`total`、`counts`、`none`、`noneRatio`（0〜1）を返す。`createEdgeJudgeCommand(judge)` はCLIへの注入入口であり、既定判定器は実行入口で渡す。判定器の型は `Judge<E, R> = (prompt: string) => Effect.Effect<string, E, R>`（`claudeJudge.ts`）で、ラベルの検証・集計は判定処理側が所有する。
+
+## supplementJudge（補足1件ずつの質）
+
+補足のプロンプト・モデル・引き金を変えたら、同じ合成会議の変更前後で補足の質を比べる。手で回すevalで、CIでは実行せず、品質の合否や閾値は設けない。
+
+**合成会議だけに使う。** 親・補足・根拠発言の本文をモデルへ渡す。実会議の録音・文字起こし・ログには使わない。入力は合成会議の `log.jsonl` があるセッションフォルダで、最終マップに残る補足を1件ずつ判定する。更新前の本文、削除済み、反映拒否された補足は数えない。
+
+リポジトリルートから実行する。
+
+```sh
+pnpm --filter @live-mindmap/server exec node bench/supplementJudge.ts <合成セッションのフォルダ>...
+pnpm --filter @live-mindmap/server exec node bench/supplementJudge.ts --help
+```
+
+既定判定器は認証済みのClaude CLIで、`claude -p --model claude-sonnet-5-5` を使い、子プロセスへ `ANTHROPIC_API_KEY` を継承しない。判定入力はJSONで、親のID・種別・本文・根拠発言ID、補足のID・本文・出どころ・根拠発言ID、それらに対応する発言本文を含む。モデルはラベル1件のJSON配列（例: `["要る"]`）を返す。
+
+| ラベル | 意味 |
+| --- | --- |
+| 要る | 親を理解したり判断したりするために役立つ |
+| 要らない | 内容は正しいが、既に分かる内容の繰り返しや、親に必要のない補足 |
+| 誤り | 内容が事実や発言と食い違う |
+| 根拠なし | 主張を発言や確認できる知識で裏付けられない |
+| 出どころ違い | 会議内の発言と会議外の知識・推論の区別が、補足の出どころと合わない |
+
+標準出力はセッション名・補足総数・全5ラベルの件数と割合のMarkdown表。割合の分母は判定した補足総数で、0件なら全件数・割合は0となり、判定器を呼ばない。不正応答だけ同じ補足を最大3回まで判定する。不正応答を有効ラベルへ置き換えず、3回とも不正なら失敗する。判定器自体の失敗は再試行しない。
+
+各フォルダの全判定が成功すると `supplementJudge.json` を保存する。`judgeSupplements(events, judge)` も同じ形を返す。`ratios` は0〜1の割合。
+
+```json
+{
+	"supplements": [{ "id": "n3", "parent": "n2", "label": "要る" }],
+	"total": 1,
+	"counts": { "要る": 1, "要らない": 0, "誤り": 0, "根拠なし": 0, "出どころ違い": 0 },
+	"ratios": { "要る": 1, "要らない": 0, "誤り": 0, "根拠なし": 0, "出どころ違い": 0 }
+}
+```
+
+結果ファイル・表・失敗診断には本文・生応答を含めない。判定途中で失敗したフォルダの既存結果は上書きしない。複数フォルダは順次処理し、先に成功したフォルダの結果は残る。`createSupplementJudgeCommand(judge)` はCLIへの注入入口で、`Judge<E, R>` は既存の `claudeJudge.ts` の型を使う。テストとTAKTでは偽Judgeだけを使い、実モデルの判断品質は証明しない。
+
+### 変更前後を各2回ずつ比べる
+
+1. 同じ合成会議で変更前と変更後のセッションを用意する。
+2. 各状態を2回ずつ判定する。同じフォルダで再実行すると結果ファイルを上書きするため、各回の表とJSONを控える。
+3. ラベルごとに `2回のラベル件数の合計 ÷ 2回の判定総数の合計` を計算する。割合の単純平均は使わない。判定総数の合計が0なら割合は0で、質を比較できる補足がないことを併記する。
+4. PR本文に同じ素材の前後表を残す。モデル名と各回の判定総数も記録する。
+
+| ラベル | 前2回の件数合計 | 前2回の合算割合 | 後2回の件数合計 | 後2回の合算割合 |
+| --- | --- | --- | --- | --- |
+| 要る | | | | |
+| 要らない | | | | |
+| 誤り | | | | |
+| 根拠なし | | | | |
+| 出どころ違い | | | | |
 
 ## siblingJudge（兄弟の意味）
 
