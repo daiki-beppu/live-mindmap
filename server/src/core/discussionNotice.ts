@@ -1,6 +1,5 @@
 import { Schema } from "effect";
-import { childrenByParent } from "./groupSize.ts";
-import { pointStatusOf, type MapNode, type MeetingMap } from "./map.ts";
+import { kidsOf, pointStatusOf, type MapNode, type MeetingMap } from "./map.ts";
 import { earliestRemark, type Remark } from "./remark.ts";
 
 export const DISCUSSION_NOTICE_SECONDS = 10 * 60;
@@ -34,7 +33,7 @@ function observePoint(previous: Period | undefined, node: MapNode, kids: readonl
 }
 
 export function observeDiscussion(state: DiscussionNoticeState, map: MeetingMap, remarks: ReadonlyMap<string, Remark>, at: number): DiscussionNoticeState {
-  const kids = childrenByParent(map.order.map((id) => map.nodes[id]!));
+  const kids = kidsOf(map);
   const points = new Map<string, Period>();
   for (const id of map.order) {
     const node = map.nodes[id]!;

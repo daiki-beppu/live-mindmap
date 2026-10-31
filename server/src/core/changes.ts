@@ -1,6 +1,5 @@
 import { Schema } from "effect";
-import { childrenByParent } from "./groupSize.ts";
-import { NodeKind, pointStatusOf, ROOT_ID, type MapNode, type AppliedOps, type MeetingMap } from "./map.ts";
+import { kidsOf, NodeKind, pointStatusOf, ROOT_ID, type MapNode, type AppliedOps, type MeetingMap } from "./map.ts";
 
 export const ChangeType = Schema.Literals(["追加", "更新", "決定済み化", "却下", "移動", "統合"]);
 export type ChangeType = typeof ChangeType["Type"];
@@ -25,15 +24,15 @@ function adoptedByCombine(old: MapNode, n: MapNode, combined: AppliedOps["combin
   return combined.get(n.parent)?.includes(old.parent) ?? false;
 }
 
+const sameCriteria = (a: readonly string[], b: readonly string[]) => a.length === b.length && a.every((name, i) => name === b[i]);
+
 function changedValue(old: MapNode, n: MapNode): boolean {
   return old.text !== n.text || old.assignee !== n.assignee || old.assigneeSpeaker !== n.assigneeSpeaker
-    || JSON.stringify(old.criteria ?? []) !== JSON.stringify(n.criteria ?? [])
+    || !sameCriteria(old.criteria ?? [], n.criteria ?? [])
     || !!old.digression !== !!n.digression;
 }
 
 type Kids = ReadonlyMap<string, readonly MapNode[]>;
-
-const kidsOf = (map: MeetingMap): Kids => childrenByParent(map.order.map((id) => map.nodes[id]!));
 
 function changeTypesOf(id: string, old: MapNode, n: MapNode, kids: { before: Kids; after: Kids }, applied: CombineRecord): ChangeType[] {
   const decided = n.kind === "論点" && pointStatusOf(kids.before.get(id) ?? []) === "未決" && pointStatusOf(kids.after.get(id) ?? []) === "決定済み";
