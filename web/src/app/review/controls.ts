@@ -31,7 +31,7 @@ type Trigger = ReadonlyArray<ChildAttribute>;
 
 // 吹き出し（review-tip）と速さのメニュー（review-rate__menu）の位置は anchor だけで決める（Tooltip・Menu が position: absolute と left・top をインラインで書く）。
 // クラスに bottom・right などを書くと left・top と上下・左右で重なり、高さが潰れたり幅が広がったりする（Issue #1225・#1226）。重なり順の z-index だけをクラスに置く
-const tip = (h: H, panel: Trigger, text: string): Html => h.span([...panel, h.Class("review-tip z-10 hidden px-[8px] py-[4px] rounded-[4px] bg-gray-700 text-gray-50 text-[13px] leading-[16px] whitespace-nowrap pointer-events-none")], [text]);
+const tip = (h: H, panel: Trigger, text: string): Html => h.span([...panel, h.Class("review-tip")], [text]);
 
 const withTooltip = (h: H, model: Model, key: TooltipKey, placement: Placement, toView: (render: { trigger: Trigger; panel: Trigger }) => Html): Html =>
   h.submodel({
@@ -44,7 +44,7 @@ const withTooltip = (h: H, model: Model, key: TooltipKey, placement: Placement, 
 
 const barButton = (h: H, model: Model, key: TooltipKey, placement: Placement, label: string, message: Message, icon: Html, text: string, extra: Parameters<H["button"]>[0] = []): Html =>
   withTooltip(h, model, key, placement, ({ trigger, panel }) =>
-    h.button([...trigger, h.Class("review-bar__button relative inline-flex items-center justify-center w-[32px] h-[32px] p-0 [border:0] rounded-[6px] bg-transparent text-inherit cursor-pointer"), h.AriaLabel(label), h.OnClick(message), ...extra], [icon, tip(h, panel, text)]),
+    h.button([...trigger, h.Class("review-bar__button"), h.AriaLabel(label), h.OnClick(message), ...extra], [icon, tip(h, panel, text)]),
   );
 
 const seekBar = (context: Context, model: Model, h: H): Html => {
@@ -66,7 +66,7 @@ const seekBar = (context: Context, model: Model, h: H): Html => {
         h.div(
           [
             ...a.root,
-            h.Class("review-seek relative block w-full h-[16px] cursor-pointer touch-none"),
+            h.Class("review-seek"),
             ...(Option.isSome(maybePointer) ? [h.DataAttribute("pointing", "")] : []),
             h.OnPointerDown(() => Option.some(Message.PressedSliderPointer())),
             h.OnMount(ObserveSeekPointer()),
@@ -74,31 +74,31 @@ const seekBar = (context: Context, model: Model, h: H): Html => {
           [
             // Slider の track の束は、押せる範囲用の包み要素に付ける（見た目の track は絶対配置で 3px。束の inline の relative で崩れるため）
             h.div(
-              [...a.track, h.Class("review-slider-hit absolute! inset-0")],
+              [...a.track, h.Class("review-slider-hit")],
               [
                 h.div(
-                  [h.Class("review-seek__track absolute left-0 right-0 top-[6px] h-[3px] bg-transparent")],
+                  [h.Class("review-seek__track")],
                   [
                     ...segments.map((c) => {
                       const len = c.end - c.start;
                       const filled = whole ? (duration > 0 ? Math.min(1, time / duration) : 0) : len > 0 ? Math.min(1, Math.max(0, (time - c.start) / len)) : 0;
                       return h.keyed("div")(
                         String(c.start),
-                        [h.Class("review-seek__chapter absolute top-0 h-full bg-gray-500 pointer-events-none"), h.Style(whole ? { left: "0", width: "100%" } : { left: pct(c.start / duration), width: `calc(${pct(len / duration)} - 2px)` })],
-                        [h.div([h.Class("review-seek__progress h-full bg-gray-50 pointer-events-none"), h.Style({ width: pct(filled) })])],
+                        [h.Class("review-seek__chapter"), h.Style(whole ? { left: "0", width: "100%" } : { left: pct(c.start / duration), width: `calc(${pct(len / duration)} - 2px)` })],
+                        [h.div([h.Class("review-seek__progress"), h.Style({ width: pct(filled) })])],
                       );
                     }),
                     ...(duration > 0
-                      ? context.marks.map((mark, index) => h.keyed("span")(String(index), [h.Class("review-seek__mark absolute top-1/2 w-[4px] h-[4px] [margin:-2px_0_0_-2px] rounded-[50%] pointer-events-none z-1"), h.Style({ left: pct(mark.at / duration), background: KIND_COLOR[mark.kind] })]))
+                      ? context.marks.map((mark, index) => h.keyed("span")(String(index), [h.Class("review-seek__mark"), h.Style({ left: pct(mark.at / duration), background: KIND_COLOR[mark.kind] })]))
                       : []),
                   ],
                 ),
               ],
             ),
-            h.div([...a.thumb, h.Class("review-seek__thumb absolute top-[2px] left-[var(--media-slider-fill,0%)] w-[12px] h-[12px] rounded-[50%] bg-gray-50 opacity-0")]),
+            h.div([...a.thumb, h.Class("review-seek__thumb")]),
             h.div(
-              [h.Class("review-seek__preview absolute bottom-full z-10 hidden flex-col items-center px-[8px] py-[4px] rounded-[4px] bg-gray-700 text-gray-50 text-[13px] leading-[16px] whitespace-nowrap pointer-events-none [transform:translateX(-50%)]"), h.Style({ left: pct(duration > 0 ? previewTime / duration : 0) })],
-              [h.span([h.Class("review-seek__preview-chapter")], [chapterNameAt(chapters, previewTime)]), h.span([h.Class("review-seek__preview-time [font-variant-numeric:tabular-nums]")], [formatHms(previewTime)])],
+              [h.Class("review-seek__preview"), h.Style({ left: pct(duration > 0 ? previewTime / duration : 0) })],
+              [h.span([h.Class("review-seek__preview-chapter")], [chapterNameAt(chapters, previewTime)]), h.span([h.Class("review-seek__preview-time")], [formatHms(previewTime)])],
             ),
           ],
         ),
@@ -112,7 +112,7 @@ const volumeControl = (model: Model, h: H): Html => {
   const label = muted ? "ミュートを戻す" : "ミュート";
   const value = muted ? 0 : volume;
   return h.div(
-    [h.Class("review-volume flex items-center flex-none")],
+    [h.Class("review-volume")],
     [
       barButton(h, model, "mute", "top-start", label, Message.ClickedMute(), volumeIcon(h, muted, volume), `${label}（M）`),
       h.submodel({
@@ -124,10 +124,10 @@ const volumeControl = (model: Model, h: H): Html => {
           ariaLabel: "音量",
           toView: (a) =>
             h.div(
-              [...a.root, h.Class("review-volume__slider relative w-0 h-[32px] overflow-hidden opacity-0 cursor-pointer touch-none [transition:width_0.15s]"), h.OnPointerDown(() => Option.some(Message.PressedSliderPointer()))],
+              [...a.root, h.Class("review-volume__slider"), h.OnPointerDown(() => Option.some(Message.PressedSliderPointer()))],
               [
-                h.div([...a.track, h.Class("review-slider-hit absolute! inset-0")], [h.div([h.Class("review-volume__track absolute left-0 right-0 top-[14px] h-[4px] rounded-[2px] bg-gray-500 pointer-events-none")], [h.div([...a.filledTrack, h.Class("review-volume__fill h-full w-[var(--media-slider-fill,0%)] rounded-[2px] bg-gray-50")])])]),
-                h.div([...a.thumb, h.Class("review-volume__thumb absolute top-[10px] left-[var(--media-slider-fill,0%)] w-[12px] h-[12px] rounded-[50%] bg-gray-50")]),
+                h.div([...a.track, h.Class("review-slider-hit")], [h.div([h.Class("review-volume__track")], [h.div([...a.filledTrack, h.Class("review-volume__fill")])])]),
+                h.div([...a.thumb, h.Class("review-volume__thumb")]),
               ],
             ),
         },
@@ -142,7 +142,7 @@ const captionsButton = (model: Model, h: H): Html => {
   const isOpen = !model.captionsHidden;
   return withTooltip(h, model, "captions", "top-end", ({ trigger, panel }) =>
     h.span(
-      [h.Class("review-bar__anchor inline-flex"), h.Id(Tooltip.triggerId(tooltipId("captions")))],
+      [h.Class("review-bar__anchor"), h.Id(Tooltip.triggerId(tooltipId("captions")))],
       [
         Disclosure.view(
           {
@@ -151,7 +151,7 @@ const captionsButton = (model: Model, h: H): Html => {
             onToggle: (next) => Message.ToggledCaptions({ isOpen: next }),
             toView: ({ button }) =>
               h.button(
-                [...trigger, ...button, h.Class("review-bar__button relative inline-flex items-center justify-center w-[32px] h-[32px] p-0 [border:0] rounded-[6px] bg-transparent text-inherit cursor-pointer"), h.AriaLabel("字幕"), h.AriaPressed(String(isOpen))],
+                [...trigger, ...button, h.Class("review-bar__button"), h.AriaLabel("字幕"), h.AriaPressed(String(isOpen))],
                 [isOpen ? CaptionsOnIcon(h) : CaptionsOffIcon(h), tip(h, panel, "字幕（C）")],
               ),
           },
@@ -170,7 +170,7 @@ const rateControl = (context: Context, model: Model, h: H): Html => {
   const timesOnly = Option.isSome(context.maybeAudioUrl);
   return withTooltip(h, model, "rate", "top-end", ({ trigger, panel }) =>
     h.span(
-      [h.Class("review-bar__anchor inline-flex"), h.Id(Tooltip.triggerId(tooltipId("rate")))],
+      [h.Class("review-bar__anchor"), h.Id(Tooltip.triggerId(tooltipId("rate")))],
       [
         h.submodel({
           slotId: RATE_MENU_ID,
@@ -181,17 +181,17 @@ const rateControl = (context: Context, model: Model, h: H): Html => {
             itemToConfig: (item) => {
               const itemRate = Number(item);
               return {
-                className: "review-rate__item flex items-center gap-[8px] px-[8px] py-[6px] [border:0] rounded-[4px] bg-transparent text-inherit [font:inherit] text-left whitespace-nowrap cursor-pointer",
-                content: h.span([h.Class("review-contents contents")], [h.span([h.Class("review-rate__check inline-flex w-[16px] h-[16px]")], itemRate === rate ? [CheckIcon(h)] : []), rateItemLabel(itemRate, duration, timesOnly)]),
+                className: "review-rate__item",
+                content: h.span([h.Class("review-contents")], [h.span([h.Class("review-rate__check")], itemRate === rate ? [CheckIcon(h)] : []), rateItemLabel(itemRate, duration, timesOnly)]),
               };
             },
             ariaLabel: "再生の速さ",
-            className: "review-rate relative flex-none",
-            buttonClassName: "review-bar__button review-rate__button relative inline-flex items-center justify-center w-[32px] h-[32px] p-0 [border:0] rounded-[6px] bg-transparent text-inherit cursor-pointer",
+            className: "review-rate",
+            buttonClassName: "review-bar__button review-rate__button",
             buttonAttributes: [...trigger, ...childAttributes([h.Id(Menu.buttonId(RATE_MENU_ID))])],
-            buttonContent: h.span([h.Class("review-contents contents")], [SpeedIcon(h), h.span([], [`${rate}×`])]),
-            itemsClassName: "review-rate__menu z-10 flex flex-col min-w-[220px] p-[4px] rounded-[6px] bg-gray-700 text-gray-50",
-            backdropClassName: "review-rate__backdrop fixed inset-0 z-9",
+            buttonContent: h.span([h.Class("review-contents")], [SpeedIcon(h), h.span([], [`${rate}×`])]),
+            itemsClassName: "review-rate__menu",
+            backdropClassName: "review-rate__backdrop",
             anchor: { placement: "top-end" },
           },
           toParentMessage: (message) => Message.GotRateMenuMessage({ message }),
@@ -208,20 +208,20 @@ export const controlsView = (context: Context, model: Model, topicName: string, 
   const rates = context.playback.rates;
   const playLabel = playing ? "止める" : "再生";
   return h.div(
-    [h.Class("review-controls flex-none bg-gray-700 text-gray-50")],
+    [h.Class("review-controls")],
     [
       seekBar(context, model, h),
       h.div(
-        [h.Class("review-bar flex items-center gap-[8px] pt-[4px] px-[12px] pb-[8px] text-[14px]")],
+        [h.Class("review-bar")],
         [
           barButton(h, model, "prev", "top-start", "反映 1 つ戻る", Message.ClickedPrev(), StepIcon(h, "prev"), "反映 1 つ戻る（,）"),
           barButton(h, model, "toggle", "top-start", playLabel, Message.ClickedToggle(), playing ? PauseIcon(h) : PlayIcon(h), `${playLabel}（Space・K）`),
           barButton(h, model, "next", "top-start", "反映 1 つ進む", Message.ClickedNext(), StepIcon(h, "next"), "反映 1 つ進む（.）"),
           ...(Option.isSome(context.maybeAudioUrl) ? [volumeControl(model, h)] : []),
-          h.span([h.Class("review-bar__time [font-variant-numeric:tabular-nums]")], [formatHms(time), h.span([h.Class("review-bar__duration")], [` / ${formatHms(duration)}`])]),
-          h.span([h.Class("review-bar__topic min-w-0 ml-[8px] truncate")], [topicName]),
+          h.span([h.Class("review-bar__time")], [formatHms(time), h.span([h.Class("review-bar__duration")], [` / ${formatHms(duration)}`])]),
+          h.span([h.Class("review-bar__topic")], [topicName]),
           h.div(
-            [h.Class("review-bar__end flex items-center gap-[4px] ml-auto flex-none")],
+            [h.Class("review-bar__end")],
             [
               captionsButton(model, h),
               ...(rates.length > 1 ? [rateControl(context, model, h)] : []),
