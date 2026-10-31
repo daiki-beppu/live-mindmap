@@ -1,4 +1,4 @@
-import { appendFileSync, chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -1251,15 +1251,19 @@ describe("cli publish list / withdraw（Issue #1253）", () => {
 
     it.effect("一部を消せた後に記録の書き換えに失敗しても、残る物があれば「まだ置き場にある」を出す", () => Effect.gen(function* () {
       const root = yield* temporaryDirectory;
-      const s = setup(root);
+      const s = setup(root, { respond: (call) => {
+        if (isScriptDelete(call)) {
+          rmSync(recordPath(s));
+          mkdirSync(recordPath(s));
+        }
+        return null;
+      } });
       seed(s, [rowOf(A)]);
-      // 記録のフォルダを書き込み不可にして、排他の取得と置き換えを失敗させる（読むことはできる）
-      const directory = join(s.home, ".live-mindmap", "publish");
-      chmodSync(directory, 0o500);
 
-      const result = yield* publish(s, ["withdraw", A, "lmm-unknown"]).pipe(Effect.ensuring(Effect.sync(() => chmodSync(directory, 0o700))));
+      const result = yield* publish(s, ["withdraw", A, "lmm-unknown"]);
 
       expect(Result.isFailure(result)).toBe(true);
+      expect(deletes(s).map(scriptName)).toEqual([A]);
       const text = output(s, result);
       expect(text).toContain("記録を書き換えられませんでした");
       expect(text).toContain(STILL_THERE);
