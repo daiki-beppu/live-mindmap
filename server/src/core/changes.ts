@@ -1,5 +1,6 @@
 import { Schema } from "effect";
-import { NodeKind, pointStatus, ROOT_ID, type MapNode, type AppliedOps, type MeetingMap } from "./map.ts";
+import { childrenByParent } from "./groupSize.ts";
+import { NodeKind, pointStatusOf, ROOT_ID, type MapNode, type AppliedOps, type MeetingMap } from "./map.ts";
 
 export const ChangeType = Schema.Literals(["追加", "更新", "決定済み化", "却下", "移動", "統合"]);
 export type ChangeType = typeof ChangeType["Type"];
@@ -30,9 +31,12 @@ function changedValue(old: MapNode, n: MapNode): boolean {
     || !!old.digression !== !!n.digression;
 }
 
-function changeTypesOf(id: string, old: MapNode, n: MapNode, before: MeetingMap, applied: CombineRecord): ChangeType[] {
-  const after = applied.map;
-  const decided = n.kind === "論点" && pointStatus(before, id) === "未決" && pointStatus(after, id) === "決定済み";
+type Kids = ReadonlyMap<string, readonly MapNode[]>;
+
+const kidsOf = (map: MeetingMap): Kids => childrenByParent(map.order.map((id) => map.nodes[id]!));
+
+function changeTypesOf(id: string, old: MapNode, n: MapNode, kids: { before: Kids; after: Kids }, applied: CombineRecord): ChangeType[] {
+  const decided = n.kind === "論点" && pointStatusOf(kids.before.get(id) ?? []) === "未決" && pointStatusOf(kids.after.get(id) ?? []) === "決定済み";
   const rejected = n.kind === "案" && old.planStatus !== "却下" && n.planStatus === "却下";
   const moved = old.parent !== n.parent && !adoptedByCombine(old, n, applied.combined);
   const combined = applied.combined.has(id);
@@ -49,11 +53,12 @@ function changeTypesOf(id: string, old: MapNode, n: MapNode, before: MeetingMap,
 
 export function diffMaps(before: MeetingMap, applied: CombineRecord): Change[] {
   const changes: Change[] = [];
+  const kids = { before: kidsOf(before), after: kidsOf(applied.map) };
   for (const id of applied.map.order) {
     if (id === ROOT_ID) continue;
     const n = applied.map.nodes[id]!;
     const old = before.nodes[id];
-    const types: ChangeType[] = old ? changeTypesOf(id, old, n, before, applied) : ["追加"];
+    const types: ChangeType[] = old ? changeTypesOf(id, old, n, kids, applied) : ["追加"];
     const body = { node: id, kind: n.kind, text: n.text };
     for (const change of types) changes.push(change === "統合" ? { change, ...body, from: [...applied.combined.get(id)!] } : { change, ...body });
   }
