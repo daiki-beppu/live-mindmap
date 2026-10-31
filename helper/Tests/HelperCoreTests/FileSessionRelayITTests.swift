@@ -288,7 +288,9 @@ private func withRig(includeMine: Bool = true, theirsWhiteFrom: Double? = nil, m
     await rig.stop()
 }
 
-@Suite("録画のセッションの組み立て（relayFileSession）", .timeLimit(.minutes(1)))
+// Why: 映像の読み出しと OCR はどのテストもプロセスに 1 本の直列キュー fileScreenQueue を通る。並列に流しても速くならず、
+// 各テストの 30 秒の期限が一斉に数え始める間にフレームが他のテストの後ろで待つ（#1681）
+@Suite("録画のセッションの組み立て（relayFileSession）", .serialized, .timeLimit(.minutes(1)))
 struct FileSessionRelayITTests {
     @Test("入力の終わりの後に届く 相手 の確定結果も、保留中の 自分 の判定の文脈に入る。相手 は track 相手・印なし、自分 は track 自分・印あり")
     func theirFinalAfterEndOfInputMarksMine() async throws {
