@@ -10,7 +10,7 @@ import { KIND_COLOR, markOf } from "../../kinds.ts";
 import { layout, NODE_WIDTH, type Position } from "../../layout.ts";
 import { interpolate, startPositions } from "../../motion.ts";
 import { relocations } from "../../relocation.ts";
-import { type ArrowDir, INITIAL_VIEWING, reduceViewing, ViewingState, type ViewingEvent, type ViewKey, type VisibleTree } from "../../viewing.ts";
+import { type ArrowDir, INITIAL_VIEWING, reduceViewing, relocateSelection, ViewingState, type ViewingEvent, type ViewKey, type VisibleTree } from "../../viewing.ts";
 import { RestartBlink } from "./command.ts";
 import { Message, OutMessage } from "./message.ts";
 import { ObserveMapSurface } from "./mount.ts";
@@ -303,10 +303,15 @@ export const update = (model: Model, message: Message): Return =>
       const surface = surfaceOf(refreshed);
       const reflection = reflectionOf(previous, refreshed, surface);
       if (reflection !== null) return { model: applyViewing(refreshed, reflection, previous, surface) };
-      const followed = followTarget(model, refreshed, previous.surface.seen, surface);
+      const selectedSupplement = model.snapshot.nodes.some((node) => node.id === model.viewing.selection?.id && node.kind === "補足");
+      const reconciled = refreshed.mode === "still" || !selectedSupplement ? refreshed : modifyFields(refreshed, {
+        viewing: (state) => relocateSelection(state, relocations({ tree: previous.surface.tree, snapshot: model.snapshot, selectedId: state.selection?.id ?? null }, { tree: surface.tree, snapshot })),
+      });
+      const current = surfaceOf(reconciled);
+      const followed = followTarget(model, reconciled, previous.surface.seen, current);
       if (snapshot.round === model.snapshot.round && snapshot.currentTopic === model.snapshot.currentTopic && snapshot.lastChanged === model.snapshot.lastChanged
         && sameNodes(model.snapshot.nodes.filter((n) => n.kind !== "補足"), snapshot.nodes.filter((n) => n.kind !== "補足"))) return { model: followed };
-      const seen = seenAfterMotion(followed, surface.seen);
+      const seen = seenAfterMotion(followed, current.seen);
       return { model: updateCamera(followed, { type: "replacedSnapshot" }, previous.surface.seen, seen) };
     },
     MovedTime: () => pressed(model, { type: "timeMoved" }),

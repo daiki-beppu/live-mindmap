@@ -158,7 +158,7 @@ function reduceFitSubtree(state: ViewingState, event: Extract<ViewingEvent, { ty
   return { state, input: { type: "selectedSubtree", id } };
 }
 
-function relocateSelection(state: ViewingState, replaced: Readonly<Record<string, string>>): ViewingState {
+export function relocateSelection(state: ViewingState, replaced: Readonly<Record<string, string>>): ViewingState {
   const to = state.selection ? replaced[state.selection.id] : undefined;
   return state.selection && to !== undefined ? { ...state, selection: { ...state.selection, id: to } } : state;
 }

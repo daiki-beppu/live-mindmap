@@ -1,0 +1,34 @@
+{
+  "input": {
+    "fixture": "server/test/fixtures/supplement.ts",
+    "call": "supplementLog(\"SLO\", [\"r2\"])",
+    "synthetic": true,
+    "generation": "pnpm --filter @live-mindmap/server cli review <synthetic-session-directory>"
+  },
+  "viewport": { "width": 1280, "height": 800 },
+  "timeSeconds": 30,
+  "screenshots": [
+    {
+      "file": "supplement-internal.png",
+      "selectedId": "n4",
+      "parentId": "n2",
+      "origin": "会議の中",
+      "text": "月間稼働率による目標",
+      "heading": "根拠",
+      "remarkCount": 2,
+      "fontStyle": "normal",
+      "color": "rgb(15, 118, 110)"
+    },
+    {
+      "file": "supplement-external.png",
+      "selectedId": "n3",
+      "parentId": "n1",
+      "origin": "会議の外",
+      "text": "サービス水準の合意",
+      "heading": "この語が話された発言",
+      "remarkCount": 1,
+      "fontStyle": "italic",
+      "color": "rgb(123, 168, 161)"
+    }
+  ]
+}
