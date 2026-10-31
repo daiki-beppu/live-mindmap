@@ -87,6 +87,22 @@ body { font-family: system-ui, "Hiragino Sans", sans-serif; background: var(--co
 .map-node:hover .map-node__fold-dot { opacity: 1; }
 .map-node__fold-dot:focus-visible { opacity: 1; outline: 2px solid #facc15; }
 
+/* 側面板の基本規則は、下の非表示・狭幅の規則より前に置く。 */
+.side { flex: none; width: 300px; height: 100%; display: flex; flex-direction: column; border-left: 1px solid var(--color-gray-200); font-size: 13px; color: var(--color-gray-900); }
+.evidence, .todos, .changes { flex: 1; min-height: 0; box-sizing: border-box; padding: 12px; overflow-y: auto; }
+.evidence, .todos { border-bottom: 1px solid var(--color-gray-200); }
+/* 移行中はユーティリティが生成していた変数も保持し、全computed styleの照合を維持する。 */
+.evidence__kind, .evidence__track, .todos__assignee, .changes__type { --tw-font-weight: var(--font-weight-semibold); font-weight: var(--font-weight-semibold); }
+.evidence__status { margin-left: 8px; }
+.evidence__status, .evidence__empty, .evidence__time, .todos__empty, .todos__time, .todos__due, .changes__time, .changes__kind { color: var(--color-gray-500); }
+.evidence__text, .evidence__remark-text, .todos__text, .changes__text { overflow-wrap: anywhere; }
+.evidence__remark { display: flex; flex-wrap: wrap; column-gap: 8px; row-gap: 4px; padding-block: 6px; border-bottom: 1px solid var(--color-gray-100); }
+.evidence__time, .todos__time, .changes__time { font-variant-numeric: tabular-nums; }
+.evidence__remark-text, .todos__text, .changes__text { flex-basis: 100%; }
+.todos__item, .changes__item { border-bottom: 1px solid var(--color-gray-100); }
+.todos__button, .changes__button { display: flex; flex-wrap: wrap; column-gap: 8px; row-gap: 4px; width: 100%; padding-inline: 0; padding-block: 6px; border: 0; background-color: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.changes__type { color: var(--color-gray-700); }
+
 /* 右の列・「変わったこと」の中の要素（子孫のセレクタ） */
 .evidence h2 { margin: 0 0 8px; font-size: 14px; }
 .evidence p { margin: 0 0 6px; }

@@ -4,20 +4,24 @@ import { createServer, type ViteDevServer } from "vite";
 import type { CaptionsFrame, SnapshotFrame } from "../../server/src/core/index.ts";
 import { spokenBubble } from "./fixtures/captions.ts";
 import { buildReviewTimeline, CAPTION_SECONDS, snapshotAt } from "../src/reviewTimeline.ts";
-import { LOG_PATH, readFoldkitViewport } from "./reviewPage.ts";
+import { LOG_PATH, readFoldkitViewport } from "./reviewBrowser.ts";
 import type { BrowserContext, Page } from "./browser.ts";
 
 export const MEETING_TIMEOUT = 180_000;
 
 export type MeetingServer = { url: string; close: () => Promise<void> };
 
-export async function startMeetingServer(): Promise<MeetingServer> {
-  const root = join(import.meta.dirname, "..");
+export async function startMeetingServer(root = join(import.meta.dirname, "..")): Promise<MeetingServer> {
   const vite: ViteDevServer = await createServer({ root, configFile: join(root, "vite.config.ts"), logLevel: "silent", server: { host: "127.0.0.1", port: 0, hmr: false, ws: false } });
-  await vite.listen();
-  const url = vite.resolvedUrls?.local[0];
-  if (url === undefined) throw new Error("Vite の開発サーバーの URL を取れません");
-  return { url, close: () => vite.close() };
+  try {
+    await vite.listen();
+    const url = vite.resolvedUrls?.local[0];
+    if (url === undefined) throw new Error("Vite の開発サーバーの URL を取れません");
+    return { url, close: () => vite.close() };
+  } catch (error) {
+    await vite.close();
+    throw error;
+  }
 }
 
 export type MeetingFrames = {

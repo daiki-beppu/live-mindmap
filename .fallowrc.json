@@ -12,7 +12,8 @@
     "server/test/fixtures/managedDepsRunnerHooks.mjs"
   ],
   "ignorePatterns": [
-    "helper/**"
+    "helper/**",
+    "web/scripts/css-migration/**"
   ],
   "ignoreExportsUsedInFile": true,
   "ignoreDependencies": [
