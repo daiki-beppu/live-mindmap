@@ -2,6 +2,24 @@ import { expect, it } from "@effect/vitest";
 import { Effect } from "effect";
 import { logMetrics, type LogEvent } from "../src/core/index.ts";
 
+it.effect("話し中の兄弟の最多から補足だけを外し、通常ノードと補足の採番は保つ", () => Effect.gen(function* () {
+  const events: LogEvent[] = [
+    { type: "start", title: "定例" },
+    { type: "remark", remark: { id: "r1", track: "相手", start: 0, end: 10, text: "用語" } },
+    { type: "diff", input: { recent: [], fresh: ["r1"], nodeCount: 0 }, dropped: [], ops: [
+      { op: "add", ref: "a", parent: "root", kind: "議題", text: "議題", evidence: ["r1"] },
+      { op: "add", ref: "b", parent: "a", kind: "案", text: "補足の方法", evidence: ["r1"] },
+    ] },
+    { type: "supplement", category: "背景", ms: 1, reflectedAt: 10,
+      op: { op: "add", parent: "n1", text: "説明", origin: "会議の外", evidence: ["r1"] } },
+    { type: "diff", input: { recent: [], fresh: [], nodeCount: 3 }, dropped: [], ops: [
+      { op: "add", ref: "c", parent: "n2", kind: "要点", text: "通常の内容", evidence: ["r1"] },
+      { op: "update", node: "n4", text: "通常の更新", evidence: ["r1"] },
+    ] },
+  ];
+  expect(yield* logMetrics(events)).toMatchObject({ maxOpenSiblings: 1, rewrites: 1 });
+}));
+
 it.effect("補足の採番を計測にも反映し、後続の通常ノードの書き換えを数える", () => Effect.gen(function* () {
   const events: LogEvent[] = [
     { type: "start", title: "定例" },

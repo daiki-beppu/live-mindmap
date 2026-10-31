@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { reviewSnapshot, type Kind, type LogEvent, type Op } from "../src/core/index.ts";
 
-const add = (ref: string, parent: string, kind: Kind): Op => ({ op: "add", ref, parent, kind, text: "合成ノード", evidence: ["r1"] });
+const add = (ref: string, parent: string, kind: Kind): Extract<Op, { op: "add" }> => ({ op: "add", ref, parent, kind, text: "合成ノード", evidence: ["r1"] });
 const diff = (ops: Op[], fresh: string[]): LogEvent => ({ type: "diff", input: { recent: [], fresh, nodeCount: 0 }, ops, dropped: [] });
 const eventsOf = (ops: Op[]): LogEvent[] => [
   { type: "start", title: "合成会議" },
@@ -19,6 +19,20 @@ const shapeEvents = (): LogEvent[] => eventsOf([
 ]);
 
 describe("イベント列からマップの形を数える", () => {
+  it.each([4, 5])("通常の子%s件に補足を足しても形の全指標は変わらず、本文に補足とある通常ノードは数える", async (count) => {
+    const { mapShape } = await import("../bench/mapShape.ts");
+    const events = eventsOf([
+      add("t", "root", "議題"),
+      ...Array.from({ length: count }, (_, i): Op => ({ ...add(`a${i}`, "t", "案"), text: "補足の方法" })),
+    ]);
+    const mixed: LogEvent[] = [...events, {
+      type: "supplement", category: "背景", ms: 1, reflectedAt: 120,
+      op: { op: "add", parent: count === 4 ? "n1" : "n6", text: "説明", evidence: ["r1"], origin: "会議の外" },
+    }];
+    expect(mapShape(mixed)).toEqual(mapShape(events));
+    expect(mapShape(mixed)).toMatchObject({ nodes: count + 2, maxTopic: count, maxGroup: count, maxDepth: 2 });
+  });
+
   it("fixture は既存復元で 13 ノードとなり、最大時刻の未引用発言は snapshot に含まれない", () => {
     const snapshot = reviewSnapshot(shapeEvents());
     expect(snapshot.nodes).toHaveLength(13);

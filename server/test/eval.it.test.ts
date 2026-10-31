@@ -14,7 +14,7 @@ import { MapCapture } from "../src/capture.ts";
 import { ReviewBuild } from "../src/review.ts";
 import { runCli } from "../src/cli.ts";
 import * as cliEntry from "../src/cli.ts";
-import { type DiffInput, type DiffResult, type DiffUsage, type Op, type Snapshot, SpeakerNameLogEvent, REVIEW_LOG_ELEMENT_ID, Truth } from "../src/core/index.ts";
+import { type DiffInput, type DiffResult, type DiffUsage, type LogEvent, type Op, type Snapshot, SpeakerNameLogEvent, REVIEW_LOG_ELEMENT_ID, Truth, reviewSnapshot, toJsonExport } from "../src/core/index.ts";
 import { fakeListener } from "./fakeListener.ts";
 import { fakeAudioMix } from "./fixtures/audioMix.ts";
 import { fakeScreenJpeg } from "./fixtures/screenJpeg.ts";
@@ -460,15 +460,16 @@ describe("eval: log.jsonl から数える 3 指標", () => {
     const truth = yield* writeTruth({ 決定: [], TODO: [] });
     const { header, rows } = parseTable(yield* evalCli(["--truth", truth, yield* play(scriptRewrite)]));
 
-    expect(header.slice(-11)).toEqual([...LOG_HEADERS, ...USAGE_HEADERS, "決定の再現率", "TODO の再現率", "決定の種別違い", "TODO の種別違い"]);
-    expect(header.indexOf(LOG_HEADERS[0]!)).toBe(header.indexOf("要点") + 1);
+    expect(header.filter((h) => !h.startsWith("補足")).slice(-11)).toEqual([...LOG_HEADERS, ...USAGE_HEADERS, "決定の再現率", "TODO の再現率", "決定の種別違い", "TODO の種別違い"]);
+    const existingHeaders = header.filter((h) => !h.startsWith("補足"));
+    expect(existingHeaders.indexOf(LOG_HEADERS[0]!)).toBe(existingHeaders.indexOf("要点") + 1);
     expect(rows[0]).toMatchObject({ "書き換え/発言": "1/3 (0.33)", "1 ノードの書き換えの最多": "1", "話し中の兄弟の最多": "1" });
   }));
 
   it.effect("--truth を付けなくても 3 列とトークン数の 4 列は出る", () => Effect.gen(function* () {
     const { header, rows } = parseTable(yield* evalCli([yield* play(scriptRewrite)]));
 
-    expect(header.slice(-7)).toEqual([...LOG_HEADERS, ...USAGE_HEADERS]);
+    expect(header.filter((h) => !h.startsWith("補足")).slice(-7)).toEqual([...LOG_HEADERS, ...USAGE_HEADERS]);
     expect(rows[0]!["書き換え/発言"]).toBe("1/3 (0.33)");
   }));
 
@@ -528,7 +529,7 @@ describe("eval: 正解との再現率（時刻の重なり）", () => {
       const truth = { 決定: [], TODO: [], [kind]: [{ text: "x", from, to, keywords }] };
       const { header, rows } = parseTable(yield* evalCli(["--truth", yield* writeTruth(truth), dir]));
 
-      expect(header.slice(-4)).toEqual(["決定の再現率", "TODO の再現率", "決定の種別違い", "TODO の種別違い"]);
+      expect(header.filter((h) => !h.startsWith("補足")).slice(-4)).toEqual(["決定の再現率", "TODO の再現率", "決定の種別違い", "TODO の種別違い"]);
       expect(rows[0]![kind === "決定" ? "決定の再現率" : "TODO の再現率"]).toBe(expected);
     }));
   }
@@ -774,6 +775,86 @@ describe("eval: bench の正解ファイル", () => {
   });
 });
 
+describe("eval: 保存ログから補足の列へ", () => {
+  const savedRun = Effect.fnUntraced(function* (withTime: boolean) {
+    const dir = yield* Effect.acquireRelease(
+      Effect.promise(() => mkdtemp(join(tmpdir(), "live-mindmap-supplement-eval-"))),
+      (path) => Effect.promise(() => rm(path, { recursive: true, force: true })),
+    );
+    const diffUsage: DiffUsage = { input: 100, cacheWrite: 20, cacheRead: 300, output: 40, model: "synthetic" };
+    const supplementUsage: DiffUsage = { input: 11, cacheWrite: 2, cacheRead: 33, output: 4, model: "synthetic" };
+    const log: (LogEvent & { at?: string })[] = [
+      { type: "start", title: "合成会議", at: "2026-10-01T00:00:00Z" },
+      { type: "remark", remark: { id: "r1", track: "相手", start: 10, end: 20, text: "サービス水準" }, at: "2026-10-01T00:00:01Z" },
+      { type: "diff", input: { recent: [], fresh: ["r1"], nodeCount: 0 }, dropped: [], usage: diffUsage, at: "2026-10-01T00:00:10Z", ops: [
+        { op: "add", ref: "a", parent: "root", kind: "案", text: "SLAを決める", evidence: ["r1"] },
+      ] },
+      { type: "diff", input: { recent: [], fresh: [], nodeCount: 1 }, dropped: [], at: "2026-10-01T00:00:20Z", ops: [
+        { op: "update", node: "n1", text: "SLAを決める方法", evidence: ["r1"] },
+      ] },
+      { type: "supplement", category: "用語", term: "SLA", ms: 999, reflectedAt: 1234, usage: supplementUsage, at: "2026-10-01T00:00:40Z",
+        op: { op: "add", parent: "n1", text: "契約水準の説明", evidence: ["r1"], origin: "会議の外" } },
+      { type: "supplement", category: "理由", ms: 888, reflectedAt: 2345, at: "2026-10-01T00:00:50Z",
+        op: { op: "add", parent: "n1", text: "既存補足があり拒否", evidence: ["r1"], origin: "会議の外" } },
+      { type: "supplement", category: null, op: null, ms: 1, reflectedAt: 30, usage: supplementUsage, at: "2026-10-01T00:01:00Z" },
+      { type: "supplement", category: null, op: null, error: "合成の失敗", ms: 1, reflectedAt: 30, usage: supplementUsage, at: "2026-10-01T00:01:10Z" },
+    ];
+    const exp = toJsonExport(reviewSnapshot(log), log.flatMap((event) => event.type === "remark" ? [event.remark] : []));
+    yield* Effect.promise(() => writeFile(join(dir, "export.json"), JSON.stringify(exp)));
+    yield* Effect.promise(() => writeFile(join(dir, "log.jsonl"), log.map(({ at, ...event }) => JSON.stringify(withTime ? { at, ...event } : event)).join("\n") + "\n"));
+    return dir;
+  });
+
+  it.effect("実時刻を読み渡し、親の追加からの30秒だけを遅れへ計上する", () => Effect.gen(function* () {
+    const dir = yield* savedRun(true);
+    const { rows } = parseTable(yield* evalCli([dir]));
+    expect(rows[0]).toMatchObject({
+      "補足の遅れ件数": "1", "補足の遅れ p50 (秒)": "30.0", "補足の遅れ p90 (秒)": "30.0",
+    });
+  }).pipe(Effect.scoped));
+
+  it.effect("保存ログの無操作・失敗も含めた補足usageを差分更新と分け、モデルを開かない", () => Effect.gen(function* () {
+    const dir = yield* savedRun(true);
+    external.openClaudeUpdater.mockClear();
+    const { rows } = parseTable(yield* evalCli([dir]));
+    expect(rows[0]).toMatchObject({
+      入力トークン: "100", キャッシュ書き込みトークン: "20", キャッシュ読み出しトークン: "300", 出力トークン: "40",
+      補足の入力トークン: "33", 補足のキャッシュ書き込みトークン: "6", 補足のキャッシュ読み出しトークン: "99", 補足の出力トークン: "12",
+    });
+    expect(external.openClaudeUpdater).not.toHaveBeenCalled();
+  }).pipe(Effect.scoped));
+
+  it.effect("truth.jsonの補足を添える先の場面と突き合わせ、補足の量も表へ渡す", () => Effect.gen(function* () {
+    const dir = yield* savedRun(true);
+    const path = join(dir, "truth.json");
+    yield* Effect.promise(() => writeFile(path, JSON.stringify({
+      決定: [{ from: 10, to: 20, keywords: ["契約水準"] }],
+      TODO: [{ from: 10, to: 20, keywords: ["契約水準"] }],
+      補足: [{ from: 10, to: 20, keywords: ["SLA"] }],
+    })));
+    const { rows } = parseTable(yield* evalCli(["--truth", path, dir]));
+    expect(rows[0]).toMatchObject({
+      補足数: "1", 補足の再現率: "1/1 (100%)", ノード: "1", 深さ: "1",
+      決定の再現率: "0/1 (0%)", "TODO の再現率": "0/1 (0%)", 決定の種別違い: "0", "TODO の種別違い": "0",
+    });
+    expect(rows[0]!["補足の区分"]).toMatch(/用語\s*[:：=]\s*1/);
+  }).pipe(Effect.scoped));
+
+  it.effect("時刻の無い保存ログも読み、遅れをmsや会議内時刻で代用しない", () => Effect.gen(function* () {
+    const { rows } = parseTable(yield* evalCli([yield* savedRun(false)]));
+    expect(rows[0]).toMatchObject({ 補足数: "1", "補足の遅れ p50 (秒)": "-", "補足の遅れ p90 (秒)": "-" });
+  }).pipe(Effect.scoped));
+
+  it.effect("評価対象行の不正な実時刻は元のファイル行番号付きで拒否する", () => Effect.gen(function* () {
+    const dir = yield* savedRun(true);
+    yield* Effect.promise(() => appendFile(join(dir, "log.jsonl"), '\n{"type":"supplement","op":null,"category":null,"ms":1,"reflectedAt":0,"at":"invalid"}\n'));
+    const failure = yield* evalFailure([dir]);
+    expect(failure.tag).toBe("BrokenLogLine");
+    expect(failure.values).toMatchObject({ path: join(dir, "log.jsonl"), line: 10, kind: "event" });
+  }).pipe(Effect.scoped));
+
+});
+
 describe("eval: 差分更新のトークン数の合計", () => {
   const USAGE_HEADERS = ["入力トークン", "キャッシュ書き込みトークン", "キャッシュ読み出しトークン", "出力トークン"];
   const usageCells = (row: Record<string, string>) => USAGE_HEADERS.map((h) => row[h]);
@@ -845,8 +926,8 @@ describe("eval --screen-truth: 共有画面の正解の列", () => {
     it.effect("--screen-truth だけを付けると、今の列の後ろに 4 列が決まった順で足され、再現率の列は出ない", () => Effect.gen(function* () {
       const { header, rows } = parseTable(yield* evalCli(["--screen-truth", yield* writeTruth(screenTruth({ 指す発言: [point(["採用"])] })), yield* play(scriptA)]));
       expect(header.slice(0, 4)).toEqual(["ラン", "会議", "ノード", "深さ"]);
-      expect(header.slice(-4)).toEqual(SCREEN_HEADERS);
-      expect(header).toHaveLength(4 + 7 + 3 + 4 + 4);
+      expect(header.filter((h) => !h.startsWith("補足")).slice(-4)).toEqual(SCREEN_HEADERS);
+      expect(header.filter((h) => !h.startsWith("補足"))).toHaveLength(4 + 7 + 3 + 4 + 4);
       expect(header.some((h) => h.includes("再現率"))).toBe(false);
       expect(rows[0]).toMatchObject({ ノード: "5", 深さ: "3" });
     }));
@@ -865,7 +946,7 @@ describe("eval --screen-truth: 共有画面の正解の列", () => {
         出てはいけない: [{ keywords: ["求人票"] }, { keywords: ["存在しない"] }, { keywords: ["2回"] }, { keywords: ["存在しない2"] }],
       }));
       const { header, rows } = parseTable(yield* evalCli(["--truth", truth, "--screen-truth", screen, yield* play(scriptA)]));
-      const last8 = header.slice(-8);
+      const last8 = header.filter((h) => !h.startsWith("補足")).slice(-8);
       expect(last8).toEqual(["決定の再現率", "TODO の再現率", "決定の種別違い", "TODO の種別違い", ...SCREEN_HEADERS]);
       expect(last8.map((h) => rows[0]![h])).toEqual(["1/2 (50%)", "1/1 (100%)", "0", "0", "2/3", "1/1", "1/2", "2/4"]);
     }));
