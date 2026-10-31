@@ -1,0 +1,6 @@
+{
+  "build": {
+    "dockerfile": ".cursor/Dockerfile"
+  },
+  "install": "bash scripts/setup-deps.sh"
+}
