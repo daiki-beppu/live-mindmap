@@ -17,7 +17,9 @@ export const KIND_COLORS: Record<Kind, { fill: string; stroke: string }> = {
 export type DrawnixElement = {
   id: string;
   type: "mindmap" | "mind_child";
-  data: { topic: { children: { text: string; color?: string }[] } };
+  data: { topic: { children: { text: string; color?: string }[] } } & (
+    Pick<Extract<ExportNode, { kind: "補足" }>, "kind" | "origin"> | { kind?: never; origin?: never }
+  );
   children: DrawnixElement[];
   points?: [number, number][];
   layout?: "right";
@@ -46,10 +48,11 @@ function hasSpeakers(node: ExportNode): boolean {
 }
 
 function toElement(node: ExportNode, isRoot: boolean, names: SpeakerNames, speakers: boolean): DrawnixElement {
+  const topic = { children: [{ text: node.text }] };
   const el: DrawnixElement = {
     id: node.id,
     type: isRoot ? "mindmap" : "mind_child",
-    data: { topic: { children: [{ text: node.text }] } },
+    data: node.kind === "補足" ? { topic, kind: node.kind, origin: node.origin } : { topic },
     children: node.children.map((c) => toElement(c, false, names, speakers)),
   };
   if (node.kind === "補足") el.data.topic.children.push({ text: `（${node.origin}）`, color: PERSON_COLOR });

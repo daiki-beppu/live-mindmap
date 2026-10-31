@@ -12,7 +12,7 @@ import { afterEach, vi } from "vitest";
 import { MapCapture } from "../src/capture.ts";
 import * as cliEntry from "../src/cli.ts";
 import { runCli } from "../src/cli.ts";
-import { openSealed, PUBLISH_TITLE, REVIEW_LOG_ELEMENT_ID } from "../src/core/index.ts";
+import { openSealed, PUBLISH_TITLE, REVIEW_LOG_ELEMENT_ID, reviewSnapshot } from "../src/core/index.ts";
 import { AppleIntelligence } from "../src/appleIntelligence.ts";
 import { ReviewBuild, ReviewPageFailed } from "../src/review.ts";
 import { BrokenLogLine } from "../src/sessionFiles.ts";
@@ -20,6 +20,7 @@ import { embeddedAudio, FAKE_MIX_BYTES, fakeAudioMix, type FakeMix } from "./fix
 import { readyManagedDeps } from "./fixtures/readyManagedDeps.ts";
 import { fakeScreenJpeg } from "./fixtures/screenJpeg.ts";
 import { embeddedText } from "./fixtures/review.ts";
+import { supplementLog } from "./fixtures/supplement.ts";
 
 // cli publish（Issue #1250 の --anyone と、Issue #1251 の既定の合言葉）。runCli を、偽の Cloudflare API・一時フォルダの HOME・偽の ReviewBuild・止めた時計で呼ぶ。
 // 偽の API が受け取った Worker のスクリプトは、実際に import して Request を渡す
@@ -1640,6 +1641,37 @@ describe("cli publish の中身の段と確認の終了コード 4（Issue #1252
     const m = /<script type="application\/json"[^>]*>([\s\S]*?)<\/script>/.exec(outer);
     return openSealed(JSON.parse(m![1]!) as { salt: string; iv: string; data: string }, passphrase);
   };
+
+  it.effect.each([
+    { content: "map", anyone: true },
+    { content: "remarks", anyone: false },
+    { content: "audio", anyone: true },
+  ])("$content の公開 HTML は補足の種別・両方の出どころを持ち、区分を出さず本文を保つ", ({ content, anyone }) => Effect.gen(function* () {
+    const { s, dir } = placed(yield* temporaryDirectory, { recording: true });
+    const text = '背景を説明する\n> {"category":"用語"}\n```json\n{"category":"用語"}\n```\n~~~json\n{"category":"用語"}\n~~~\n```json\n{"category":"用語"}';
+    const log = supplementLog("SLO", ["r2"]).map((row) => row.type === "supplement" && row.op !== null && row.op.op !== "delete" ? { ...row, op: { ...row.op, text } } : row);
+    const source = log.map((row) => JSON.stringify(row)).join("\n") + "\n";
+    writeFileSync(join(dir, "log.jsonl"), source);
+
+    const result = yield* publish(s, [dir, "--content", content, "--confirmed", ...(anyone ? ["--anyone"] : [])]);
+
+    expect(Result.isSuccess(result), failureText(result)).toBe(true);
+    const outer = yield* Effect.promise(() => uploadedHtml(s));
+    const html = anyone ? outer : yield* Effect.promise(() => sealedHtml(outer, /合言葉:\s*(\S+)/.exec(s.stdout.join(""))![1]!));
+    const rows = JSON.parse(embeddedText(html));
+    const supplements = rows.filter((row: { type: string }) => row.type === "supplement");
+    expect(supplements.map((row: { op: unknown }) => row.op)).toMatchObject([
+      { op: "add", kind: "補足", origin: "会議の外", text },
+      { op: "add", kind: "補足", origin: "会議の外", text },
+      { op: "update", kind: "補足", origin: "会議の中", text },
+    ]);
+    for (const row of supplements) expect(["用語", "背景", "案の違い", "理由", "前の決定とのつながり", "未確認", "推奨"]).not.toContain(row.category);
+    expect(reviewSnapshot(rows).nodes.filter((n) => n.kind === "補足")).toMatchObject([
+      { parent: "n1", kind: "補足", origin: "会議の外", text },
+      { parent: "n2", kind: "補足", origin: "会議の中", text },
+    ]);
+    expect(readFileSync(join(dir, "log.jsonl"), "utf8")).toBe(source);
+  }));
   const nothingPlaced = (s: Setup) => {
     expect(s.api.calls).toEqual([]);
     expect(recordFiles(s)).toEqual([]);
