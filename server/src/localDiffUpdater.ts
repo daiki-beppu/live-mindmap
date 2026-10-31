@@ -32,7 +32,7 @@ function workAssignment(s: Extract<Classification["文"][number], { 種類: "作
   };
 }
 
-function sentenceOps(s: Classification["文"][number], remarkId: string, topic: string, points: Set<string>, nextRef: () => string): Op[] {
+function sentenceOps(s: Classification["文"][number], remarkId: string, topic: string, points: Set<string>, nextRef: () => string): DiffOutput["ops"] {
   if (s.種類 === "なし") return [];
   const evidence = [remarkId];
   if (s.種類 === "合意") {
@@ -54,8 +54,8 @@ function sentenceOps(s: Classification["文"][number], remarkId: string, topic: 
   return [{ op: "add", ref, parent, kind: kinds[s.種類], text: s.text, evidence }];
 }
 
-function toOps(raw: Classification, sentences: readonly Sentence[], map: MeetingMap, preceding: readonly Op[], nextRef: () => string): Op[] {
-  const ops: Op[] = [];
+function toOps(raw: Classification, sentences: readonly Sentence[], map: MeetingMap, preceding: readonly Op[], nextRef: () => string): DiffOutput["ops"] {
+  const ops: DiffOutput["ops"] = [];
   let topic = raw.議題.id;
   const first = raw.文.findIndex((s) => s.種類 !== "なし");
   if (topic === "新しい議題") {
@@ -73,6 +73,9 @@ function toOps(raw: Classification, sentences: readonly Sentence[], map: Meeting
   for (const item of raw.脱線 ?? []) {
     if (item.id !== "新しい議題") ops.push({ op: "update", node: item.id, digression: item.digression, evidence: [item.evidence] });
   }
+  const deletions = [...new Set(raw.補足の削除 ?? [])]
+    .filter((node) => !preceding.some((op) => op.op === "delete" && op.node === node));
+  ops.push(...deletions.map((node) => ({ op: "delete" as const, node })));
   if (raw.済み !== "なし" && raw.済み !== topic) ops.push({ op: "close", node: raw.済み });
   return ops;
 }
@@ -88,7 +91,7 @@ export const localUpdaterLayer = ({ classify, katakana }: LocalModel) => Layer.s
       processedRemarks++;
       if (selected.length >= SENTENCE_LIMIT) break;
     }
-    const ops: Op[] = [];
+    const ops: DiffOutput["ops"] = [];
     const names: InferredSpeakerName[] = [];
     let sequence = 0;
     for (let offset = 0; offset < selected.length; offset += SENTENCE_LIMIT) {

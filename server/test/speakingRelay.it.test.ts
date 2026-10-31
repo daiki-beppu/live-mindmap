@@ -7,7 +7,7 @@ import { NodeFileSystem } from "@effect/platform-node";
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Layer } from "effect";
 import { TestClock } from "effect/testing";
-import { type DiffInput, type DiffOutput, type Op, type Remark, type Session, type CaptionsFrame, type Track } from "../src/core/index.ts";
+import { type DiffInput, type DiffResult, type Op, type Remark, type Session, type CaptionsFrame, type Track } from "../src/core/index.ts";
 import { createSessionDir, openLoggedSession } from "../src/sessionFiles.ts";
 import { createSpeakingRelay, SPEAKING_INTERVAL_MS } from "../src/speakingRelay.ts";
 import { updaterLayer, type UpdateFailure } from "./fixtures/sessionLayers.ts";
@@ -34,8 +34,8 @@ describe("仮の文字（未反映の発言 + 途中結果）が、反映で消�
   const setup = Effect.fn("setup")(function* () {
     const calls: Call[] = [];
     // 差分更新の応答をテストの側から返せる偽物。reject は DiffUpdater の失敗（タグ付き）になる
-    const update = (input: DiffInput): Effect.Effect<DiffOutput, UpdateFailure> =>
-      Effect.callback<DiffOutput, UpdateFailure>((resume) => {
+    const update = (input: DiffInput): Effect.Effect<DiffResult, UpdateFailure> =>
+      Effect.callback<DiffResult, UpdateFailure>((resume) => {
         calls.push({
           input,
           resolve: (ops) => resume(Effect.succeed({ ops })),

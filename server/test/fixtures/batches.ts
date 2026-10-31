@@ -1,5 +1,5 @@
 import { Effect, Layer } from "effect";
-import { makeSession, restoreSession, type DiffInput, type DiffOutput, type LogEvent, type Op, type Remark, type Session } from "../../src/core/index.ts";
+import { makeSession, restoreSession, type DiffInput, type DiffResult, type LogEvent, type Op, type Remark, type Session } from "../../src/core/index.ts";
 import { collectLog, updaterLayer, type UpdateFailure } from "./sessionLayers.ts";
 
 const waitForCall = (calls: readonly DiffInput[], count: number) =>
@@ -16,8 +16,8 @@ export type BatchStep = Op[] | UpdateFailure;
 export function gatedScripted(...script: BatchStep[]) {
   const calls: DiffInput[] = [];
   const replies: (() => void)[] = [];
-  const update = (input: DiffInput): Effect.Effect<DiffOutput, UpdateFailure> =>
-    Effect.callback<DiffOutput, UpdateFailure>((resume) => {
+  const update = (input: DiffInput): Effect.Effect<DiffResult, UpdateFailure> =>
+    Effect.callback<DiffResult, UpdateFailure>((resume) => {
       const step = script[calls.length] ?? [{ op: "noop" as const, reason: "台本切れ" }];
       calls.push(input);
       replies.push(() => resume(Array.isArray(step) ? Effect.succeed({ ops: step }) : Effect.fail(step as UpdateFailure)));

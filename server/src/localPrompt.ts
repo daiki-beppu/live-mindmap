@@ -4,7 +4,10 @@ import { nameOfSpeaker, remarkLine } from "./remarkLine.ts";
 
 export const SYSTEM = `あなたは会議のマインドマップに、新しい発言の内容を書き足す係です。
 新しい発言は文に切って、番号付きで並べてあります。文ごとに種類を1つ選び、並べた順に返してください。
-現在のマップには話し中の議題と論点だけを見せます。
+現在のマップには話し中の議題と論点を見せます。別に、マップに添えられた種別「補足」の一覧を、親の情報とともに見せます。
+
+補足: 発言の要点とは別に添えられた説明。会議の中で誤りだと言われたときだけ、その補足のidを「補足の削除」の配列に入れて消す。指摘されていない補足は残し、削除がなければ省略してよい。文が「なし」でも削除が必要なら返す。
+補足は差分更新では作らない。補足に子を付けない。補足に根拠を足さない。補足の本文変更・移動・統合もしない。
 
 種類:
 - なし: 相づち・返事・段取り。「はい」「わかりました」「お願いします」「画面を出しますね」「次へ」
@@ -50,6 +53,7 @@ export type Classification = {
   readonly 済み: string;
   readonly 名前: readonly InferredSpeakerName[];
   readonly 脱線?: readonly { readonly id: string; readonly digression: boolean; readonly evidence: string }[];
+  readonly 補足の削除?: readonly string[];
 };
 
 export function classificationRequest(map: MeetingMap, recent: DiffInput["recent"], sentences: readonly Sentence[], speakerNames?: DiffInput["speakerNames"]) {
@@ -65,6 +69,12 @@ export function classificationRequest(map: MeetingMap, recent: DiffInput["recent
     }
   };
   walk(ROOT_ID, 1);
+  const supplements = map.order.flatMap((id) => {
+    const node = map.nodes[id]!;
+    if (node.kind !== "補足") return [];
+    const parent = map.nodes[node.parent]!;
+    return [{ id, kind: node.kind, text: node.text, parent: { id: parent.id, kind: parent.kind, text: parent.text } }];
+  });
   const digressionTopics = map.order.flatMap((id) => {
     const n = map.nodes[id]!;
     if (n.kind !== "議題") return [];
@@ -77,6 +87,9 @@ export function classificationRequest(map: MeetingMap, recent: DiffInput["recent
     議題: Schema.Struct({ id: Schema.Literals([...topics, "新しい議題"]), 題: Schema.String.check(Schema.isMaxLength(20)) }),
     済み: Schema.Literals(["なし", ...closable]),
     名前: Schema.Array(InferredSpeakerName),
+    補足の削除: Schema.optionalKey(supplements.length === 0
+      ? Schema.Array(Schema.String).check(Schema.isMaxLength(0))
+      : Schema.Array(Schema.Literals(supplements.map((node) => node.id)))),
     脱線: Schema.optionalKey(Schema.Array(Schema.Struct({
       id: Schema.Literals([...digressionTopics.map((n) => n.id), "新しい議題"]),
       digression: Schema.Boolean,
@@ -86,6 +99,7 @@ export function classificationRequest(map: MeetingMap, recent: DiffInput["recent
   });
   const prompt = [
     "## 現在のマップ（話し中の部分）", lines.join("\n"), "",
+    "## 補足（削除の確認用。親の情報を含む）", JSON.stringify(supplements), "",
     "## 脱線の確認用の議題（済みも含む。ancestorsは親からルートまでのid）", JSON.stringify(digressionTopics), "",
     "## 直前の発言（処理済み・文脈用）", recent.length ? recent.map((r) => remarkLine(r, { name: nameOfSpeaker(r, speakerNames) })).join("\n") : "（なし）", "",
     `## 新しい発言（${sentences.length} 文）`, sentences.map((s, i) => `${i + 1}. ${remarkLine(s.remark, { text: s.text, name: nameOfSpeaker(s.remark, speakerNames) })}`).join("\n"),

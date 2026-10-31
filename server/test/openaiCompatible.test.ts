@@ -51,6 +51,22 @@ const open = Effect.fnUntraced(function* (selected: CompatibleModel) {
 });
 
 describe("OpenAI互換の要求とv5変換（C02・C03）", () => {
+  it.effect.each([false, true])("判断軸の有無=%sでも補足をモデルへ提示し、削除結果を受け取る", (withCriteria) => Effect.gen(function* () {
+    const map = applyOps(emptyMap("運用"), [{ op: "add", ref: "t", parent: "root", kind: "議題", text: "SLA", evidence: ["r1"] }], new Set(["r1"]), { round: 1, at: 1 }, new Map()).map;
+    map.nodes.n2 = { id: "n2", parent: "n1", kind: "補足", text: "サービス水準の合意", evidence: ["r1"], origin: "会議の外" };
+    map.order.push("n2");
+    map.nextId = 3;
+    const fake = fakeClient((_body, call) => call === 1 ? none : withCriteria
+      ? { ops: [{ op: "delete", node: "n2" }], names: null }
+      : { ...none, 補足の削除: ["n2"] });
+    const updater = yield* open(model).pipe(Effect.provideService(HttpClient.HttpClient, fake.client));
+    const result = yield* updater.update({ ...input("その説明は違う意味です。"), map, ...(withCriteria ? { criteria: ["運用負荷"] } : {}) });
+    expect(result.ops).toEqual([{ op: "delete", node: "n2" }]);
+    const body = fake.requests[1]!.body;
+    expect(body.messages.find((m) => m.role === "user")!.content).toContain("サービス水準の合意");
+    expect(body.messages.find((m) => m.role === "system")!.content).toMatch(/会議[^\n]*誤り[^\n]*ときだけ/);
+  }));
+
   it.effect("判断軸がある通常モードは追加・更新の差分操作を受け取り、後続入力にも軸を渡す", () => Effect.gen(function* () {
     const criteria = ["採用のしやすさ", "運用負荷"];
     const ops: Op[] = [{ op: "update", node: "n1", evidence: ["r1"], criteria: [criteria[1]!] }];
