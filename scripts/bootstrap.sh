@@ -11,7 +11,7 @@ run_stage() {
 
 names=(install aec3 resolve)
 pids=()
-run_stage install pnpm install &
+run_stage install bash scripts/setup-deps.sh &
 pids+=("$!")
 run_stage aec3 bash helper/scripts/build-webrtc-apm.sh &
 pids+=("$!")

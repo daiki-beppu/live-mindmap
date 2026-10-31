@@ -17,7 +17,7 @@ scripts:
           done
     fi
 
-    vp install
+    bash scripts/setup-deps.sh
 
     # helper の AEC3 静的ライブラリは、無ければ typecheck / test が作るが 2 分半かかる。
     # 本体にビルド済みがあり、ビルドスクリプト（固定コミット）が同じなら写して済ませる。

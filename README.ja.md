@@ -128,7 +128,7 @@ cli review [/Users/<名前>/.live-mindmap/sessions/<開始時刻>] [--self-only]
 
 ### 初回の準備
 
-clone したら一度だけ `pnpm bootstrap` を流し、それから `pnpm dev` を起動します。`pnpm bootstrap` はパッケージのインストール、WebRTC の音声処理ライブラリのビルド、Swift パッケージの取得を並行して行います。
+Node.js 26（`.nvmrc` に指定）を用意してください。clone したら一度だけ `pnpm bootstrap` を流し、それから `pnpm dev` を起動します。`pnpm bootstrap` は Node・pnpm の確認とパッケージのインストール、WebRTC の音声処理ライブラリのビルド、Swift パッケージの取得を並行して行います。パッケージのインストールは、前回成功時から lockfile が変わっていなければ省略します。
 
 CLI で導入する対象は次の 4 つです。容量は CLI が表示する目安です。
 

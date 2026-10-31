@@ -53,7 +53,9 @@ async function stage(name, body) {
   await body();
   log("end", name, Date.now());
 }
-if (command === "vp") {
+if (command === "corepack") {
+  if (args.join(" ") !== "enable") unexpected();
+} else if (command === "vp") {
   if (args.join(" ") !== "env which pnpm") unexpected();
   console.log(process.env.MEASURE_TEST_NATIVE_PNPM + "\n  Package: pnpm fixture");
 } else if (command === "git") {
@@ -73,7 +75,7 @@ if (command === "vp") {
     }
     copyFileSync(join(dir, "aec3.sh"), "helper/scripts/build-webrtc-apm.sh");
     run(scriptShell ? scriptShell : "bash", scriptShell ? ["-c", "bash scripts/bootstrap.sh"] : ["scripts/bootstrap.sh"]);
-  } else if (forwarded.join(" ") === "install") {
+  } else if (forwarded.join(" ") === "install --frozen-lockfile") {
     await stage("install", async () => { destination(option("--store-dir")); await delay(800); });
   } else if (forwarded.join(" ") === "dev") {
     const child = spawn(scriptShell ? scriptShell : "swift", scriptShell ? ["-c", "swift build -c release --package-path helper"] : ["build", "-c", "release", "--package-path", "helper"], { stdio: "inherit" });
@@ -162,7 +164,7 @@ type RunOptions = { commit?: string; failure?: string; hold?: string; signal?: N
 function createSourceRepository(repo: string) {
   mkdirSync(repo);
   execFileSync("git", ["init", "--quiet", "--initial-branch=main", repo]);
-  const files = [entry, "scripts/bootstrap.sh", "helper/scripts/fetch-speaker-models.sh"];
+  const files = [entry, "scripts/bootstrap.sh", "scripts/setup-deps.sh", ".nvmrc", "package.json", "pnpm-lock.yaml", "helper/scripts/fetch-speaker-models.sh"];
   let history = "commit refs/heads/main\nmark :1\ncommitter Fixture <fixture@example.invalid> 1700000000 +0000\ndata 5\nfirst\n";
   for (const file of files) {
     const content = readFileSync(join(root, file));
@@ -199,7 +201,7 @@ async function withMeasurement(options: RunOptions, verify: (result: {
     writeFileSync(join(dir, "commands.mjs"), commands);
     writeFileSync(join(dir, "host.cjs"), host);
     writeFileSync(join(dir, "aec3.sh"), "#!/bin/bash\nset -euo pipefail\nuvx --from meson --with ninja meson setup build src\nuvx --from meson --with ninja meson compile -C build\n");
-    for (const command of ["git", "vp", "swift", "uvx", "uv", "ps"]) {
+    for (const command of ["git", "vp", "corepack", "swift", "uvx", "uv", "ps"]) {
       writeFileSync(join(bin, command), `#!/bin/bash\nexec "$MEASURE_TEST_NODE" "$MEASURE_TEST_ROOT/commands.mjs" ${command} "$@"\n`, { mode: 0o755 });
     }
     writeFileSync(join(native, "pnpm"), '#!/bin/bash\nexec "$MEASURE_TEST_NODE" "$MEASURE_TEST_ROOT/commands.mjs" pnpm "$@"\n', { mode: 0o755 });
