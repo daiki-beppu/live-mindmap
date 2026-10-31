@@ -1,7 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
 import { DateTime, Effect, Fiber, Layer } from "effect";
 import { TestClock } from "effect/testing";
-import { exportFiles, hasContent, makeSession, makeTranscriptSession, restoreSession, type DiffInput, type DiffOutput, type InferredSpeakerName, type LogEvent, type Op, type Remark, type Session, type Snapshot, type SnapshotNode } from "../src/core/index.ts";
+import { exportFiles, hasContent, makeSession, makeTranscriptSession, restoreSession, type DiffInput, type DiffResult, type InferredSpeakerName, type LogEvent, type Op, type Remark, type Session, type Snapshot, type SnapshotNode } from "../src/core/index.ts";
 import { playBatches } from "./fixtures/batches.ts";
 import { collectLog, logLayer, settleUntil, updaterLayer, type UpdateFailure } from "./fixtures/sessionLayers.ts";
 
@@ -17,7 +17,7 @@ const remark = (text: string, extra: Partial<Remark> = {}): Remark => {
 // 台本どおりに差分操作を返す偽物の差分更新。呼ばれた入力を記録する。
 function scripted(...script: Op[][]) {
   const calls: DiffInput[] = [];
-  const update = (input: DiffInput): Effect.Effect<DiffOutput, UpdateFailure> =>
+  const update = (input: DiffInput): Effect.Effect<DiffResult, UpdateFailure> =>
     Effect.sync(() => {
       calls.push(input);
       return { ops: script[calls.length - 1] ?? [{ op: "noop" as const, reason: "台本切れ" }] };
@@ -29,8 +29,8 @@ function scripted(...script: Op[][]) {
 type ManualCall = { input: DiffInput; reply: () => void };
 function manual() {
   const calls: ManualCall[] = [];
-  const update = (input: DiffInput): Effect.Effect<DiffOutput, UpdateFailure> =>
-    Effect.callback<DiffOutput, UpdateFailure>((resume) => {
+  const update = (input: DiffInput): Effect.Effect<DiffResult, UpdateFailure> =>
+    Effect.callback<DiffResult, UpdateFailure>((resume) => {
       calls.push({ input, reply: () => resume(Effect.succeed({ ops: [] })) });
     });
   return { calls, update };
@@ -41,7 +41,7 @@ const settle = Effect.forEach(Array.from({ length: 20 }), () => Effect.yieldNow,
 
 const freshIds = (input: DiffInput) => input.fresh.map((u) => u.id);
 
-const open = (update: (input: DiffInput) => Effect.Effect<DiffOutput, UpdateFailure>, events: LogEvent[] = []) =>
+const open = (update: (input: DiffInput) => Effect.Effect<DiffResult, UpdateFailure>, events: LogEvent[] = []) =>
   makeSession({ title: "定例" }).pipe(Effect.provide(Layer.merge(updaterLayer(update), collectLog(events))));
 
 const setup = Effect.fn("setup")(function* (...script: Op[][]) {
@@ -542,7 +542,7 @@ describe("差分更新の呼び出し", () => {
     Effect.gen(function* () {
       let n = 0;
       const events: LogEvent[] = [];
-      const update = (): Effect.Effect<DiffOutput, UpdateFailure> =>
+      const update = (): Effect.Effect<DiffResult, UpdateFailure> =>
         n++ === 0 ? Effect.fail({ _tag: "UpdateFailed", message: "timeout" }) : Effect.succeed({ ops: [{ op: "noop", reason: "雑談" }] });
       const session = yield* open(update, events);
       for (const t of ["一", "二"]) {
@@ -558,7 +558,7 @@ describe("差分更新の呼び出し", () => {
 
   it.effect("失敗の error は、タグ付きの失敗なら「<_tag>: <message>」、defect なら「defect: …」の形で残り、どちらも次の呼び出しへ進む", () =>
     Effect.gen(function* () {
-      const steps: Effect.Effect<DiffOutput, UpdateFailure>[] = [
+      const steps: Effect.Effect<DiffResult, UpdateFailure>[] = [
         Effect.fail({ _tag: "DiffUpdateFailed", message: "接続が切れた" }),
         Effect.die(new Error("想定外の例外")),
         Effect.succeed({ ops: [{ op: "noop", reason: "雑談" }] }),
@@ -825,7 +825,7 @@ describe("変わったこと（反映の履歴）", () => {
   const failure = (message: string): UpdateFailure => ({ _tag: "UpdateFailed", message });
   function stepped(...script: (Op[] | UpdateFailure)[]) {
     let n = 0;
-    return (): Effect.Effect<DiffOutput, UpdateFailure> => {
+    return (): Effect.Effect<DiffResult, UpdateFailure> => {
       const s = script[n++] ?? [];
       return Array.isArray(s) ? Effect.succeed({ ops: s }) : Effect.fail(s as UpdateFailure);
     };
@@ -1832,7 +1832,7 @@ describe("話者の名前の確認", () => {
   // 台本の i 番目の応答（ops なしで names だけ）を返す偽の差分更新。processedRemarks も台本で決める
   const withNames = (...script: { names?: InferredSpeakerName[]; processedRemarks?: number }[]) => {
     const calls: DiffInput[] = [];
-    const update = (input: DiffInput): Effect.Effect<DiffOutput, UpdateFailure> =>
+    const update = (input: DiffInput): Effect.Effect<DiffResult, UpdateFailure> =>
       Effect.sync(() => {
         calls.push(input);
         const step = script[calls.length - 1] ?? {};
@@ -1841,11 +1841,11 @@ describe("話者の名前の確認", () => {
     return { calls, update };
   };
   // 応答をテストの側から返せる偽の差分更新。i 番目の呼び出しに answers[i] を返す
-  const held = (answers: DiffOutput[]) => {
+  const held = (answers: DiffResult[]) => {
     const calls: DiffInput[] = [];
     const replies: (() => void)[] = [];
-    const update = (input: DiffInput): Effect.Effect<DiffOutput, UpdateFailure> =>
-      Effect.callback<DiffOutput, UpdateFailure>((resume) => {
+    const update = (input: DiffInput): Effect.Effect<DiffResult, UpdateFailure> =>
+      Effect.callback<DiffResult, UpdateFailure>((resume) => {
         const answer = answers[calls.length] ?? { ops: [] };
         calls.push(input);
         replies.push(() => resume(Effect.succeed(answer)));

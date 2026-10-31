@@ -31,6 +31,25 @@ const responsesRequest = Schema.Struct({
 });
 
 describe("ChatGPT の文数上限と通常失敗後の状態", () => {
+  it.effect.each([false, true])("判断軸の有無=%sでも補足を Responses へ提示し、削除結果を受け取る", (withCriteria) => Effect.gen(function* () {
+    const files = fakeChatgptFiles(chatgptCredentials((yield* Clock.currentTimeMillis) + 3_600_000));
+    const map = applyOps(emptyMap("運用"), [{ op: "add", ref: "t", parent: "root", kind: "議題", text: "SLA", evidence: ["r1"] }], new Set(["r1"]), { round: 1, at: 1 }, new Map()).map;
+    map.nodes.n2 = { id: "n2", parent: "n1", kind: "補足", text: "サービス水準の合意", evidence: ["r1"], origin: "会議の外" };
+    map.order.push("n2");
+    map.nextId = 3;
+    const http = fakeChatgptHttp((_request, call) => response(completedSse(call === 1 ? probe : withCriteria
+      ? { ops: [{ op: "delete", node: "n2" }], names: null }
+      : { ...probe, 補足の削除: ["n2"] })));
+    yield* provide(Effect.gen(function* () {
+      const updater = yield* open({});
+      const result = yield* updater.update({ ...input, map, fresh: [{ ...input.fresh[0]!, text: "その説明は違う意味です。" }], ...(withCriteria ? { criteria: ["運用負荷"] } : {}) });
+      expect(result.ops).toEqual([{ op: "delete", node: "n2" }]);
+      const body = Schema.decodeUnknownSync(Schema.Struct({ instructions: Schema.String, input: Schema.Array(Schema.Struct({ content: Schema.String })) }))(jsonRequestBody(http.requests[1]!));
+      expect(body.input[0]!.content).toContain("サービス水準の合意");
+      expect(body.instructions).toMatch(/会議[^\n]*誤り[^\n]*ときだけ/);
+    }), files, http);
+  }));
+
   it.effect("判断軸があると Responses で関係づけ更新を受け取り、軸を記載順で送る", () => Effect.gen(function* () {
     const files = fakeChatgptFiles(chatgptCredentials((yield* Clock.currentTimeMillis) + 3_600_000));
     const criteria = ["採用のしやすさ", "運用負荷"];

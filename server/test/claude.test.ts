@@ -152,6 +152,25 @@ const growing = (n: number): DiffInput => inputOf(growingMaps[n]!, n);
 const nextTick = Effect.promise(() => new Promise<void>((resolve) => setImmediate(resolve)));
 
 describe("差分更新の query の使い回し", () => {
+  it.effect("同じ query に補足の追加と削除を順に伝える", () => Effect.gen(function* () {
+    const { created, updater } = yield* setup();
+    const before = evolve(emptyMap("運用"), [{ op: "add", ref: "t", parent: "root", kind: "議題", text: "SLA", evidence: ["r1"] }]).map;
+    yield* updater.update(inputOf(before, 1));
+    const supplemented: MeetingMap = {
+      nodes: { ...before.nodes, n2: { id: "n2", parent: "n1", kind: "補足", text: "サービス水準の合意", evidence: ["r1"], origin: "会議の外" } },
+      order: [...before.order, "n2"], nextId: 3,
+    };
+    yield* updater.update(inputOf(supplemented, 2));
+    const removed = evolve(supplemented, [{ op: "delete", node: "n2" }]);
+    expect(removed.dropped).toEqual([]);
+    yield* updater.update(inputOf(removed.map, 3));
+    expect(created).toHaveLength(1);
+    const prompts = texts(created[0]!);
+    expect(prompts).toHaveLength(3);
+    expect(mapPartOf(prompts[1]!)).toContain("追加 n2 補足: サービス水準の合意 （親: n1）");
+    expect(mapPartOf(prompts[2]!)).toContain("削除 n2:");
+  }));
+
   it.effect("判断軸を失敗後の再開と定期的な query 更新にも引き継ぐ", () => Effect.gen(function* () {
     const { created, updater } = yield* setup((queryIndex) => queryIndex === 0 ? "fail" : "ok");
     const criteria = ["採用のしやすさ", "運用負荷"];

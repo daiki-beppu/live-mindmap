@@ -87,7 +87,11 @@ export const Dropped = Schema.Struct({ op: Op, reason: Schema.String });
 export type Dropped = typeof Dropped["Type"];
 
 const DiffOps = Op.mapMembers(([add, update, ...rest]) => [
-  add.mapFields(({ proposer: _proposer, ...fields }) => ({ ...fields, evidence: fields.evidence.check(Schema.isMinLength(1)) })),
+  add.mapFields(({ proposer: _proposer, ...fields }) => ({
+    ...fields,
+    kind: Schema.Literals(KINDS.filter((kind) => kind !== "補足")),
+    evidence: fields.evidence.check(Schema.isMinLength(1)),
+  })),
   update.mapFields((fields) => ({ ...fields, evidence: fields.evidence.check(Schema.isMinLength(1)) })),
   ...rest,
 ] as const);

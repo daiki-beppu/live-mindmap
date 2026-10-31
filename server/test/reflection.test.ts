@@ -265,6 +265,18 @@ describe("supplement の反映", () => {
 });
 
 describe("diff の反映", () => {
+  it("通常の差分で補足を削除しても、その会議では同じ語を説明し直せない", () => {
+    const before = twoSupplements();
+    const removed = Result.getOrThrow(reflectDiff(before, diff(["r1"], { ops: [{ op: "delete", node: "n3" }] }))).state;
+    expect(removed.map.nodes.n3).toBeUndefined();
+    expect(removed.map.nodes.n4).toEqual(before.map.nodes.n4);
+    expect([...removed.explainedTerms.keys()]).toEqual(["SLA", "SLO"]);
+    const repeated = supplemented(removed);
+    expect(repeated.dropped).toHaveLength(1);
+    expect(repeated.dropped[0]!.reason.length).toBeGreaterThan(0);
+    expect(repeated.state.map).toEqual(removed.map);
+  });
+
   it.each([undefined, "記録された失敗"])("成功・失敗の反映でセッションの判断軸を共通反映へ渡す（%s）", (error) => {
     const criteria = ["採用のしやすさ"];
     const before = { ...state([remark("r1", 20, "試験導入を提案します")]), criteria };

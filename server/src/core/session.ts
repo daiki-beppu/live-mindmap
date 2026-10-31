@@ -48,7 +48,7 @@ const JudgeRecord = Schema.Struct({
   failure: Schema.optionalKey(Schema.String),
 });
 type JudgeRecord = typeof JudgeRecord["Type"];
-export type DiffResult = DiffOutput & { readonly usage?: DiffUsage; readonly judge?: JudgeRecord };
+export type DiffResult = Omit<DiffOutput, "ops"> & { readonly ops: Op[]; readonly usage?: DiffUsage; readonly judge?: JudgeRecord };
 export type DiffUpdateFailure = DiffUpdateError & { readonly judge?: JudgeRecord };
 
 export type KatakanaAsk = (words: ReadonlyArray<string>) => Effect.Effect<ReadonlyArray<KatakanaAnswer>, DiffUpdateError>;
