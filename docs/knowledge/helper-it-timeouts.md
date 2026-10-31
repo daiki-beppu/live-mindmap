@@ -38,16 +38,29 @@ LIBDISPATCH_COOPERATIVE_POOL_STRICT=1 swift test --skip-build --filter 'ITTests/
 見る順は次のとおり。
 
 1. PR の差分に、協調スレッドの上の同期の待ち（`DispatchSemaphore.wait`・`DispatchGroup.wait`・同期の Vision など）が無いか探す。あれば `LIBDISPATCH_COOPERATIVE_POOL_STRICT=1` で PR の版と、テストだけ main に戻した版を比べる。
-2. 無ければ、base の main の run で同じ IT が落ちていないかを `gh run view <run> --json attempt,jobs` で見る。落ちていれば、PR では直さず、期限の延長・除外・assertion を緩めることもせず、時間切れを [#1681](https://github.com/daiki-beppu/live-mindmap/issues/1681) に足して流し直す。
+2. 無ければ、base の main の run で同じ IT が落ちていないかを `gh run view <run> --json attempt,jobs` で見る。落ちていれば、PR では直さず、期限の延長・除外・assertion を緩めることもせず、下の節のスクリプトで再現するかを見て、bug の issue を立てて流し直す。
 
 takt の CI の調査（PR のコメントの「CI調査」）は、どちらの場合も `insufficient_evidence` で止まった。#1683 では `LiveSessionITTests.swift:354` のセマフォの待ちに気づいていたが、「他のテストの失敗を引き起こした証拠はない」として追わなかった。CI のログには個々の assertion が出ないことが多いので、調査の結論を待たずに上の 1 を手元で回す。
 
-## 協調スレッド以外の時間切れは、#1681 にまとめて追う
+## CI の混み合いでだけ落ちる IT は、CPU を埋めて手元で再現する。並列のテストが 1 本の直列キューに並ぶと、期限だけが一斉に数え始める
 
-#1681 は 2026-10-28 の時点で開いている。分かっていることは issue の本文にある。ランナーの image が `20261012.601` から `20261021.618` に替わった頃から、helper の IT 全体が 27 秒から 43〜55 秒に延びたこと。`FileReadingPauseITTests.pausedPairDoesNotAdvance` が固定の 500ms の sleep で位置を写していること。CI では映像を読む IT が CPU を取り合っているかもしれないこと（未確認）。新しい時間切れを見たら、run の番号と落ちたテストを #1681 に足す。#1667 の直しの後も、`78b9cd7` の main で `FileReadingAlignmentITTests` が 1 件落ちている。
+```sh
+cd helper && swift build --build-tests
+bash scripts/stress-it.sh 3   # コア数の 1.6 倍の yes を走らせて、IT を 3 回流す。STRESS_JOBS で本数を変えられる
+```
+
+[#1681](https://github.com/daiki-beppu/live-mindmap/issues/1681)（[PR #1820](https://github.com/daiki-beppu/live-mindmap/pull/1820)）では、手元で約 9 秒・何度流しても通る IT が、これで直す前の main では 3/3 で落ち、毎回 CI と同じ 3 テストが同じ文言で落ちた。原因はテスト側にあった。
+
+- **映像を読む IT。** 映像の読み出しと OCR は、プロセスに 1 本の直列キュー `fileScreenQueue` を通る。並列の relay の IT がみな同じキューに並び、30 秒の期限は並んだ時点から数え始める。負荷をかけた全体では、キューが 44.2 秒のうち 43.5 秒ふさがり、1 件の待ちは最大 10.6 秒だった。`FileSessionRelayITTests` を `@Suite(.serialized, .timeLimit(.minutes(1)))` にして、9 回 1 度も落ちなくなった。読み手ごとにキューを分ける製品側の試作は、負荷ありで 3 回中 1 回、22 件が時間切れになって退けた（OCR のロックと CPU の取り合いが残る）。
+- **`pausedPairDoesNotAdvance`。** 固定の 500ms の sleep で位置を写していたため、止める前に門を通った読みがキューで遅れて写しの後に記録され、進んだように見えた。止まったことを期限つきで待ってから写す形にした。直したテストが門を見ているかは、門の `waitOpen` を空にして 3/3 で赤になることで確かめた。
+
+映像を読む suite を新しく足すなら、同じキューに並ぶので `.serialized` にする。代償として、直列の relay の suite が IT の一番長い道になり、CI の helper の IT は 72.4 秒（それまで 28〜41 秒）になった。短くするなら、その suite の中の引数つきの `textBesideVideoDoesNotStallRecording`・`smallChangeDoesNotStallRecording` から手を付ける。負荷をかけた after の 9 回でも、範囲の外の失敗が残っている（`closingRelayFinishesPendingScreenSends` の止まりは [#1798](https://github.com/daiki-beppu/live-mindmap/issues/1798)、`FileReadingAlignmentITTests` の時間切れは [#1819](https://github.com/daiki-beppu/live-mindmap/issues/1819)）。新しい時間切れを見たら、まずこのスクリプトで再現するかを見る。
+
+IT・heavy の suite には `.timeLimit` が必須で、無ければ helper の `typecheck`（`checkTestLayers`）が `path:line` で落とす（[PR #1724](https://github.com/daiki-beppu/live-mindmap/pull/1724)）。止まったテストは名前つきで落ちる。期限を延ばすだけで直さない。
 
 ## 出典
 
 - [helper のライブのセッションを差し替えられる module にしたら、止める直前のイベントの欠けが直り、CI の時間切れの 1 つはテスト自身が協調スレッドを塞いでいた話](../devlog/2026-10-28.md#live-session-module) の 5・6 節
 - [PR #1683](https://github.com/daiki-beppu/live-mindmap/pull/1683) の本文（「CI の helper IT の失敗の修正」）と CI 調査のコメント、[PR #1680](https://github.com/daiki-beppu/live-mindmap/pull/1680) の CI 調査と review-fix のコメント
 - [#1197](https://github.com/daiki-beppu/live-mindmap/issues/1197)、[#1681](https://github.com/daiki-beppu/live-mindmap/issues/1681)
+- [CI を段に分けたとき](../devlog/2026-10-31.md#ci-stages) の 8 節、[PR #1820](https://github.com/daiki-beppu/live-mindmap/pull/1820)、[PR #1724](https://github.com/daiki-beppu/live-mindmap/pull/1724)
