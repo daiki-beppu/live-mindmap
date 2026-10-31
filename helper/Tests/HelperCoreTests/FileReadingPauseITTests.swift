@@ -80,28 +80,31 @@ struct FileReadingPauseITTests {
         let mineReader = await alignment.addReader()
         let gate = FileReadingGate()
         let log = GatePullLog()
-        let pausedAfterFirst = GateFlag()
-        let pauseOnce: @Sendable (GatePulled) async throws -> Void = { _ in
-            if !pausedAfterFirst.isRaised {
-                pausedAfterFirst.raise()
+        let paused = GateFlag()
+        // 両方が最初の入力を引いてから止める。読み手は afterPull を抜けるまで次を引かないので、止めた時点で門を通った後の読みが残らない（#1681）
+        let pauseAfterBothPulled: @Sendable (GatePulled) async throws -> Void = { _ in
+            if paused.isRaised { return }
+            if Set(log.values.map(\.reader)).count == 2 {
                 await gate.pause()
+                paused.raise()
+            } else {
+                try await gateWaitUntil("もう一方も最初の入力を引き、門が止まる") { paused.isRaised }
             }
         }
         let theirsTask = Task {
-            try await gateDrain(try await transcribeFile(at: theirs, with: GateRecordingTranscriber("相手", log: log, afterPull: pauseOnce), alignment: theirsReader, gate: gate))
+            try await gateDrain(try await transcribeFile(at: theirs, with: GateRecordingTranscriber("相手", log: log, afterPull: pauseAfterBothPulled), alignment: theirsReader, gate: gate))
         }
         let mineTask = Task {
-            try await gateDrain(try await transcribeFile(at: mine, with: GateRecordingTranscriber("自分", log: log, afterPull: pauseOnce), alignment: mineReader, gate: gate))
+            try await gateDrain(try await transcribeFile(at: mine, with: GateRecordingTranscriber("自分", log: log, afterPull: pauseAfterBothPulled), alignment: mineReader, gate: gate))
         }
         defer {
             theirsTask.cancel()
             mineTask.cancel()
         }
-        try await gateWaitUntil("どちらかが最初の入力を引く") { pausedAfterFirst.isRaised }
-        try await Task.sleep(for: .milliseconds(500))
+        try await gateWaitUntil("両方が最初の入力を引き、門が止まる") { paused.isRaised }
         let theirsStopped = log.maxEnd(of: "相手")
         let mineStopped = log.maxEnd(of: "自分")
-        try await Task.sleep(for: .milliseconds(500))
+        try await Task.sleep(for: .milliseconds(500)) // 止めている間に読み進めないかを見る間
         #expect(log.maxEnd(of: "相手") == theirsStopped)
         #expect(log.maxEnd(of: "自分") == mineStopped)
         #expect(max(theirsStopped, mineStopped) < 20)
