@@ -200,6 +200,14 @@ export const restoreState = Effect.fnUntraced(function* (events: Iterable<unknow
     map: undefined, history: { round: 0, changes: [], currentTopic: undefined, lastChanged: undefined },
     queue: ScreenQueue.make(), diffUpdate: { status: "running" },
   };
+  let end = 0;
+  let observed: { readonly map: MeetingMap; readonly remarks: number; readonly at: number } | undefined;
+  // 入力（地図・発言・時刻）が動いたときだけ観測し直す。同じ入力の観測は冪等なので省いても状態は変わらない。
+  const observe = (map: MeetingMap | undefined, at: number) => {
+    if (map === undefined || (observed?.map === map && observed.remarks === ledger.remarks.length && observed.at === at)) return;
+    discussion = observeDiscussion(discussion, map, ledger.byId, at);
+    observed = { map, remarks: ledger.remarks.length, at };
+  };
   let index = -1;
   for (const event of events) {
     index++;
@@ -213,6 +221,7 @@ export const restoreState = Effect.fnUntraced(function* (events: Iterable<unknow
       const e = yield* decodeRemark(event).pipe(failed);
       ledger.remarks.push(e.remark);
       ledger.byId.set(e.remark.id, e.remark);
+      end = Math.max(end, e.remark.end);
     } else if (type === ScreenEvent.fields.type.literal) {
       const e = yield* decodeScreen(event).pipe(failed);
       replay = restoreScreen(replay, ledger, e);
@@ -225,7 +234,7 @@ export const restoreState = Effect.fnUntraced(function* (events: Iterable<unknow
       ledger.known = state.ledger.known;
       ledger.processed = state.ledger.processed;
       replay = { ...replay, explainedTerms: state.explainedTerms, queue, map: state.map, history: state.history, diffUpdate: { status: "running" } };
-      discussion = observeSessionDiscussion(discussion, state.map, ledger.remarks, reflectedAt);
+      observe(state.map, reflectedAt);
     } else if (type === "supplement") {
       replay = yield* restoreSupplement(replay, ledger, event, index);
     } else if (type === DiscussionNoticeEvent.fields.type.literal) {
@@ -241,7 +250,7 @@ export const restoreState = Effect.fnUntraced(function* (events: Iterable<unknow
     } else if (type === DiffUpdateResumedEvent.fields.type.literal) {
       replay = { ...replay, diffUpdate: { status: "running" } };
     }
-    discussion = observeSessionDiscussion(discussion, replay.map, ledger.remarks);
+    observe(replay.map, end);
   }
   const { remarks, processed, known, files } = ledger;
   const { map, history, queue, diffUpdate } = replay;
@@ -256,10 +265,7 @@ const restoreDiscussionNotice = Effect.fnUntraced(function* (state: DiscussionNo
   return recordDiscussionNotice(state, decoded);
 });
 
-function observeSessionDiscussion(discussion: DiscussionNoticeState, map: MeetingMap | undefined, remarks: readonly Remark[], at = remarks.reduce((at, r) => Math.max(at, r.end), 0)): DiscussionNoticeState {
-  if (map === undefined) return discussion;
-  return observeDiscussion(discussion, map, new Map(remarks.map((r) => [r.id, r])), at);
-}
+const latestEnd = (remarks: readonly Remark[]) => remarks.reduce((at, r) => Math.max(at, r.end), 0);
 
 export function snapshotOf(state: SessionState): Snapshot {
   const { map } = state;
@@ -351,8 +357,8 @@ const openSession = Effect.fnUntraced(function* (initial: SessionState, screens:
   // screenTransitions の内側で状態更新とログの順序を揃える。
   const notifyDiscussion = Effect.gen(function* () {
     const event = yield* Ref.modify(ref, (s) => {
-      const discussion = observeSessionDiscussion(s.discussion, s.map, s.remarks);
-      const at = s.remarks.reduce((at, r) => Math.max(at, r.end), 0);
+      const at = latestEnd(s.remarks);
+      const discussion = observeDiscussion(s.discussion, s.map, new Map(s.remarks.map((r) => [r.id, r])), at);
       const event = nextDiscussionNotice(discussion, s.map, at, s.criteria ?? []);
       return [event, { ...s, discussion: event === undefined ? discussion : recordDiscussionNotice(discussion, event) }] as const;
     });
@@ -509,7 +515,7 @@ const openSession = Effect.fnUntraced(function* (initial: SessionState, screens:
               const applied = Result.getOrThrowWith(reflectDiff({ map: s.map, explainedTerms: s.explainedTerms, criteria: s.criteria, history: s, ledger: { byId, known: s.known, processed: s.processed } }, event), (reason) => new Error(reason));
               const screenQueue = Result.getOrThrowWith(ScreenQueue.consume(s.screenQueue, event, cutoff), (reason) => new Error(reason));
               dropped = applied.dropped;
-              return { ...s, ...applied.state.history, screenQueue, map: applied.state.map, discussion: observeSessionDiscussion(s.discussion, applied.state.map, s.remarks, applied.reflectedAt), known: applied.state.ledger.known, processed: applied.state.ledger.processed,
+              return { ...s, ...applied.state.history, screenQueue, map: applied.state.map, discussion: observeDiscussion(s.discussion, applied.state.map, byId, applied.reflectedAt), known: applied.state.ledger.known, processed: applied.state.ledger.processed,
                 diffUpdate: s.diffUpdate.status === "paused" ? { status: "running" as const } : s.diffUpdate, nextRetryAt: undefined, reflecting: [], previousResponse: undefined };
             });
             yield* log.write({ ...event, dropped });
@@ -526,7 +532,7 @@ const openSession = Effect.fnUntraced(function* (initial: SessionState, screens:
             const accepted = acceptInferredNames(outcome.names, applied.state.ledger.known, byId);
             return [{ event, dropped: applied.dropped, accepted }, {
               ...s, ...applied.state.history, screenQueue, diffUpdate: s.diffUpdate.status === "paused" ? { status: "running" as const } : s.diffUpdate, nextRetryAt: undefined, map: applied.state.map, reflecting: [], previousResponse: previousResponseOf(applied),
-              discussion: observeSessionDiscussion(s.discussion, applied.state.map, s.remarks, applied.reflectedAt),
+              discussion: observeDiscussion(s.discussion, applied.state.map, byId, applied.reflectedAt),
               known: applied.state.ledger.known, processed: applied.state.ledger.processed, pending: [...fresh.slice(outcome.count), ...s.pending],
             }];
           });

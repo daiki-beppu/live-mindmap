@@ -133,8 +133,10 @@ export function children(map: MeetingMap, id: string): MapNode[] {
   return map.order.map((k) => map.nodes[k]!).filter((n) => n.parent === id);
 }
 
+export const pointStatusOf = (kids: readonly Pick<MapNode, "kind">[]): PointStatus => kids.some((c) => c.kind === "決定") ? "決定済み" : "未決";
+
 export function pointStatus(map: MeetingMap, id: string): PointStatus {
-  return children(map, id).some((c) => c.kind === "決定") ? "決定済み" : "未決";
+  return pointStatusOf(children(map, id));
 }
 
 function isDescendant(map: MeetingMap, id: string, ancestor: string): boolean {
