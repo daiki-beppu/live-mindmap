@@ -1,0 +1,15 @@
+initialize:
+  - name: Install Node.js
+    uses: github.com/actions/setup-node@v7
+    with:
+      node-version-file: .nvmrc
+
+maintenance: bash scripts/setup-deps.sh
+
+knowledge:
+  - name: typecheck
+    contents: "pnpm typecheck:linux"
+  - name: test
+    contents: "pnpm test:linux"
+  - name: integration-test
+    contents: "pnpm test:it:linux"
