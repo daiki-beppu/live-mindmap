@@ -213,8 +213,8 @@ describe("sessionLayout の Scene: 字幕の吹き出し", () => {
       settled,
       tap((s) => {
         const [left, right] = rows(s.html);
-        expect(classOf(left!)).toContain("justify-start");
-        expect(classOf(right!)).toContain("justify-end");
+        expect(hasClass(left!, "captions__row--right")).toBe(false);
+        expect(hasClass(right!, "captions__row--right")).toBe(true);
       }),
     );
   });
@@ -227,8 +227,8 @@ describe("sessionLayout の Scene: 字幕の吹き出し", () => {
       tap((s) => {
         const names = findAll(".captions__name")(s.html);
         expect(names.map(textContent)).toEqual(["相手 B", "", ""]);
-        expect(classOf(names[0]!)).toContain("opacity-50");
-        expect(classOf(names[1]!)).not.toContain("opacity");
+        expect(hasClass(names[0]!, "captions__name--provisional")).toBe(true);
+        expect(hasClass(names[1]!, "captions__name--provisional")).toBe(false);
       }),
     );
   });
@@ -257,7 +257,8 @@ describe("sessionLayout の Scene: 字幕の吹き出し", () => {
       tap((s) => {
         const [a, b] = findAll(".captions__bubble")(s.html);
         for (const node of [...rows(s.html), a!, b!, ...findAll(".captions__name")(s.html)]) expect(classOf(node)).not.toMatch(/\b(bg-|shadow|border|rounded|badge)/);
-        expect(classOf(a!)).not.toBe(classOf(b!));
+        expect(a!.data?.style?.["--speaker-name-color"]).toBe("#2f6fb3");
+        expect(b!.data?.style?.["--speaker-name-color"]).toBe("#b3622f");
       }),
     );
   });
@@ -276,7 +277,6 @@ describe("sessionLayout の Scene: 字幕の吹き出し", () => {
           expect(pendingOf(s.html)).toHaveLength(0);
           expect(cursorsOf(s.html)).toHaveLength(0);
           expect(textContent(bubbleOf(s.html))).toBe("こんにちは");
-          expect(classOf(bubbleOf(s.html))).not.toContain("opacity");
         }),
       );
     });
@@ -289,10 +289,8 @@ describe("sessionLayout の Scene: 字幕の吹き出し", () => {
         tap((s) => {
           const pending = pendingOf(s.html);
           expect(pending).toHaveLength(1);
-          expect(classOf(pending[0]!)).toContain("opacity-50");
           expect(textContent(pending[0]!)).toBe("元気");
           expect(textContent(bubbleOf(s.html))).toBe("こんにちは元気");
-          expect(classOf(bubbleOf(s.html))).not.toContain("opacity");
         }),
       );
     });
@@ -304,7 +302,7 @@ describe("sessionLayout の Scene: 字幕の吹き出し", () => {
         settled,
         tap((s) => {
           expect(classOf(pendingOf(s.html)[0]!)).not.toMatch(/\b(text-|bg-|shadow|border|rounded|badge)/);
-          expect(classOf(bubbleOf(s.html))).toMatch(/\btext-/);
+          expect(bubbleOf(s.html).data?.style?.["--speaker-name-color"]).toBe("#b3622f");
         }),
       );
     });

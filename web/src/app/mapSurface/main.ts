@@ -431,7 +431,7 @@ function nodeBody(h: H, node: SnapshotNode, view: FoldView | null, selected: boo
     [
       h.button(
         [h.Type("button"), h.Class(MAP_NODE_BUTTON_CLASS), h.AriaPressed(String(selected)), ...digressionDescription(h, node, openness)],
-        [mark === null ? null : h.span([h.Class("map-node__mark")], [mark]), h.span([h.Class("map-node__text")], [node.text]), person === null ? null : h.span([h.Class("map-node__person text-[12px] text-gray-500")], [person]),
+        [mark === null ? null : h.span([h.Class("map-node__mark")], [mark]), h.span([h.Class("map-node__text")], [node.text]), person === null ? null : h.span([h.Class("map-node__person")], [person]),
           criteriaView(h, node, criteria),
           fold?.hint ? h.span([h.Class("map-node__hint")], [fold.hint]) : null],
       ),
@@ -461,7 +461,7 @@ export const view = Submodel.defineView<Model, Message, { readonly notice: () =>
     h.keyed("div")(
       node.id,
       [
-        h.Class("map-node-slot absolute left-0 top-0 box-border origin-top-left [pointer-events:all] select-none cursor-default"),
+        h.Class("map-node-slot"),
         h.DataAttribute("node-id", node.id),
         h.Style({ transform: `translate(${positions[node.id]!.x}px, ${positions[node.id]!.y}px)`, width: `${NODE_WIDTH}px`, visibility: HashMap.has(model.nodeHeights, node.id) ? "visible" : "hidden" }),
       ],
@@ -486,7 +486,7 @@ export const view = Submodel.defineView<Model, Message, { readonly notice: () =>
   const edgeDotButtons = dots.map((dot) =>
     h.keyed("button")(dot.id, [
       h.Type("button"),
-      h.Class("edge-dot nopan nowheel absolute w-[10px] h-[10px] [margin:-5px_0_0_-5px] p-0 [border:0] rounded-[50%] bg-yellow-400 cursor-pointer pointer-events-auto"),
+      h.Class("edge-dot nopan nowheel"),
       h.Style({ left: `${dot.x}px`, top: `${dot.y}px` }),
       h.AriaLabel(`画面の外で変わったノードへ寄る（${dot.ids.length} 件）`),
       h.OnClick(Message.ClickedEdgeDot({ nodeId: dot.id })),
@@ -494,14 +494,14 @@ export const view = Submodel.defineView<Model, Message, { readonly notice: () =>
   );
 
   return h.div(
-    [h.Class("map-surface relative w-full h-full overflow-hidden z-0"), h.OnMount(ObserveMapSurface())],
+    [h.Class("map-surface"), h.OnMount(ObserveMapSurface())],
     [
       h.div([h.Class("map-overlays")], [model.snapshot.criteria?.length ? h.div([h.Class("criteria-strip"), h.AriaLabel("判断軸（優先順）")], [
         h.span([], ["判断軸（優先順）"]),
         h.ol([], model.snapshot.criteria.map((axis) => h.li([], [axis]))),
       ]) : null, slots.notice()]),
-      h.div([h.Class("map-viewport absolute left-0 top-0 w-full h-full origin-top-left pointer-events-none z-2"), h.Style({ transform: `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.zoom})` })], [h.svg([h.Class("map-edges absolute left-0 top-0 w-[1px] h-[1px] overflow-visible pointer-events-none")], edges), h.div([h.Class("map-nodes absolute left-0 top-0 pointer-events-none")], nodes)]),
-      ...(edgeDotButtons.length === 0 ? [] : [h.div([h.Class("edge-dots absolute inset-0 z-4 pointer-events-none overflow-hidden")], edgeDotButtons)]),
+      h.div([h.Class("map-viewport"), h.Style({ transform: `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.zoom})` })], [h.svg([h.Class("map-edges")], edges), h.div([h.Class("map-nodes")], nodes)]),
+      ...(edgeDotButtons.length === 0 ? [] : [h.div([h.Class("edge-dots")], edgeDotButtons)]),
     ],
   );
 });

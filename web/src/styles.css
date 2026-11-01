@@ -30,6 +30,26 @@
 html, body, #root { margin: 0; width: 100%; height: 100%; }
 body { font-family: system-ui, "Hiragino Sans", sans-serif; background: var(--color-white); }
 
+/* 撤去したユーティリティの内部変数も、computed styleと非継承の性質を維持する。 */
+@property --tw-border-style { syntax: "*"; inherits: false; initial-value: solid; }
+@property --tw-leading { syntax: "*"; inherits: false; }
+
+.layout { display: flex; width: 100%; height: 100%; position: relative; }
+.map { flex: 1; min-width: 0px; height: 100%; position: relative; }
+.capture { width: 100%; height: 100%; }
+.waiting { margin: 0px; padding: 2rem; color: var(--color-gray-500); }
+.map-surface { position: relative; width: 100%; height: 100%; overflow: hidden; z-index: 0; }
+.map-viewport { position: absolute; left: 0px; top: 0px; width: 100%; height: 100%; transform-origin: top left; pointer-events: none; z-index: 2; }
+.map-edges { position: absolute; left: 0px; top: 0px; width: 1px; height: 1px; overflow: visible; pointer-events: none; }
+.map-nodes { position: absolute; left: 0px; top: 0px; pointer-events: none; }
+.map-node-slot { position: absolute; left: 0px; top: 0px; box-sizing: border-box; transform-origin: top left; pointer-events: all; -webkit-user-select: none; user-select: none; cursor: default; }
+.edge-dots { position: absolute; inset: 0px; z-index: 4; pointer-events: none; overflow: hidden; }
+.edge-dot { position: absolute; width: 10px; height: 10px; margin: -5px 0 0 -5px; padding: 0px; border: 0; border-radius: 50%; background-color: var(--color-yellow-400); cursor: pointer; pointer-events: auto; }
+.local-mode-line { position: absolute; top: 0px; left: 0px; right: 0px; height: 2px; background-color: var(--local-mode-color); pointer-events: none; z-index: 6; }
+.local-mode-notice { position: absolute; top: 8px; left: 12px; font-size: 12px; --tw-leading: 18px; line-height: 18px; color: var(--local-mode-color); pointer-events: none; z-index: 6; }
+.diff-update-notice { position: absolute; top: 8px; left: 12px; font-size: 12px; color: var(--color-gray-500); z-index: 5; pointer-events: none; }
+.viewing-notice { position: absolute; left: 16px; bottom: 4px; margin: 0px; font-size: 13px; --tw-leading: 16px; line-height: 16px; white-space: nowrap; color: var(--color-gray-500); pointer-events: none; z-index: 5; }
+
 .local-mode-line, .local-mode-notice { --local-mode-color: var(--color-green-800); }
 .local-mode-line[data-status="restarting"], .local-mode-notice[data-status="restarting"] { --local-mode-color: var(--color-orange-700); }
 .local-mode-line[data-status="stopped"], .local-mode-notice[data-status="stopped"] { --local-mode-color: var(--color-gray-500); }
@@ -52,7 +72,7 @@ body { font-family: system-ui, "Hiragino Sans", sans-serif; background: var(--co
 .map-node__mark { flex: none; font-weight: 600; color: var(--kind-color); }
 .map-node__text { flex: 1 1 0; min-width: 0; overflow-wrap: anywhere; }
 /* 案の出した人・TODO の担当者の行は、本文の下に 1 行で出す（本文と横に並べると、本文に幅を取られて 1 字ずつ縦に折れる） */
-.map-node__person { flex-basis: 100%; }
+.map-node__person { flex-basis: 100%; font-size: 12px; color: var(--color-gray-500); }
 .map-node__criteria { flex-basis: 100%; position: relative; font-size: 11px; line-height: 1.35; color: #6b7280; overflow-wrap: anywhere; }
 .map-node__criteria-reserve { display: block; visibility: hidden; }
 .map-node__criteria-reserve > span, .map-node__criteria-value > span { display: block; }
@@ -122,6 +142,19 @@ body { font-family: system-ui, "Hiragino Sans", sans-serif; background: var(--co
    枠は試作の案 E（prototype/speaker-captions）の形: 白の半透明の塗りと細い灰色の線、角丸で、話し手の側の下の角だけ小さくして吹き出しに見せる。自分（右）は薄い灰色で塗る。
    塗りは話者で色分けせず、文字の色だけを話者ごとに変える。影・バッジは付けない。幅は枠と余白を含めて固定（border-box）。位置が変わるときの動きは Mount（SlideCaptions）が付ける */
 .captions { --caption-name-width: 72px; }
+.captions__row { display: flex; align-items: baseline; gap: 8px; justify-content: flex-start; }
+.captions__row--right { justify-content: flex-end; }
+.captions__name { flex: none; width: var(--caption-name-width); font-size: 12px; --tw-leading: 1.5; line-height: 1.5; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--speaker-name-color); }
+.captions__name--provisional, .captions__pending { opacity: 50%; }
+.captions__name--editing, .captions__name--editable { pointer-events: auto; }
+.captions__name--editable { margin: 0px; padding: 0px; background-color: transparent; border-style: var(--tw-border-style); border-width: 0px; text-align: left; cursor: pointer; }
+@media (hover: hover) {
+  .captions__name--editable:hover { text-decoration-line: underline; }
+}
+.captions__name-form { margin: 0px; width: 100%; }
+.captions__name-input { display: block; width: 100%; min-width: 0px; box-sizing: border-box; margin: 0px; padding: 0px; font-size: 12px; --tw-leading: 1.5; line-height: 1.5; color: inherit; background-color: transparent; border-style: var(--tw-border-style); border-width: 0px; --tw-outline-style: none; outline-style: none; border-bottom: 1px solid currentColor; }
+.captions__bubble { margin: 0px; flex: none; font-size: 16px; --tw-leading: 1.5; line-height: 1.5; overflow-wrap: anywhere; text-align: left; color: var(--speaker-name-color); }
+.captions__bubble--right { text-align: right; }
 .captions__bubble { width: calc(var(--caption-bubble-ratio) * (100% - var(--caption-name-width) - 8px)); box-sizing: border-box; padding: 5px 12px; background: rgb(255 255 255 / 0.92); border: 1px solid var(--color-gray-200); border-radius: 12px 12px 12px 4px; box-shadow: none; }
 .captions__bubble--right { background: rgb(243 244 246 / 0.95); border-radius: 12px 12px 4px 12px; }
 /* 途中の分の末尾のカーソル。幅 2px は右の margin -2px で行の中の幅を取らせず、折り返しも吹き出しの幅も変えない */
