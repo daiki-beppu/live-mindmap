@@ -20,7 +20,6 @@ import { RequestSelfPause } from "../src/app/meeting/command.ts";
 import { init, update, view } from "../src/app/meeting/main.ts";
 import { Message } from "../src/app/meeting/message.ts";
 import { spokenFrame } from "./fixtures/captions.ts";
-import { semanticClassesOf } from "./semanticClasses.ts";
 import { resolveNoticeMotion } from "./noticeMotion.ts";
 import { attrOf, elementsOf, one, styleOf, type VNode } from "./sceneTree.ts";
 
@@ -127,7 +126,7 @@ export type Sim = SceneSimulation<Model, Message, undefined>;
 export const texts = (html: VNode, css: string): string[] => findAll(html, css).map(textContent);
 const numbers = (s: string): number[] => (s.match(/-?\d+(?:\.\d+)?(?:e-?\d+)?/g) ?? []).map(Number);
 
-export const layoutOutline = (html: VNode): string[] => elementsOf(one(html, ".layout")).map((child) => semanticClassesOf(attrOf(child, "class") ?? "")[0] ?? "");
+export const layoutOutline = (html: VNode): string[] => elementsOf(one(html, ".layout")).map((child) => (attrOf(child, "class") ?? "").split(/\s+/).filter(Boolean)[0] ?? "");
 export const selectedIds = (html: VNode): string[] =>
   findAll(html, "[data-node-id]")
     .filter((wrapper) => findAll(wrapper, 'button[aria-pressed="true"]').length > 0)

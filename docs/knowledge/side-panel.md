@@ -41,7 +41,7 @@
 
 - **専用のスナップショット**: 共有の `NODES` に TODO を足すと、根拠の Scene の前提が変わる。#1287 は `TODO_NODES`・`TODO_CHANGES` を別に置き、畳まれた議題の下の TODO・TODO 以外の種別・担当者も期限も無い TODO・話者なしの相手・60 分を超える時刻・`<b>` を含む本文（HTML として解釈しないこと）を 1 つに入れた
 - **段の並び**: 新しく書く assertion は、見出しの文字（`["根拠", "TODO", "変わったこと"]`）で比べる。`elements(...).map(named)` で `section.todos` などの並びを完全一致で固定した 1 行は、takt のレビューで [CODING_STANDARDS.md](../../CODING_STANDARDS.md) の「Contracts, not structure」に反するとして REJECT になり、消した。前からある `map(named)` の assertion は、段を足した分の要素を足すだけにし、一括で書き直さない
-- **意味のクラス**: 段に付けた BEM の class（`todos`・`todos__item` など）は `web/test/semanticClasses.ts` に登録する。Scene がユーティリティを数えずに意味のクラスだけを比べるための一覧
+- **意味のクラス**: 段に付けた BEM の class（`todos`・`todos__item` など）には `web/src/styles.css` に規則を書く。`web/scripts/check-css.ts` がソースのクラス名と CSS のセレクタを双方向に突き合わせる
 - **話者の名前の追従**: sidePanel の Scene には `speakerNames` を変える入口が無い。名前が付いて一覧が変わることは、`web/test/meeting.scene.test.ts` の「名前が付くと…」の Scene で `.todos__assignee` を読んで確かめた。sidePanel の Scene にテスト専用の入口を足さない
 
 ## 高さ・幅・スクロールは Scene でも takt のレビューでも見ていない。見るのは mount の heavy テスト

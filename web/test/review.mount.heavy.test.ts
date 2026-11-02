@@ -261,7 +261,7 @@ describe("見返し（Foldkit 版）の点滅の再始動", () => {
   );
 });
 
-// ユーティリティへ移した値は、素の CSS の文面では確かめられない。実ブラウザの computed style と位置で確かめる（Issue #1008: 替える前の CSS との照合は外し、今の値を期待値にする）。
+// 寸法と位置は、CSS の置き場によらず実ブラウザの computed style と矩形で確かめる。
 // 値は animation・transition が終わった後に読む（styleOf・rectOf が最後まで進める）。操作の後に変わる値は、決め打ちの待ちではなく、値に届くまで待つ
 describe("見返し（Foldkit 版）の寸法", () => {
   const open = (context: BrowserContext) => openReviewPage(context, pages.audioPath, { audio: true });

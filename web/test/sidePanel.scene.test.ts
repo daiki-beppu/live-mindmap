@@ -9,7 +9,6 @@ import { Message } from "../src/app/mapSurface/message.ts";
 import { ObserveMapSurface } from "../src/app/mapSurface/mount.ts";
 import { view as sideView } from "../src/app/sidePanel/main.ts";
 import { INITIAL_VIEWING, type ViewingState } from "../src/viewing.ts";
-import { semanticClassesOf } from "./semanticClasses.ts";
 import { foldingActions } from "./foldingActions.ts";
 
 // 右の列（Issue #821）の Scene。描いた view から入り、選んだノードの根拠のパネルと変わったことの列が、今の画面（EvidencePanel.tsx・ChangeList.tsx）と同じ中身・同じ DOM で出ること、
@@ -71,7 +70,7 @@ const evidenceOf = (html: VNode): VNode => Option.getOrThrow(find("section.evide
 const sideOf = (html: VNode): VNode => Option.getOrThrow(find(".side")(html));
 const elements = (vnode: VNode): VNode[] => (vnode.children ?? []).filter((c): c is VNode => typeof c !== "string" && c.sel !== undefined);
 const classOf = (vnode: VNode): string => Option.getOrElse(attr(vnode, "class"), () => "");
-const named = (vnode: VNode): string => `${vnode.sel}.${semanticClassesOf(classOf(vnode)).join(".")}`;
+const named = (vnode: VNode): string => `${vnode.sel}.${classOf(vnode).split(/\s+/).filter(Boolean).join(".")}`;
 const EMPTY_NOT_SELECTED = "ノードを選ぶと、根拠の発言が出ます";
 const EMPTY_NOT_ON_MAP = "選んだノードは今のマップにありません";
 const EMPTY_NO_REMARKS = "根拠の発言はありません";
@@ -560,7 +559,7 @@ describe("sidePanel の Scene: 右の列の出す・隠す（Disclosure の pane
       tap((s) => {
         const side = sideOf(s.html);
         expect(side.sel).toBe("div");
-        expect(semanticClassesOf(classOf(side))).toEqual(["side"]);
+        expect(classOf(side).split(/\s+/).filter(Boolean)).toEqual(["side"]);
         expect(Option.isSome(attr(side, "id"))).toBe(true);
         expect(Option.isSome(attr(side, "data-open"))).toBe(true);
         expect(elements(side).map(named)).toEqual(["section.evidence", "section.todos", "aside.changes"]);
@@ -598,7 +597,7 @@ describe("sidePanel の Scene: 右の列の出す・隠す（Disclosure の pane
     scene(
       app,
       given(modelOf(snap(), { ...opened(), selection: { id: "A1", byKey: false }, sideHidden: true })),
-      tap((s) => expect(semanticClassesOf(classOf(sideOf(s.html)))).toEqual(["side", "side--selected", "side--hidden"])),
+      tap((s) => expect(classOf(sideOf(s.html)).split(/\s+/).filter(Boolean)).toEqual(["side", "side--selected", "side--hidden"])),
       nodeButton("A2"),
       clickedNode("A2"),
       toggleSide(true),
@@ -656,7 +655,7 @@ describe("sidePanel の Scene: 狭い幅のシートの目印と閉じるボタ�
       app,
       given(modelOf()),
       mounted,
-      tap((s) => expect(semanticClassesOf(classOf(sideOf(s.html))).includes("side--selected")).toBe(false)),
+      tap((s) => expect(classOf(sideOf(s.html)).split(/\s+/).filter(Boolean).includes("side--selected")).toBe(false)),
       expectScene(selector("button.side__close")).toBeAbsent(),
     );
   });
@@ -669,7 +668,7 @@ describe("sidePanel の Scene: 狭い幅のシートの目印と閉じるボタ�
       clickedNode("A1"),
       tap((s) => {
         const side = sideOf(s.html);
-        expect(semanticClassesOf(classOf(side))).toEqual(["side", "side--selected"]);
+        expect(classOf(side).split(/\s+/).filter(Boolean)).toEqual(["side", "side--selected"]);
         expect(findAll("button.side__close")(evidenceOf(s.html))).toHaveLength(1);
       }),
       expectScene(selector("button.side__close")).toExist(),
@@ -683,7 +682,7 @@ describe("sidePanel の Scene: 狭い幅のシートの目印と閉じるボタ�
       expectScene(selector(".side")).toBeAbsent(),
       nodeButton("A1"),
       clickedNode("A1"),
-      tap((s) => expect(semanticClassesOf(classOf(sideOf(s.html)))).toEqual(["side", "side--selected", "side--hidden"])),
+      tap((s) => expect(classOf(sideOf(s.html)).split(/\s+/).filter(Boolean)).toEqual(["side", "side--selected", "side--hidden"])),
       expectScene(selector("button.side__close")).toExist(),
       click(selector("button.side__close")),
       expectScene(selector(".side")).toBeAbsent(),
@@ -700,7 +699,7 @@ describe("sidePanel の Scene: 狭い幅のシートの目印と閉じるボタ�
       click(selector("button.side__close")),
       expectScene(selector("button.side__close")).toBeAbsent(),
       expectScene(selector(".map-node--selected")).toBeAbsent(),
-      tap((s) => expect(semanticClassesOf(classOf(sideOf(s.html))).includes("side--selected")).toBe(false)),
+      tap((s) => expect(classOf(sideOf(s.html)).split(/\s+/).filter(Boolean).includes("side--selected")).toBe(false)),
     );
   });
 });
