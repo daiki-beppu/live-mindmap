@@ -1025,8 +1025,16 @@ struct RunAudioTests {
             try await within { try await running.value }
             Issue.record("録音の失敗が run に伝わらなかった")
         } catch AudioFailure.myRecording {}
+        catch let error as DeadlineExceeded {
+            Issue.record("録音の失敗が run に伝わる前に期限切れ: \(fixture.observations.values)")
+            throw error
+        }
         audio.stop()
-        try await within { try await audio.finish() }
+        do { try await within { try await audio.finish() } }
+        catch let error as DeadlineExceeded {
+            Issue.record("stop 後の録音の finish が期限切れ: \(fixture.observations.values)")
+            throw error
+        }
         #expect(fixture.observations.values.contains(.finished(.自分)))
     }
 

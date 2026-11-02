@@ -11,7 +11,6 @@ import { Message } from "../src/app/sessionLayout/message.ts";
 import { FocusSpeakerNameInput, RequestSpeakerName } from "../src/app/sessionLayout/command.ts";
 import { SlideCaptions } from "../src/app/sessionLayout/mount.ts";
 import { SPEAKER_NAME_COLORS } from "../src/app/sessionLayout/speakerName.ts";
-import { semanticClassesOf } from "./semanticClasses.ts";
 
 // セッションの画面の部品（Issue #820）の Scene。描いた view から入り、字幕・取り込みの知らせ・共有画面の知らせ・見る状態の知らせが
 // 今の画面（React の SessionView）と同じ位置・同じ要素・同じ文言で出ること、出入りで他の要素の並びが変わらないことを見る。
@@ -44,7 +43,7 @@ const PAUSED = { status: "paused", reason: "ChatGPT の利用上限" } as const;
 const elements = (vnode: VNode): VNode[] => (vnode.children ?? []).filter((c): c is VNode => typeof c !== "string" && c.sel !== undefined);
 const classOf = (vnode: VNode): string => Option.getOrElse(attr(vnode, "class"), () => "");
 const hasClass = (vnode: VNode, name: string): boolean => classOf(vnode).split(" ").includes(name);
-const named = (vnode: VNode): string => `${vnode.sel}.${semanticClassesOf(classOf(vnode)).join(".")}`;
+const named = (vnode: VNode): string => `${vnode.sel}.${classOf(vnode).split(/\s+/).filter(Boolean).join(".")}`;
 const layoutOf = (html: VNode): VNode => Option.getOrThrow(find(".layout")(html));
 const mapOf = (html: VNode): VNode => Option.getOrThrow(find(".map")(html));
 const outline = (html: VNode): string[] => elements(layoutOf(html)).map(named);
@@ -201,7 +200,7 @@ describe("sessionLayout の Scene: 字幕の吹き出し", () => {
       tap((s) => {
         expect(rows(s.html)).toHaveLength(2);
         expect(findAll(".captions__bubble")(s.html).map(textContent)).toEqual(["こんにちは", "はい"]);
-        for (const row of rows(s.html)) expect(elements(row).map((c) => semanticClassesOf(classOf(c))[0])).toEqual(["captions__name", "captions__bubble"]);
+        for (const row of rows(s.html)) expect(elements(row).map((c) => classOf(c).split(/\s+/).filter(Boolean)[0])).toEqual(["captions__name", "captions__bubble"]);
       }),
     );
   });
@@ -713,7 +712,7 @@ describe("sessionLayout の Scene: Toast に載せない知らせ（差分更新
       given(init()),
       expectScene(selector(".local-mode-line")).toBeAbsent(),
       expectScene(selector(".local-mode-notice")).toBeAbsent(),
-      tap((s) => expect(semanticClassesOf(classOf(layoutOf(s.html)))).toEqual(["layout"])),
+      tap((s) => expect(classOf(layoutOf(s.html)).split(/\s+/).filter(Boolean)).toEqual(["layout"])),
     );
   });
 
@@ -726,13 +725,13 @@ describe("sessionLayout の Scene: Toast に載せない知らせ（差分更新
       expectScene(selector(".local-mode-notice")).toHaveText("ローカルモード・Apple Intelligence"),
       expectScene(selector(".local-mode-notice")).toHaveAttr("role", "status"),
       tap((s) => {
-        expect(semanticClassesOf(classOf(layoutOf(s.html)))).toEqual(["layout", "layout--local"]);
+        expect(classOf(layoutOf(s.html)).split(/\s+/).filter(Boolean)).toEqual(["layout", "layout--local"]);
         expect(outline(s.html).slice(0, 3)).toEqual(["div.local-mode-line", "div.local-mode-notice", "div.map"]);
       }),
       emit(Message.ReceivedSessionMode({ local: false })),
       expectScene(selector(".local-mode-line")).toBeAbsent(),
       expectScene(selector(".local-mode-notice")).toBeAbsent(),
-      tap((s) => expect(semanticClassesOf(classOf(layoutOf(s.html)))).toEqual(["layout"])),
+      tap((s) => expect(classOf(layoutOf(s.html)).split(/\s+/).filter(Boolean)).toEqual(["layout"])),
     );
   });
 

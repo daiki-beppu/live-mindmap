@@ -10,7 +10,7 @@
     "test:it": "vitest run --project it",
     "test:it:heavy": "vitest run --project heavy",
     "test:it:all": "vitest run --project it --project heavy",
-    "typecheck": "tsc --noEmit && effect-tsgo diagnostics --project tsconfig.json && oxlint --no-error-on-unmatched-pattern src/app && node ../server/scripts/check-test-layers.ts"
+    "typecheck": "tsc --noEmit && effect-tsgo diagnostics --project tsconfig.json && oxlint --no-error-on-unmatched-pattern src/app && node ../server/scripts/check-test-layers.ts && node scripts/check-css.ts"
   },
   "dependencies": {
     "@effect/platform-browser": "4.0.6",
@@ -22,9 +22,7 @@
     "@effect/tsgo": "0.56.0",
     "@foldkit/oxlint-plugin": "0.15.3",
     "@foldkit/vite-plugin": "0.27.0",
-    "@tailwindcss/vite": "^4.3.3",
     "oxlint": "^1.87.0",
-    "tailwindcss": "^4.3.3",
     "typescript": "^7.0.2",
     "vite": "^8.3.2",
     "vitest": "^5.0.3"

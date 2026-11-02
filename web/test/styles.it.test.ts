@@ -1,14 +1,12 @@
 import { readFileSync } from "node:fs";
-import { resolve, sep } from "node:path";
-import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { NARROW_QUERY } from "../src/app/startFlags.ts";
 
 const css = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
 
-// Tailwind v4 の入口（Issue #830）。styles.css は @theme の token を持つ。素の CSS に残した規則が色を var(--color-*) で書いても、今の hex として読めるよう解決する
-const themeBlock = css.match(/@theme\b[^{]*\{([\s\S]*?)\n\}/)?.[1] ?? "";
-const colorTokens = new Map([...themeBlock.matchAll(/(--color-[\w-]+)\s*:\s*([^;]+);/g)].map((m) => [m[1]!, m[2]!.trim()] as const));
+// トークン参照で書かれた色も、画面で使う hex として確かめる。
+const rootBlock = css.match(/:root\s*\{([\s\S]*?)\n\}/)?.[1] ?? "";
+const colorTokens = new Map([...rootBlock.matchAll(/(--color-[\w-]+)\s*:\s*([^;]+);/g)].map((m) => [m[1]!, m[2]!.trim()] as const));
 const resolveColors = (value: string) => value.replace(/var\(\s*(--color-[\w-]+)\s*\)/g, (whole, name: string) => colorTokens.get(name) ?? whole);
 const rule = (selector: string) => {
   const m = css.match(new RegExp(`(?:^|\\n)${selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*\\{([^}]*)\\}`));
@@ -17,37 +15,31 @@ const rule = (selector: string) => {
 
 const WIDTH_FORMULA = /min\(\s*720px\s*,\s*calc\(\s*100vw\s*-\s*2\s*\*\s*316px\s*\)\s*\)/;
 
-// 素の CSS に残す規則（点滅・子孫と状態のセレクタ・min()/calc() の長い値）は、styles.css の文面で確かめる。
-// ユーティリティへ移した規則（.layout・.key-list・.map-node__count・.map-node__fold-dot の基本の値など）は、置き場に依らない実ブラウザの computed style で確かめる
-// （review.mount.heavy.test.ts・meeting.mount.heavy.test.ts の寸法）。
+// 寸法と位置は、CSS の置き場によらず実ブラウザの computed style で確かめる
+// （review.mount.heavy.test.ts・meeting.mount.heavy.test.ts）。
 
-describe("styles.css: Tailwind v4 の入口（Issue #830）", () => {
+describe("styles.css: 色のトークンと点滅", () => {
   it("今の色 12 種を、今の hex のまま --color-* の token にする", () => {
-    const values = new Set([...colorTokens.values()].map((value) => value.toLowerCase()));
-    for (const hex of ["#111827", "#166534", "#374151", "#4b5563", "#6b7280", "#9ca3af", "#c2410c", "#e5e7eb", "#f3f4f6", "#f9fafb", "#facc15", "#fff"]) {
-      expect(values.has(hex), hex).toBe(true);
-    }
-    expect(colorTokens.get("--color-yellow-400")).toBe("#facc15");
+    expect(Object.fromEntries(colorTokens)).toEqual({
+      "--color-white": "#fff",
+      "--color-gray-50": "#f9fafb",
+      "--color-gray-100": "#f3f4f6",
+      "--color-gray-200": "#e5e7eb",
+      "--color-gray-400": "#9ca3af",
+      "--color-gray-500": "#6b7280",
+      "--color-gray-600": "#4b5563",
+      "--color-gray-700": "#374151",
+      "--color-gray-900": "#111827",
+      "--color-yellow-400": "#facc15",
+      "--color-green-800": "#166534",
+      "--color-orange-700": "#c2410c",
+    });
   });
 
-  it("走査を web のソースに絞る: utilities の import は source(none) で自動の走査を止め、@source で web/src だけを指す", () => {
-    expect(css).toMatch(/@import\s+["']tailwindcss\/utilities\.css["'][^;]*source\(none\)/);
-    const sources = [...css.matchAll(/@source\s+(?:not\s+)?["']([^"']+)["']/g)].map((m) => m[1]!);
-    expect(sources.length).toBeGreaterThan(0);
-    // 走査の起点は web/src の中だけ（リポジトリ全体・server・node_modules を読まない）
-    const srcDir = fileURLToPath(new URL("../src/", import.meta.url));
-    for (const path of sources) {
-      const resolved = resolve(srcDir, path) + sep;
-      expect(resolved.startsWith(srcDir), path).toBe(true);
-      expect(resolved, path).not.toContain("node_modules");
-    }
-  });
-
-  it("素の CSS に残す点滅の @keyframes と子孫・状態のセレクタが、層（@layer { … } のブロック）の外にある: ユーティリティに勝つため", () => {
-    const outsideBlocks = css.replace(/@layer\s+[\w-]+\s*\{[\s\S]*?\n\}/g, "");
-    expect(outsideBlocks).toMatch(/@keyframes map-node-blink/);
-    expect(outsideBlocks).toMatch(/\.map-node:hover\s+\.map-node__fold-dot\s*\{/);
-    expect(outsideBlocks).toMatch(/\.review-seek\[data-pointing\]/);
+  it("点滅の @keyframes と子孫・状態のセレクタがある", () => {
+    expect(css).toMatch(/@keyframes map-node-blink/);
+    expect(css).toMatch(/\.map-node:hover\s+\.map-node__fold-dot\s*\{/);
+    expect(css).toMatch(/\.review-seek\[data-pointing\]/);
   });
 });
 
@@ -58,11 +50,6 @@ describe("styles.css: 変わったノードの強調", () => {
     expect(css).not.toMatch(/#dc2626/i);
   });
 
-  it("枠・影を足さない（box-shadow は none のまま）", () => {
-    for (const m of css.matchAll(/box-shadow\s*:\s*([^;]+);/g)) expect(m[1]!.trim()).toBe("none");
-    expect(css).not.toMatch(/--tw-shadow|--shadow-/);
-  });
-
   it("点滅はノードの塗りと枠だけを変え、文字は薄くしない（opacity を使わない）", () => {
     const frames = css.match(/@keyframes map-node-blink\s*\{([\s\S]*?)\}\s*\}/)?.[1] ?? "";
     expect(frames).toMatch(/background-color/);
@@ -71,9 +58,8 @@ describe("styles.css: 変わったノードの強調", () => {
     expect(css).not.toContain("map-node__flash");
   });
 
-  it("変わったノードには細い黄色の枠を outline で付ける（実寸を変えない）。点滅は animate-* のユーティリティにしない", () => {
+  it("変わったノードには細い黄色の枠を outline で付ける（実寸を変えない）", () => {
     expect(rule(".map-node--blink")).toMatch(/outline\s*:\s*1\.5px solid #facc15/i);
-    expect(css).not.toMatch(/--animate-/);
   });
 });
 
@@ -87,16 +73,14 @@ describe("styles.css: 字幕と知らせ", () => {
     expect(r).not.toMatch(/box-shadow|border|outline/);
   });
 
-  it("カーソルは 1 秒周期で止まらず点滅し、@keyframes は層の外。animate-* のユーティリティにしない", () => {
+  it("カーソルは 1 秒周期で止まらず点滅する", () => {
     expect(rule(".captions__cursor")).toMatch(/animation\s*:[^;]*\b1s\b[^;]*\binfinite\b/);
-    const outsideBlocks = css.replace(/@layer\s+[\w-]+\s*\{[\s\S]*?\n\}/g, "");
-    expect(outsideBlocks).toMatch(/@keyframes\s+[\w-]+\s*\{[^@]*\}\s*\}/);
+    expect(css).toMatch(/@keyframes\s+[\w-]+\s*\{[^@]*\}\s*\}/);
     const name = rule(".captions__cursor").match(/animation\s*:\s*([\w-]+)/)?.[1] ?? "";
     expect(name).not.toBe("");
-    expect(outsideBlocks).toMatch(new RegExp(`@keyframes\\s+${name}\\b`));
-    expect(css).not.toMatch(/--animate-/);
+    expect(css).toMatch(new RegExp(`@keyframes\\s+${name}\\b`));
     // 参照先の keyframes が、可視状態を切り替える（点滅する）定義であること
-    expect(outsideBlocks).toMatch(new RegExp(`@keyframes\\s+${name}\\b[^{]*\\{[^@]*visibility\\s*:\\s*hidden`));
+    expect(css).toMatch(new RegExp(`@keyframes\\s+${name}\\b[^{]*\\{[^@]*visibility\\s*:\\s*hidden`));
   });
 
   it("prefers-reduced-motion: reduce のときは、カーソルを点滅させずに出したままにする（animation: none）", () => {
@@ -147,7 +131,7 @@ describe("styles.css: 選んだノード", () => {
 });
 
 describe("styles.css: 人が開いたノードの小さな丸と、畳んだノードの隠れた数の丸（状態の規則）", () => {
-  it("ホバーしたときだけ出す規則が子孫のセレクタで素の CSS にある（group-hover のユーティリティにしない）", () => {
+  it("ホバーしたときだけ出す規則が子孫のセレクタにある", () => {
     expect(css).toMatch(/\.map-node:hover\s+\.map-node__fold-dot\s*\{/);
   });
 

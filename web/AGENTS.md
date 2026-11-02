@@ -11,7 +11,13 @@ Foldkit のコードは、公式の skill と llms.txt に従って書く。こ�
 - 写した版は、`github.com/foldkit/foldkit` のタグ `foldkit@0.167.0`（コミット `74071173b1253e9efeec050a31ca86df1931ce5a`）の `skills/`。出どころは `skills-lock.json` にも残る。
 - skill の中身は書き換えない。食い違いは、この文書の側で読み替える。
 - 読み替え 1（subtree）: skill `foldkit` は、参照用に foldkit のソースを `repos/foldkit/` に subtree で置くよう書いている。この repo は subtree を置かない。ソースは入れた `node_modules` のものを読む（`web/node_modules/foldkit/` と `web/node_modules/@foldkit/ui/`）。
-- 読み替え 2（Tailwind）: skill `generate-program` は Tailwind を前提にしている。web は Tailwind v4（`@tailwindcss/vite`）を入れてあり、`h.Class` には意味のクラス名（BEM）にユーティリティを並べて書く。設定は `web/src/styles.css` の中: Preflight は外す（`theme.css` と `utilities.css` だけを import）、既定のテーマは `--*: initial` で消して今の色を今の hex のまま token にする、走査は `source(none)` と `@source` で web/src に絞る。点滅（`@keyframes`）と子孫・状態のセレクタ・`min()`/`calc()`/`color-mix` の長い値は、層の外の素の CSS に残す（ユーティリティに勝たせるため）。影（`shadow-*`）とバッジは足さない。
+- 読み替え 2（CSS）: skill `generate-program` は Tailwind を前提にしている。web は Tailwind を使わず、素の CSS と `:root` の CSS 変数で書く（ADR 0028）。
+  - `h.Class` には意味のクラス名（BEM）だけを書く。ユーティリティのようなクラス（`flex`・`mt-8` など）は作らない。見た目は `web/src/styles.css` の規則に書く。
+  - クラス名は文字列リテラルで丸ごと書く。修飾子を条件で付けるときは、`cond ? "captions__bubble--right" : ""` のように名前全体を書き、`` `map-node--${kind}` `` のように名前の一部を組み立てない（検査スクリプトが読めなくなる）。
+  - 色は `styles.css` 先頭の `:root` のトークン（`var(--color-…)`）を使う。トークンと同じ値の hex を生で書かない。要素ごとに変わる値は要素の変数（`--kind-color` など）と `h.Style` で渡す。
+  - `h.Style` は、動く値（座標・寸法の計算結果・要素の変数）だけに使う。`@foldkit/ui` の部品は自前の `h.Style` を持ち、外から足すと後勝ちで消えるので、部品の要素には `h.Style` を足さない。
+  - リセット用の CSS（Preflight・normalize など）は入れない。行間と寸法が動く。
+  - 影（`box-shadow` は `none` 以外）とバッジは足さない。
 
 ## コードの置き場
 

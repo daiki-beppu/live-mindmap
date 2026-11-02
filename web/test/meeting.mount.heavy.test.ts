@@ -476,7 +476,7 @@ describe("会議中（Foldkit 版）の Subscription", () => {
   );
 });
 
-// ユーティリティへ移した値は、素の CSS の文面では確かめられない。実ブラウザの computed style と位置で確かめる（Issue #1008: 替える前の CSS との照合は外し、今の値を期待値にする）。
+// 寸法と位置は、CSS の置き場によらず実ブラウザの computed style と矩形で確かめる。
 // 字幕と知らせの位置は、窓の幅 1280 で幅 648px、字幕の左右 12px の外に知らせ。値は animation・transition が終わった後に読み（styleOf・rectOf が最後まで進める）、
 // 配置が落ち着くのは決め打ちの待ちではなく、値に届くまで待つ
 describe("会議中（Foldkit 版）の寸法", () => {
