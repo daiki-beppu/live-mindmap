@@ -69,7 +69,7 @@ run の報告を読むときは、どの段が実際にコマンドを流した�
 
 仕様 [#1306](https://github.com/daiki-beppu/live-mindmap/issues/1306) の子 3 本（[PR #1326](https://github.com/daiki-beppu/live-mindmap/pull/1326)・[#1328](https://github.com/daiki-beppu/live-mindmap/pull/1328)・[#1370](https://github.com/daiki-beppu/live-mindmap/pull/1370)）は、どれも PR の本文の `## Execution Report` が「Workflow `default` completed successfully.」の 1 行だけだった。チケットの完了条件には「実行した層と結果を実装の報告に書く（PR の本文へ写される）」があり、#1309 には `cli eval` の前後の表も求めていた。どちらも PR からは辿れない。本文に報告が載ったのは、修正や検証の段が報告を書いた run だけだった（[PR #1362](https://github.com/daiki-beppu/live-mindmap/pull/1362) の「P1: 必須検証の実行報告」、[PR #1367](https://github.com/daiki-beppu/live-mindmap/pull/1367) の破壊検証の結果）。
 
-マージの run が修正を積んだ PR でも同じだった。[PR #1517](https://github.com/daiki-beppu/live-mindmap/pull/1517)（#1447）は、マージの run が `export.json` の漏れを直してから入ったが、本文は 1 行のままだった。チケットが求めた `cli eval`・`peopleAccuracy`・`mapShape` の前後の表は、run の `implementation-report.md` にあるだけで、マージのレビューも「before/after 比較表は確認できず」と書いた。親 [#1443](https://github.com/daiki-beppu/live-mindmap/issues/1443) の完了条件「before/after が PR の本文に残っている」は、この形では満たせない。
+マージの run が修正を積んだ PR でも同じだった。[PR #1517](https://github.com/daiki-beppu/live-mindmap/pull/1517)（#1447）は、マージの run が `export.json` の漏れを直してから入ったが、本文は 1 行のままだった。チケットが求めた `cli eval`・`peopleAccuracy`・`mapShape` の前後の表は、run の `implementation-report.md` にあるだけで、マージのレビューも「before/after 比較表は確認できず」と書いた。親 [#1443](https://github.com/daiki-beppu/live-mindmap/issues/1443) の完了条件「before/after が PR の本文に残っている」は、この形では満たせない。 補足の約束を差分更新のプロンプトに足した [PR #1782](https://github.com/daiki-beppu/live-mindmap/pull/1782)（[#1772](https://github.com/daiki-beppu/live-mindmap/issues/1772)）も、`cli eval`・`mapShape`・`edgeJudge`・`siblingJudge` の前後の表を求められていたが、本文は 1 行のまま、レビューを通って自動でマージされた。
 
 PR のレビューの run（`evaluate-pull-request-*`）も、最終の段で「機械ゲートは審査しない」と書いて APPROVE する。#1370 のコーディングレビューは、GitHub の CI の check（型検査・unit・IT・heavy IT・E2E）の成功を見て、それを根拠にした。層が通ったかは CI の check で見る。PR の本文に結果を残させたいなら、報告を本文に書く手順をチケットの完了条件とは別に用意する。
 
@@ -121,7 +121,7 @@ takt の PR は squash で予約されるので、run がコミットを分け�
 
 [#1312](https://github.com/daiki-beppu/live-mindmap/issues/1312) は起票の時点で、完了条件に「`cli eval` を同じサンプルで前後に回し、前後の表を実装の報告に書く」を入れていた。2026-10-18 の takt の run は、コードの直しとテストを済ませたが、この表が作れずに BLOCKED で止まり、案内役が判断依頼を出した。evals は鍵と費用の要る手作業で（AGENTS.md の Evals）、run が回せるとは限らない。2026-10-20 に、この行を完了条件から外して「## マージ後に人が確かめること」の節へ移すと、流し直した run はマージまで進んだ（[PR #1385](https://github.com/daiki-beppu/live-mindmap/pull/1385)）。同じ親の [#1313](https://github.com/daiki-beppu/live-mindmap/issues/1313) も同じ形で流れた。
 
-回せる run もある。2026-10-24 の #1447 の run は、Claude で `cli eval --model`・`peopleAccuracy`・`mapShape` を変更前の main と変更後で同時に流し、表を `implementation-report.md` に書いた。それでも表は PR の本文に届かなかった（上の「1 回で通った run の PR の本文には、実装の報告が写らない」）。回せても回せなくても、表を PR に残すのは人の手になる。
+回せる run もある。2026-10-24 の #1447 の run は、Claude で `cli eval --model`・`peopleAccuracy`・`mapShape` を変更前の main と変更後で同時に流し、表を `implementation-report.md` に書いた。それでも表は PR の本文に届かなかった（上の「1 回で通った run の PR の本文には、実装の報告が写らない」）。回せても回せなくても、表を PR に残すのは人の手になる。 #1776 の run も、Claude のサブスクの認証で補足の再生 4 本と `supplementJudge` を回し、表を実装の報告に書いた。
 
 完了条件に残すのは、エージェントが自分で満たせるもの（ルートの層の終了コード、テスト、grep で確かめられる残りの無さ）だけにする。
 
@@ -176,6 +176,14 @@ takt は ABORT で終わったタスクを自動で再投入する（上限 2 �
 
 指示は `context/task/order.md` の「追加の指示」に残るので、再投入の run も従いはする。それでも、ABORT の指示は run を 1 本止めるだけで、タスクは終わらない。人が引き取るときは、run に ABORT を頼むのと合わせて、タスクを列から外す。
 
+## 完了条件の書き込み先が run の中にあるかを、積む前に確かめる。無ければ計画が「情報不足」で ABORT し、自動の再投入も同じ結論を繰り返す
+
+[#1776](https://github.com/daiki-beppu/live-mindmap/issues/1776) の完了条件は「正解をサンプル側のリポジトリにコミットする」「表はこの issue のコメントに残す」だった。サンプルを置いた `~/live-mindmap-samples` は git のリポジトリではなく、run の決まりも `git commit` を禁じている。10/31 の 1 本目の計画は `git rev-parse --show-toplevel` で `not a git repository` を確かめ、`[PLAN:3] 要件が不明確、情報不足` で ABORT した。自動の再投入の 2 本は、前の run の 3〜5 秒後に始まり、前の計画を読んで同じ確認をし直し、約 3 分ずつで同じ ABORT を出した。3 本の計画の入力は合わせて約 200 万トークンだった。
+
+計画の段の「情報不足」は、入力が同じなら何度流しても同じ結論になる。11/01 に本文を「git のリポジトリではないので、ファイルに書くだけでよい。コミットは要らない」「表は実装の報告に載せる」に直し、正解の形の正本をコードのファイル名（`evaluate.ts` の `Truth`、`truthFile.ts`）で指すと、4 本目は差し戻し 0 回・91 分で通った。
+
+この run はリポジトリの差分が 0 なので、takt は PR を作らなかった。結果は人が issue のコメントに写して閉じた。repo の外のデータだけを変えるチケットは、書き込み先と、どう閉じるかを本文に書いておく。
+
 ## 完了条件に回数を書くなら、何を数えるかを書く。「1 回だけ呼ぶ」は「呼ぶ所が 1 か所」とも「評価が 1 回」とも読まれる
 
 [#1710](https://github.com/daiki-beppu/live-mindmap/issues/1710) の完了条件は「マップ面の 1 回の更新で `foldView` を呼ぶのが 1 か所だけ」だった。10/28 の 3 本の run は、更新前の状態から畳む所も数えるのかを決められずに止まった。10/30 に「数えるのは更新後の状態の `FoldView` だけ」と issue にコメントすると、3 分後に始めた run は 38 分で通った。ところが PR のレビューの run の裁定役は、反映の経路で更新先を 2 回畳むことを P1 に採った。呼ぶ所は 1 か所でも、評価は 2 回ある、という数え方だ。2 回目は振る舞いとして要るもので（[カメラ](camera.md) の 3 節目）、人が「呼ぶ所が 1 か所」と読んで受け入れた。回数を完了条件に書くときは、呼ぶ所の数か評価の回数か、どの状態から作るものを数えるかまで書く。
@@ -205,3 +213,4 @@ takt は ABORT で終わったタスクを自動で再投入する（上限 2 �
 - 仕様 [#1682](https://github.com/daiki-beppu/live-mindmap/issues/1682) の子 [#1704](https://github.com/daiki-beppu/live-mindmap/issues/1704) の takt の run（`20261028-131126-issue-1704-main-no-ruleset-no-7pe7g3`・`20261028-132535-issue-1704-main-no-ruleset-no-zd3ch2`・`20261028-132719-issue-1704-main-no-ruleset-no-sbh9j5`）の trace と reports、dotfiles#407 の timeline、[main の ruleset の strict を外したとき](../devlog/2026-10-30.md#drop-strict)
 - 仕様 [#1702](https://github.com/daiki-beppu/live-mindmap/issues/1702) の子 [#1710](https://github.com/daiki-beppu/live-mindmap/issues/1710)（takt の run `20261030-055419-issue-1710-mu-wo-1-dake-ri-no-c3xmb5`、PR のレビューの run `20261030-063313-merge-pr-1732-vddezh`・`20261030-071712-merge-pr-1732-1-8oofmo`、[PR #1732](https://github.com/daiki-beppu/live-mindmap/pull/1732) のコメント）・[#1713](https://github.com/daiki-beppu/live-mindmap/issues/1713)（`20261030-114356-merge-pr-1743-y1lqpr`）・[#1715](https://github.com/daiki-beppu/live-mindmap/issues/1715)（`20261030-114248-merge-pr-1742-nf3rm0`）・[#1717](https://github.com/daiki-beppu/live-mindmap/issues/1717)（実装の run 4 本の `interventions.jsonl`、`20261030-164903-merge-pr-1757-fve4lj`）、[画面のカメラの決め方を 1 つの表に集めたとき](../devlog/2026-10-31.md#camera-module)
 - 仕様 [#1706](https://github.com/daiki-beppu/live-mindmap/issues/1706) の子 [#1714](https://github.com/daiki-beppu/live-mindmap/issues/1714)・[#1718](https://github.com/daiki-beppu/live-mindmap/issues/1718)・[#1719](https://github.com/daiki-beppu/live-mindmap/issues/1719)〜[#1722](https://github.com/daiki-beppu/live-mindmap/issues/1722) の本文の編集と案内役のコメント、[PR #1730](https://github.com/daiki-beppu/live-mindmap/pull/1730)・[#1740](https://github.com/daiki-beppu/live-mindmap/pull/1740) の本文、[CI を段に分けたとき](../devlog/2026-10-31.md#ci-stages)
+- 仕様 [#1755](https://github.com/daiki-beppu/live-mindmap/issues/1755) の子 [#1776](https://github.com/daiki-beppu/live-mindmap/issues/1776) の takt の run（`20261031-143340-issue-1776-no-truth-json-ni-no-skmgfu`・`20261031-143724-issue-1776-no-truth-json-ni-no-0es57x`・`20261031-144058-issue-1776-no-truth-json-ni-no-mwyyuv`・`20261101-133733-issue-1776-no-truth-json-ni-no-474pu8`）の trace と reports、[#1772](https://github.com/daiki-beppu/live-mindmap/issues/1772)・[PR #1782](https://github.com/daiki-beppu/live-mindmap/pull/1782) の本文、[補足を作ったとき](../devlog/2026-11-02.md#supplement-spec)
