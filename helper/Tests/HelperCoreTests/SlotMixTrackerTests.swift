@@ -1,4 +1,3 @@
-import FluidAudio
 import Foundation
 import Testing
 @testable import HelperCore
@@ -217,16 +216,14 @@ struct SlotMixTrackerTests {
         tracker.append(samples16k: audio([(0, 5, 0.3), (50, 70, 0.2), (70, 78, 0.3)]))
         _ = tracker.update(finalized: run(slot: 1, from: 50, count: 10) + run(slot: 1, from: 70, count: 4)).mixed
 
-        let config = SortformerSpeakerDiarizer.timelineConfig
-        let timeline = DiarizerTimeline(config: config)
-        let predictions: [Float] = (0..<60).flatMap { frame in (0..<4).map { slot in slot == 1 && (10..<40).contains(frame) ? Float(1) : Float(0) } }
-        let update = try timeline.addPredictions(finalizedPredictions: predictions, tentativePredictions: [])
-        let segment = try #require(update.finalizedSegments.first)
-        #expect(Double(segment.endTime) - Double(segment.startTime) >= 2)
+        var timeline = SpeakerSegmentTimeline()
+        let predictions: [Float] = (0..<600).flatMap { frame in (0..<8).map { slot in slot == 1 && (100..<340).contains(frame) ? Float(1) : Float(0) } }
+        let update = timeline.append(probabilities: predictions, frameCount: 600)
+        let segment = try #require(update.segments.first)
+        #expect(Double(segment.end) - Double(segment.start) >= 2)
 
         let stream = AsyncThrowingStream<SpeakerDiarization, Error> { continuation in
-            var settledTo = -Double.infinity
-            SortformerSpeakerDiarizer.yield(update, shift: shift, settledTo: &settledTo, finished: false, mixing: tracker, to: continuation)
+            Nemotron3SpeakerDiarizer.yield(update, shift: shift, mixing: tracker, to: continuation)
             continuation.finish()
         }
         var received: [SpeakerDiarization] = []
@@ -241,9 +238,10 @@ struct SlotMixTrackerTests {
             }
         }
         #expect(kinds.filter { $0 != "centroid" } == ["segment", "mixed", "settled"])
-        guard case .mixed(let slot, let at) = received[1] else { return }
+        let mixed = try #require(received.first { if case .mixed = $0 { true } else { false } })
+        guard case .mixed(let slot, let at) = mixed else { return }
         #expect(slot == 1)
-        #expect(abs(at - (Double(segment.endTime) + shift)) < 1e-6)
+        #expect(abs(at - (Double(segment.end) + shift)) < 1e-6)
     }
 
     @Test("更新の流し方は、区間 → 重心 → 混入 → 確定済みの位置の順。重心は混入より先、確定済みの位置より前。重心の値はそのまま、シフトを足さない")
@@ -255,22 +253,21 @@ struct SlotMixTrackerTests {
         tracker.append(samples16k: audio([(0, 5, 0.3), (50, 70, 0.2), (70, 78, 0.3)]))
         _ = tracker.update(finalized: run(slot: 1, from: 50, count: 10) + run(slot: 1, from: 70, count: 4))
 
-        let timeline = DiarizerTimeline(config: SortformerSpeakerDiarizer.timelineConfig)
+        var timeline = SpeakerSegmentTimeline()
         // Why: 1 つの式にまとめると、CI のランナーでは型の推論が時間内に終わらずコンパイルが落ちた
         func active(_ slot: Int, _ frame: Int) -> Bool {
-            if slot == 1 { return (0..<28).contains(frame) }
-            if slot == 3 { return (30..<58).contains(frame) }
+            if slot == 1 { return (0..<220).contains(frame) }
+            if slot == 3 { return (240..<460).contains(frame) }
             return false
         }
-        let predictions: [Float] = (0..<60).flatMap { (frame: Int) -> [Float] in
-            (0..<4).map { (slot: Int) -> Float in active(slot, frame) ? 1 : 0 }
+        let predictions: [Float] = (0..<600).flatMap { (frame: Int) -> [Float] in
+            (0..<8).map { (slot: Int) -> Float in active(slot, frame) ? 1 : 0 }
         }
-        let update = try timeline.addPredictions(finalizedPredictions: predictions, tentativePredictions: [])
-        #expect(update.finalizedSegments.count == 2)
+        let update = timeline.append(probabilities: predictions, frameCount: 600)
+        #expect(update.segments.count == 2)
 
         let stream = AsyncThrowingStream<SpeakerDiarization, Error> { continuation in
-            var settledTo = -Double.infinity
-            SortformerSpeakerDiarizer.yield(update, shift: 2, settledTo: &settledTo, finished: false, mixing: tracker, to: continuation)
+            Nemotron3SpeakerDiarizer.yield(update, shift: 2, mixing: tracker, to: continuation)
             continuation.finish()
         }
         var received: [SpeakerDiarization] = []

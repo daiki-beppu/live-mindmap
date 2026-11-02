@@ -2,7 +2,7 @@ import type { SpeakerLogEvent } from "./live.ts";
 import type { SettledRemark } from "./remarkGate.ts";
 import { cutWords, keepWordsBefore } from "./words.ts";
 
-export const SPEAKER_WAIT_MS = 3000;
+export const SPEAKER_WAIT_MS = 5000;
 const MIN_RUN_SECONDS = 0.5;
 const EPSILON = 1e-6;
 
@@ -171,7 +171,7 @@ export type SpeakerAttributionOptions = { rules?: SpeakerRules; observe?: (recor
 type Held = { remark: SettledRemark; heldAt: number };
 type SlotState = "linked" | "new";
 
-// ヘルパーを起動し直すと Sortformer の枠は振り直される。
+// ヘルパーを起動し直すと Nemotron 3 の枠は振り直される。
 export function createSpeakerAttribution({ rules = DEFAULT_RULES, observe }: SpeakerAttributionOptions = {}) {
   let off = false;
   let clock = 0;

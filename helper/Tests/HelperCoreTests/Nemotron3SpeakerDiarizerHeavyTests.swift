@@ -1,10 +1,11 @@
 import AVFoundation
 import CoreAudio
+import FluidAudio
 import Foundation
 import Testing
 @testable import HelperCore
 
-// 本物の Sortformer（CoreML、fastV2_1）を使う。モデルは helper/scripts/fetch-speaker-models.sh が前もって取得する。
+// 本物の Nemotron 3（CoreML、fast32）を使う。モデルは helper/scripts/fetch-speaker-models.sh が前もって取得する。
 // モデルが無い環境では prepare() が modelMissing で失敗し、テストも失敗する（環境の問題として報告する）。
 // 2 人の声は `say` の Kyoko と Rocko（どちらも macOS 同梱の日本語の声。Reed は同じ人の 2 行目に別の枠が付いたので使わない）。
 // Rocko は言語ごとに同じ名前の声があり、名前だけだとシステムの言語の声が選ばれる。英語の CI では英語の Rocko が日本語の文をほぼ無音で読むので、日本語の声を ID で指す。
@@ -108,16 +109,28 @@ private func dominantSlot(of line: PlacedLine, in segments: [SpeakerSegment], sh
     return overlap.max { $0.value < $1.value }?.key
 }
 
-@Suite("SortformerSpeakerDiarizer の話者分離", .timeLimit(.minutes(2)))
-struct SortformerSpeakerDiarizerHeavyTests {
-    @Test("2 人が交互に話す音声で、確定の区間が届き、別の人には別の枠が付く。時刻は音声の取得開始に合わせて origin 基準になる")
-    func distinguishesTwoSpeakers() async throws {
-        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("sortformer-heavy-\(UUID().uuidString)")
+@Suite("Nemotron3SpeakerDiarizer の話者分離", .timeLimit(.minutes(2)))
+struct Nemotron3SpeakerDiarizerHeavyTests {
+    @Test("WeSpeaker の有無にかかわらず2人を分け、origin 基準の区間を返す。WeSpeaker がない場合は重心・混入だけを止める", arguments: [false, true])
+    func distinguishesTwoSpeakers(withoutWeSpeaker: Bool) async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("nemotron3-heavy-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
         let (samples, lines) = try conversation(in: directory)
 
-        let diarizer = SortformerSpeakerDiarizer()
+        let modelDirectory: URL
+        if withoutWeSpeaker {
+            modelDirectory = directory.appendingPathComponent("models", isDirectory: true)
+            try FileManager.default.createDirectory(at: modelDirectory, withIntermediateDirectories: true)
+            let repository = Repo.nemotron3Diarization.folderName
+            try FileManager.default.createSymbolicLink(
+                at: modelDirectory.appendingPathComponent(repository),
+                withDestinationURL: defaultSpeakerModelDirectory.appendingPathComponent(repository)
+            )
+        } else {
+            modelDirectory = defaultSpeakerModelDirectory
+        }
+        let diarizer = Nemotron3SpeakerDiarizer(modelDirectory: modelDirectory)
         try await diarizer.prepare()
 
         let origin = AudioGetCurrentHostTime()
@@ -131,11 +144,14 @@ struct SortformerSpeakerDiarizerHeavyTests {
         let stream = try await diarizer.diarize(audio, origin: origin)
         var segments: [SpeakerSegment] = []
         var settled: [Double] = []
+        var centroids = 0
+        var mixed = 0
         for try await item in stream {
             switch item {
             case .segment(let segment): segments.append(segment)
             case .settled(let to): settled.append(to)
-            case .mixed, .centroid: break
+            case .centroid: centroids += 1
+            case .mixed: mixed += 1
             }
         }
         #expect(!settled.isEmpty, "確定済みの位置が 1 件も届かなかった")
@@ -146,7 +162,7 @@ struct SortformerSpeakerDiarizerHeavyTests {
         #expect(segments.contains { !$0.isFinal }, "仮の区間が 1 件も届かなかった（全 \(segments.count) 件）")
         for segment in segments {
             #expect(segment.start.isFinite && segment.end.isFinite && segment.end >= segment.start)
-            #expect(segment.slot >= 0)
+            #expect((0..<8).contains(segment.slot))
         }
         // 最初のバッファより前の時刻の区間は無い（時刻が origin 基準にそろっていれば、音声の取得開始 2 秒より前にはならない）
         let earliest = try #require(confirmed.map(\.start).min())
@@ -160,11 +176,18 @@ struct SortformerSpeakerDiarizerHeavyTests {
         // 同じ人は（多数決で）同じ枠のまま
         #expect(Set(firstSpeaker).count == 1, "1 人目の枠が行ごとに変わった: \(firstSpeaker)")
         #expect(Set(secondSpeaker).count == 1, "2 人目の枠が行ごとに変わった: \(secondSpeaker)")
+        if withoutWeSpeaker {
+            #expect(centroids == 0)
+            #expect(mixed == 0)
+            #expect(!FileManager.default.fileExists(atPath: WeSpeakerEmbedder.folder(in: modelDirectory).path))
+        } else {
+            #expect(centroids > 0)
+        }
     }
 
     @Test("音声が一度も届かないまま入力が終わると、区間の流れがエラーなしで終わる")
     func finishesWithoutAudio() async throws {
-        let diarizer = SortformerSpeakerDiarizer()
+        let diarizer = Nemotron3SpeakerDiarizer()
         try await diarizer.prepare()
         let audio = AsyncThrowingStream<CapturedAudio, Error> { $0.finish() }
         let stream = try await diarizer.diarize(audio, origin: AudioGetCurrentHostTime())

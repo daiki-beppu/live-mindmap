@@ -1,3 +1,4 @@
+import FluidAudio
 import Foundation
 import Testing
 @testable import HelperCore
@@ -8,6 +9,16 @@ private struct DownloadFailure: Error, CustomStringConvertible {
 
 @Suite("話者分離モデルの取得")
 struct SpeakerModelInstallationTests {
+    @Test("話者分離の取得完了の印は Nemotron 3 のリポジトリ直下に置く")
+    func installationMarkerIsAtNemotronRepositoryRoot() {
+        let directory = URL(fileURLWithPath: "/isolated speaker models", isDirectory: true)
+        let expected = directory
+            .appendingPathComponent(Repo.nemotron3Diarization.folderName)
+            .appendingPathComponent(".install-complete")
+
+        #expect(speakerModelsInstalledMarker(in: directory) == expected)
+    }
+
     @Test("保存先の環境変数があれば、そのディレクトリを使う")
     func modelDirectoryOverride() {
         let path = "/isolated speaker models/話者分離"

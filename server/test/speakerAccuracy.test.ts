@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
-import { assignSpeakers, assignOneToOne, computeDer, countUnsplit, groundTruthSpeaker, scoreAttribution, tentativeChangeRate } from "../bench/speakerAccuracy.ts";
+import { assignSpeakers, assignOneToOne, computeDer, countUnsplit, groundTruthSpeaker, remarkLatency, scoreAttribution, tentativeChangeRate } from "../bench/speakerAccuracy.ts";
 
 // Issue #1031: Eval speakerAccuracy の計算（純関数）。
 // 正解の人の決め方、ラベルと人の 1 対 1 の対応、分類（正解 / 取り違え / 話者なし）、DER（collar 0.25 秒）、
@@ -254,5 +254,27 @@ describe("切れなかった発言（正解では 2 人以上と重なる断片�
 
   it("1 人の発言、話者なしの発言も、正解で 2 人にまたがれば数える。自分 トラックの発言は数えない", () => {
     expect(countUnsplit({ self: "森川", timeline: lines, remarks: [said(0, 2, "相手 A"), said(0, 4), said(0, 4, "自分", "自分")] })).toBe(1);
+  });
+});
+
+
+describe("話者待ち後の発言の出力遅延", () => {
+  it("相手の台本行の中点を含む最初の通常出力から遅延を取り、終了時解放・自分・未対応行を分母へ入れない", () => {
+    const result = remarkLatency({ self: "自分役", timeline: [
+      truth("A", 0, 2), truth("B", 2, 4), truth("A", 4, 6), truth("A", 6, 8), truth("自分役", 8, 10),
+    ], remarks: [
+      { source: "r1", track: "相手", start: 0, end: 2, emittedAt: 6 },
+      { source: "r2", track: "相手", start: 0, end: 2, emittedAt: 9 },
+      { source: "r3", track: "相手", start: 2, end: 4, emittedAt: 7 },
+      { source: "r4", track: "相手", start: 4, end: 6, emittedAt: 12 },
+      { source: "r5", track: "相手", start: 6, end: 8, emittedAt: 20, drained: true },
+      { source: "r6", track: "自分", start: 8, end: 10, emittedAt: 11 },
+    ] });
+    expect(result).toEqual({ matched: 3, total: 4, drained: 1, p50: 4, p90: 6 });
+  });
+
+  it("対応する通常出力がなければ百分位を算出しない", () => {
+    const result = remarkLatency({ self: "自分役", timeline: [truth("A", 0, 2)], remarks: [] });
+    expect(result).toEqual({ matched: 0, total: 1, drained: 0, p50: Number.NaN, p90: Number.NaN });
   });
 });

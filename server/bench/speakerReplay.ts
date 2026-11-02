@@ -17,7 +17,7 @@ export type ReplayOptions = {
   tentativeLabels?: boolean;
 };
 
-export type ReplayRemark = { source: string; track: string; start: number; end: number; speaker?: string; tentative?: string };
+export type ReplayRemark = { source: string; track: string; start: number; end: number; speaker?: string; tentative?: string; emittedAt?: number; drained?: true };
 export type ReplayResult = {
   remarks: ReplayRemark[];
   labels: string[];
@@ -40,17 +40,20 @@ const ruleSet = (rules: Partial<SpeakerRules> | undefined): SpeakerRules => ({
   waitLimit: rules?.waitLimit ?? true,
 });
 
-function createCollector(sourceOf: (remark: SettledRemark, index: number) => string) {
+function createCollector(sourceOf: (remark: SettledRemark, index: number) => string, recordTiming: boolean) {
   const result: ReplayResult = { remarks: [], labels: [], mixed: [], links: [], restarts: [], cuts: 0, timeouts: 0 };
   let inputAt: number;
+  let draining = false;
   return {
     result,
     setInputAt: (at: number) => { inputAt = at; },
+    beginDrain: () => { draining = true; },
     add: (remarks: readonly SettledRemark[], tentativeOf?: (remark: SettledRemark) => string | undefined) => {
       for (const r of remarks) {
         const tentative = tentativeOf?.(r);
         result.remarks.push({
           source: sourceOf(r, result.remarks.length), track: r.track, start: r.start, end: r.end,
+          ...(recordTiming ? { emittedAt: inputAt, ...(draining ? { drained: true as const } : {}) } : {}),
           ...(r.speaker === undefined ? {} : { speaker: r.speaker }),
           ...(tentative === undefined ? {} : { tentative }),
         });
@@ -87,6 +90,7 @@ const runSteps = (steps: readonly Step[], hooks: Hooks, collector: ReturnType<ty
       }
       yield* step.run;
     }
+    collector.beginDrain();
     yield* hooks.drain;
   });
 
@@ -159,7 +163,7 @@ function logSteps(lines: readonly InputLine[], path: string | undefined, attribu
 }
 
 export const replayLog = Effect.fn("replayLog")(function* (lines: readonly InputLine[], options: ReplayOptions = {}) {
-  const collector = createCollector((r) => (r as Partial<Tagged>).source ?? "");
+  const collector = createCollector((r) => (r as Partial<Tagged>).source ?? "", false);
   const attribution = createSpeakerAttribution({ rules: ruleSet(options.rules), observe: collector.observe });
   const steps = yield* logSteps(lines, options.path, attribution, collector);
   yield* runSteps(steps, {
@@ -216,7 +220,7 @@ function createTentativeLabels() {
 }
 
 export const replayOffline = Effect.fn("replayOffline")(function* (lines: readonly InputLine[], options: ReplayOptions = {}) {
-  const collector = createCollector((_, index) => `r${index + 1}`);
+  const collector = createCollector((_, index) => `r${index + 1}`, true);
   const tentative = options.tentativeLabels === true ? createTentativeLabels() : undefined;
   const settling = (yield* createRemarkSettling({
     speakers: { rules: ruleSet(options.rules), observe: collector.observe },
@@ -260,7 +264,7 @@ export const ruleFlags = {
   withoutLongestOverlap: Flag.Boolean("without-longest-overlap").pipe(Flag.withDescription("「最も長い重なり」の規則を外す（先に始まる区間の枠にする）"), Flag.withDefault(false)),
   withoutFill: Flag.Boolean("without-fill").pipe(Flag.withDescription("「誰もいない語を前後に寄せる」規則を外す"), Flag.withDefault(false)),
   withoutMinRun: Flag.Boolean("without-min-run").pipe(Flag.withDescription("「0.5 秒の下限」の規則を外す"), Flag.withDefault(false)),
-  withoutWait: Flag.Boolean("without-wait").pipe(Flag.withDescription("「3 秒の待ち」を外す（揃うまで待つ）"), Flag.withDefault(false)),
+  withoutWait: Flag.Boolean("without-wait").pipe(Flag.withDescription("「5 秒の待ち」を外す（揃うまで待つ）"), Flag.withDefault(false)),
   restartAt: Flag.Finite("restart-at").pipe(Flag.withDescription("届いた時刻（最初の入力からの秒）。この時刻以降の最初の入力の直前に、話者分離の枠の状態を捨てる"), Flag.optional),
 };
 

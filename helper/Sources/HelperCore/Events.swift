@@ -68,7 +68,7 @@ public enum HelperEvent: Sendable, Equatable {
     /// `自分` の休止の規則の、起動し直しで引き継ぐ状態（Issue #1071）。server が覚え、helper を起動し直すときに引数で送り直す。
     case selfPauseState(SelfPauseCarryOver)
     /// `相手` のトラックの話者の区間（Issue #1020）。`start` / `end` は `origin` と同じ原点からの秒。
-    /// `slot` は Sortformer の出力の番号。`isFinal` が false なら仮の区間で、JSON のキーは `final`。
+    /// `slot` は Nemotron 3 の出力の番号。`isFinal` が false なら仮の区間で、JSON のキーは `final`。
     case speaker(track: Track, start: Double, end: Double, slot: Int, isFinal: Bool)
     /// 話者分離が使えない（モデルが無い・読み込みに失敗・途中で停止）。認識は続ける。`start` は `origin` と同じ原点からの秒。
     case speakerOff(start: Double, reason: SpeakerOffReason)
@@ -79,7 +79,7 @@ public enum HelperEvent: Sendable, Equatable {
     /// `相手` の話者分離が、ここまで確定した（Issue #1021）。`to` より前の確定した区間（`speaker` の `final: true`）は、すべて流した。
     /// `origin` と同じ原点からの秒。値は前に流した値より小さくならない。サーバーはこの位置で、発言の終わりまでの区間が揃ったかを判定する。
     case speakerSettled(track: Track, to: Double)
-    /// `相手` の話者の枠 `slot` に、別の声が混ざっている（Issue #1024）。Sortformer の枠は 4 つまでで、5 人目以降が声の近い人の枠に混ざる。
+    /// `相手` の話者の枠 `slot` に、別の声が混ざっている（Issue #1024）。Nemotron 3 の枠は 8 つで、同じ枠に別の声が混ざることがある。
     /// `start` は判定のもとになった確定区間の終わり（`origin` と同じ原点からの秒）。サーバーはその枠のラベルを、以降の発言に付けない。
     case speakerMixed(track: Track, slot: Int, start: Double)
     /// `相手` の話者の枠 `slot` の、主な塊の声の埋め込みの重心（長さ 1。Issue #1025）。重心が変わった枠だけを、変わるたびに最新の値で流す。

@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 const REAL_RESOURCE_PATTERNS = [
   "WebRTCEchoCanceller(",
   "SpeechAnalyzerTranscriber(",
-  "SortformerSpeakerDiarizer(",
+  "Nemotron3SpeakerDiarizer(",
   "WeSpeakerEmbedder(",
   "FileManager.default.temporaryDirectory",
   "WebSocketServer(port:",

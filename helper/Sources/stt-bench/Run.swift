@@ -65,7 +65,7 @@ struct SegmentLine: Encodable {
     var isFinal: Bool
 }
 
-/// 話者分離（本物の Sortformer）を同じ音声に掛け、区間が届くたびに `out` へ 1 行の JSONL を書く（Issue #1020）。到着時刻は `start` が 0。
+/// 話者分離（本物の Nemotron 3）を同じ音声に掛け、区間が届くたびに `out` へ 1 行の JSONL を書く（Issue #1020）。到着時刻は `start` が 0。
 /// STT の結果の出力（標準出力）とは別のファイルに書く。モデルの準備は計測に含めない（呼び出し側で済ませる）。
 func diarize(_ audio: URL, with diarizer: any SpeakerDiarizer, start: ContinuousClock.Instant, out: FileHandle) async throws {
     let origin = AudioGetCurrentHostTime()
@@ -164,7 +164,7 @@ func runEvents(variant: Variant, audio: URL, selfAudio: URL?, vocabulary: Vocabu
         try await t.prepare()
         selfTranscriber = t
     }
-    let diarizer = SortformerSpeakerDiarizer()
+    let diarizer = Nemotron3SpeakerDiarizer()
     try await diarizer.prepare()
     try await streamEvents(audio: audio, selfAudio: selfAudio, transcriber: transcriber, selfTranscriber: selfTranscriber, diarizer: diarizer, start: ContinuousClock.now) { printJSON($0) }
 }
@@ -180,9 +180,9 @@ func runBench(variant: Variant, audio: URL, load: URL?, vocabulary: Vocabulary? 
         try await t.prepare()
         background = t
     }
-    var diarization: (diarizer: SortformerSpeakerDiarizer, out: FileHandle)?
+    var diarization: (diarizer: Nemotron3SpeakerDiarizer, out: FileHandle)?
     if let diarizeTo {
-        let diarizer = SortformerSpeakerDiarizer()
+        let diarizer = Nemotron3SpeakerDiarizer()
         try await diarizer.prepare()
         FileManager.default.createFile(atPath: diarizeTo.path, contents: nil)
         diarization = (diarizer, try FileHandle(forWritingTo: diarizeTo))
