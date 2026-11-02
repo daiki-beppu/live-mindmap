@@ -299,7 +299,7 @@ describe("createSpeakerAttribution: 確定を待ってから出す", () => {
   });
 
   // SCN-CT-WAIT-FINAL-N1: 区間の end が発言の end に届いても、位置が届くまでは出さない
-  it("確定区間の end が発言の end に届いても、位置が届かなければ出さない（3 秒後は話者なし）", () => {
+  it("確定区間の end が発言の end に届いても、位置が届かなければ出さない（5 秒後は話者なし）", () => {
     const attribution = createSpeakerAttribution();
     attribution.remarks([heard("あ", 10, 14)], 14_000);
 
@@ -348,7 +348,7 @@ describe("createSpeakerAttribution: 確定を待ってから出す", () => {
     attribution.remarks([heard("あ", 10, 12)], 12_000);
 
     expect(attribution.speaker(speakerEvent(2, 10, 12, false))).toEqual([]);
-    // 仮の区間だけでは 3 秒待っても話者なし
+    // 仮の区間だけでは 5 秒待っても話者なし
     expect(pairs(attribution.remarks([], 12_000 + SPEAKER_WAIT_MS))).toEqual([[undefined, "あ"]]);
   });
 
@@ -375,21 +375,31 @@ describe("createSpeakerAttribution: 確定を待ってから出す", () => {
     expect(pairs(attribution.remarks([heard("あ", 10, 12)], 12_000))).toEqual([["相手 A", "あ"]]);
   });
 
-  it("揃わないまま 3 秒（保留に入れた時点の音声の時計から）経つと、話者なしで出る。3 秒の直前では出ない", () => {
+  it("揃わないまま 5 秒（保留に入れた時点の音声の時計から）経つと、話者なしで出る。5 秒の直前では出ない", () => {
     const attribution = createSpeakerAttribution();
-    attribution.remarks([heard("あ", 10, 12)], 12_000);
+    expect(attribution.remarks([heard("あ", 10, 12)], 12_000)).toEqual([]);
 
-    expect(attribution.remarks([], 12_000 + SPEAKER_WAIT_MS - 1)).toEqual([]);
-    expect(pairs(attribution.remarks([], 12_000 + SPEAKER_WAIT_MS))).toEqual([[undefined, "あ"]]);
-    expect(SPEAKER_WAIT_MS).toBe(3000);
+    expect(attribution.remarks([], 15_000)).toEqual([]);
+    expect(attribution.remarks([], 16_999)).toEqual([]);
+    expect(pairs(attribution.remarks([], 17_000))).toEqual([[undefined, "あ"]]);
   });
 
-  it("3 秒の待ちは、発言の end ではなく保留に入れた時点から数える（遅れて届いた発言がすぐ時間切れにならない）", () => {
+  it("5 秒の待ちは、発言の end ではなく保留に入れた時点から数える（遅れて届いた発言がすぐ時間切れにならない）", () => {
     const attribution = createSpeakerAttribution();
 
     expect(attribution.remarks([heard("あ", 10, 12)], 20_000)).toEqual([]); // 発言の end の 12 秒から 8 秒遅れて届く
-    expect(attribution.remarks([], 22_999)).toEqual([]);
-    expect(pairs(attribution.remarks([], 23_000))).toEqual([[undefined, "あ"]]);
+    expect(attribution.remarks([], 24_999)).toEqual([]);
+    expect(pairs(attribution.remarks([], 25_000))).toEqual([[undefined, "あ"]]);
+  });
+
+  it("3 秒を過ぎても 5 秒以内に確定区間と位置が届けば、保留した発言に話者を付けて出す", () => {
+    const attribution = createSpeakerAttribution();
+    expect(attribution.remarks([heard("あ", 10, 12)], 12_000)).toEqual([]);
+
+    expect(attribution.remarks([], 16_999)).toEqual([]);
+    expect(attribution.speaker(speakerEvent(7, 10, 12))).toEqual([]);
+    expect(pairs(attribution.speaker(settledEvent(12)))).toEqual([["相手 A", "あ"]]);
+    expect(attribution.remarks([], 17_000)).toEqual([]);
   });
 
   it("複数の保留は、区間が揃った分から届いた順に出る（ひとつめが揃った時点では、end の遅いふたつめは出ない）", () => {
@@ -791,7 +801,7 @@ describe("createSpeakerAttribution: 混入で戻した枠（speaker-mixed）", (
   });
 });
 
-// Issue #1025: ヘルパーを起動し直すと Sortformer の枠は振り直される。新しい枠の声の重心（speaker-centroid）を、
+// Issue #1025: ヘルパーを起動し直すと Nemotron 3 の枠は振り直される。新しい枠の声の重心（speaker-centroid）を、
 // ラベルごとの重心と cos で照らし合わせる。0.9 以上が 1 つだけ → そのラベル、すべて 0.6 未満 → 新しいラベル、それ以外 → 話者なしのまま。
 // 照らし合わせが済むまでは話者なし。済んだ後は替わらない。戻したラベル（混入）には、つなげても付けない。
 describe("createSpeakerAttribution: 起動し直しをまたぐつなぎ直し（speaker-centroid・restart）", () => {

@@ -8,7 +8,7 @@ public protocol SpeakerEmbedder: Sendable {
 }
 
 /// FluidAudio 同梱の WeSpeaker（CoreML、256 次元、L2 正規化済み）による声の埋め込み。端末の中だけで動く。
-/// モデルは `install-speaker-models`（`fetch-speaker-models.sh`）が Sortformer と同じ段で前もって取得する。`prepare` は取得しない。
+/// モデルは `install-speaker-models`（`fetch-speaker-models.sh`）が Nemotron 3 と同じ段で前もって取得する。`prepare` は取得しない。
 /// FluidAudio は埋め込みのマスクの長さを segmentation モデルの出力から決めるので、segmentation モデル（pyannote）も一緒に読む。
 public final class WeSpeakerEmbedder: SpeakerEmbedder, @unchecked Sendable {
     private let modelDirectory: URL

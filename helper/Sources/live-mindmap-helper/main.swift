@@ -78,7 +78,7 @@ private func run(app bundleID: String, port: UInt16, audioDir: String?, origin e
         tap: SystemTap(tap: ProcessTap(targets: targets), targets: targets),
         microphone: SystemMicrophone(),
         makeTranscriber: { _ in SilenceFilteringTranscriber(wrapping: SpeechAnalyzerTranscriber()) },
-        makeDiarizer: { SortformerSpeakerDiarizer() },
+        makeDiarizer: { Nemotron3SpeakerDiarizer() },
         inputUsage: SystemInputUsage(), screen: screen, clock: SystemClock()
     )
     let settings = LiveSettings(
@@ -141,7 +141,7 @@ private func transcribeFile(file: String, selfFile: String?, port: UInt16, audio
     printError("listening on ws://127.0.0.1:\(actualPort) (file: \(file), \(header.duration) s)")
     await broadcastFileHeader(header, on: server)
     // `相手` に話者分離をかける。使えなければ、ここで `speaker-off` を保持して流し（接続前でも後から接続したクライアントに届く）、読む速さは抑えない
-    let diarization = await FileDiarization.prepare(SortformerSpeakerDiarizer(), from: from ?? 0) { event in
+    let diarization = await FileDiarization.prepare(Nemotron3SpeakerDiarizer(), from: from ?? 0) { event in
         await server.send(event)
     }
 

@@ -246,7 +246,7 @@ swift run -c release stt-bench run --variant baseline <相手.wav> --events [--s
 - `variants` は候補の設定の一覧を出す。
 - `run` は 1 行 1 結果の JSONL を標準出力に出す。キーは `arrival`・`end`・`isFinal`・`start`・`text`・`track`。
 - `tracks` は合成会議のフォルダ（`timeline.tsv`・`voices.json`・`lines/`）を、`--self` の話者の行だけの `自分.wav` と、残りの `相手.wav` に分ける（speakerAccuracy 用）。各行は `lines/<sha1(声 + 改行 + 文)の先頭 16 桁>.wav`（1 行 1 本）を読み、`synth.mjs` と同じ末尾の雑音の無音化をして、`timeline.tsv` の `start` の位置に置く。2 本の長さは最後の行の `end` + 3 秒で同じ。`meeting.m4a` は使わない。標準出力は行数と秒数だけ。lines/ が無い・`--self` が台本にいない・声が `voices.json` にないときは、行番号と数だけを出して失敗する（本文は出さない）。
-- `run --events` は、既定の出力（上の ResultLine）の代わりに、ヘルパーのイベントに届いた時刻 `arrival`（流し始めからの秒）を足した 1 行 1 JSON を出す。相手の `remark`・`partial`（`words`・`wordTimes` つき）と、同じ音声に Sortformer を掛けた `speaker`・`speaker-settled`・`speaker-mixed`・`speaker-centroid`。`--self <自分.wav>` があれば、自分の `remark`・`partial`（`track: "自分"`）も同じ起点から並行して流す。認識はライブと同じ `SilenceFilteringTranscriber` で包む。話者分離を準備できなければ失敗する（話者なしで続けない）。`--vocab`・`--load`・`--diarize` とは併用しない。事前に `bash helper/scripts/fetch-speaker-models.sh`。出力は `speakerReplay --offline` と `speakerAccuracy` がそのまま読める。
+- `run --events` は、既定の出力（上の ResultLine）の代わりに、ヘルパーのイベントに届いた時刻 `arrival`（流し始めからの秒）を足した 1 行 1 JSON を出す。相手の `remark`・`partial`（`words`・`wordTimes` つき）と、同じ音声に Nemotron 3 を掛けた `speaker`・`speaker-settled`・`speaker-mixed`・`speaker-centroid`。`--self <自分.wav>` があれば、自分の `remark`・`partial`（`track: "自分"`）も同じ起点から並行して流す。認識はライブと同じ `SilenceFilteringTranscriber` で包む。話者分離を準備できなければ失敗する（話者なしで続けない）。`--vocab`・`--load`・`--diarize` とは併用しない。事前に `bash helper/scripts/fetch-speaker-models.sh`。出力は `speakerReplay --offline` と `speakerAccuracy` がそのまま読める。
 - 合成した音声と計測の出力は、リポジトリの外（`/tmp` など）に置く。
 
 ## sttLatency（確定の遅れ）
@@ -446,7 +446,7 @@ node bench/speakerReplay.ts --offline [旗] <オフライン出力の JSONL>
 - `mixed`・`links` の `at`: 判定が出た入力の到着時刻（秒）。offline では入力の `arrival`、log では最初の入力からの経過秒。音声区間の開始・終了時刻ではない
 - `restarts`: 起動し直した届いた時刻 `{ at, source: "flag" | "log" }`
 - `cuts`: 話者の替わり目で発言を切った数（断片の数 − 1 の合計）。0 でも出す
-- `timeouts`: 区間が揃わないまま 3 秒の時間切れで話者なしになった発言の数。0 でも出す
+- `timeouts`: 区間が揃わないまま 5 秒の時間切れで話者なしになった発言の数。0 でも出す
 
 不正な行は行番号だけを診断にして非ゼロ終了する（JSON の原文は出さない）。
 
@@ -492,6 +492,9 @@ node bench/speakerAccuracy.ts --self 森川 [旗] $M/timeline.tsv /tmp/sa/events
 | 列 | 定義 |
 | --- | --- |
 | 発言数 | 採点した 相手 の発言（中核が出した断片）の数 |
+| 遅延対象行 | 出力時刻と対応した相手の台本行数 / 相手の台本行数 |
+| 終了時解放 | 入力終了時の drain で強制解放した相手の発言数 |
+| 発言遅延p50秒・発言遅延p90秒 | 台本行の話し終わりから、話者待ち後の発言が出るまでの遅れ。本文中点を含む発言の最初の出力時刻を使う |
 | 正解 | 話者のラベルが付き、そのラベルに対応する人が正解の人である発言の割合 |
 | 取り違え | 話者のラベルが付いたが、対応する人が正解の人でない発言の割合。人と対応できなかったラベルもここに入る |
 | 話者なし | ラベルを付けなかった発言の割合。取り違えとは別に数える（意図してラベルなしにした分を悪化と取り違えないため） |
@@ -499,7 +502,7 @@ node bench/speakerAccuracy.ts --self 森川 [旗] $M/timeline.tsv /tmp/sa/events
 | DER | collar 0.25 秒の DER。参照は `--self` を除く台本の行、仮説は確定した区間 |
 | 仮→確定 | 仮のラベル（字幕に見えていたラベル）が、発言に付いた確定のラベルへ替わった発言の割合 |
 | 切った | 話者の替わり目で切った数（断片の数 − 1 の合計） |
-| 3秒で話者なし | 区間が揃わないまま 3 秒の時間切れで話者なしになった数 |
+| 5秒で話者なし | 区間が揃わないまま 5 秒の時間切れで話者なしになった数 |
 | 切れなかった | 正解では `--self` 以外の 2 人以上と重なるのに、1 つの発言として出た数（重なりの長さに下限は設けない。本番の 0.5 秒の下限が短い交替を潰した影響も数える） |
 | 相手の人数 | `timeline.tsv` の異なる話者のうち `--self` 以外の人数 |
 | 混入の検出 | 流し直しで出た `mixed` の件数（同じ枠の複数の検出も数える） |
@@ -520,6 +523,8 @@ node bench/speakerAccuracy.ts --self 森川 [旗] $M/timeline.tsv /tmp/sa/events
 - DER: 参照の区間の境の前後 0.25 秒を採点から外し、取りこぼし・余計な検出・付け間違いの合計を、参照の長さで割る。枠と人の対応も同じ 1 対 1 で取る。
 - 仮→確定: 各発言について、仮のラベルと確定のラベル（出た発言の話者）を比べる（枠ではなくラベルで比べる）。区間（中核の `preview` の確定区間と仮の区間）は、`speaker-settled` の後と起動し直しの後にだけ写す。ラベルは、写した区間に現れる枠について、入力の 1 行ごとに `preview` で解き直す（発言を出すと振られたラベルが増え、残る枠の予想が変わるため）。仮のラベルは、発言を出した行を適用する直前の写しで、発言の区間と最も長く重なる枠のラベル。まだラベルを振っていない枠は、区間に初めて現れた順の予想になる。1 つ前の更新が無い・区間が発言と重ならない・話者なしで出た発言は、両方が決まっていないので分母に入れない。
 - 不正な行・台本にない `--self`・無いファイルは、行番号やパスだけを診断にして非ゼロ終了する。
+
+オフライン再生の発言には、出力を引き起こした入力の元の `arrival` を `emittedAt` として記録する。先頭入力からの相対秒や STT の確定到着時刻ではない。入力終了時の強制解放には最後の処理入力の時刻と `drained: true` を付ける。強制解放は通常の出力時刻を観測できないため遅延の集計から除き、終了時解放の列へ数える。相手の台本行の中点を含む通常出力がない行も遅延の集計に入れない。「遅延対象行」は集計できた行数 / 相手の全台本行数を示す。p50・p90 は `sttLatency` と同じ順位の定義を使う。
 
 ## eval ではないもの
 

@@ -113,11 +113,11 @@ describe("話者を持たない古い log", () => {
 
   it.effect.each([
     { name: "旗なし", options: {} },
-    { name: "3 秒の待ちを外す", options: { rules: only("waitLimit") } },
+    { name: "5 秒の待ちを外す", options: { rules: only("waitLimit") } },
   ])("$name でも失敗せず、相手の発言は話者なし・自分の発言は自分になる（保留が出ないまま終わらない）", ({ options }) => Effect.gen(function* () {
     const result = yield* replayLog(numbered(oldLog), options);
 
-    // 3 秒の待ちを外すと、保留は最後の drain で出るので、出る順は変わる。source で並べて比べる
+    // 5 秒の待ちを外すと、保留は最後の drain で出るので、出る順は変わる。source で並べて比べる
     expect(result.remarks.map((r) => [r.source, r.track, r.speaker] as const).sort((a, b) => a[0].localeCompare(b[0]))).toEqual([
       ["r1", "相手", undefined],
       ["r2", "自分", "自分"],
@@ -225,7 +225,7 @@ describe("オフライン出力の流し直し（arrival の順に settler と�
     const result = yield* replayOffline(numbered(offlineLog));
 
     for (const r of result.remarks) {
-      expect(Object.keys(r).filter((key) => !["source", "track", "start", "end", "speaker"].includes(key))).toEqual([]);
+      expect(Object.keys(r).filter((key) => !["source", "track", "start", "end", "speaker", "emittedAt", "drained"].includes(key))).toEqual([]);
     }
   }));
 
@@ -254,7 +254,7 @@ describe("オフライン出力の流し直し（arrival の順に settler と�
     expect(result.links[0]).toMatchObject({ slot: 2, result: "linked", label: "相手 A" });
   }));
 
-  it.effect("規則を外す旗はオフラインの経路でも中核に届く（3 秒の待ちを外すと、時間切れの後に揃った発言に話者が付く）", () => Effect.gen(function* () {
+  it.effect("規則を外す旗はオフラインの経路でも中核に届く（5 秒の待ちを外すと、時間切れの後に揃った発言に話者が付く）", () => Effect.gen(function* () {
     // 確定結果 [0,2] の後、時計が 3 秒進む自分の途中結果で時間切れ → 話者なし。区間と speaker-settled はその後に届く
     const events: Line[] = [
       { arrival: 1, type: "remark", track: "相手", start: 0, end: 2, text: "あいう", duplicate: false },
@@ -270,7 +270,7 @@ describe("オフライン出力の流し直し（arrival の順に settler と�
 
 // Issue #1031: 発言への対応付けの規則の効き目。中核の話者の段が「切った」「3 秒で諦めた」を知らせ、流し直しの結果が数を持つ。
 // 数は規則を 1 つずつ外した結果と比べるために常に出す（0 でも省かない）。cut と timeout は混入・つなぎ直しの記録（mixed / links）には混ざらない
-describe("規則の効き目の数（cuts: 切った数、timeouts: 3 秒で話者なしになった数）", () => {
+describe("規則の効き目の数（cuts: 切った数、timeouts: 5 秒で話者なしになった数）", () => {
   const counts = (result: { cuts: number; timeouts: number }) => [result.cuts, result.timeouts];
 
   it.effect.each([
@@ -288,7 +288,7 @@ describe("規則の効き目の数（cuts: 切った数、timeouts: 3 秒で話�
     expect(result.cuts).toBe(0);
   }));
 
-  it.effect("timeouts: 区間が揃わないまま 3 秒の時間切れで話者なしになった発言を数え、3 秒の待ちを外すと 0 になる", () => Effect.gen(function* () {
+  it.effect("timeouts: 区間が揃わないまま 5 秒の時間切れで話者なしになった発言を数え、5 秒の待ちを外すと 0 になる", () => Effect.gen(function* () {
     expect(counts(yield* replayLog(numbered(waitLog)))).toEqual([0, 1]);
     expect(counts(yield* replayLog(numbered(waitLog), { rules: only("waitLimit") }))).toEqual([0, 0]);
   }));
@@ -310,7 +310,7 @@ describe("規則の効き目の数（cuts: 切った数、timeouts: 3 秒で話�
     expect([cut.links, cut.mixed, timedOut.links, timedOut.mixed]).toEqual([[], [], [], []]);
   }));
 
-  it.effect("オフラインの経路でも数える（確定結果が 2 人に切れる = cuts 1、3 秒の時間切れ = timeouts 1、3 秒の待ちを外すと 0）", () => Effect.gen(function* () {
+  it.effect("オフラインの経路でも数える（確定結果が 2 人に切れる = cuts 1、5 秒の時間切れ = timeouts 1、5 秒の待ちを外すと 0）", () => Effect.gen(function* () {
     expect((yield* replayOffline(numbered(offlineLog))).cuts).toBe(1);
     const events: Line[] = [
       { arrival: 1, type: "remark", track: "相手", start: 0, end: 2, text: "あいう", duplicate: false },
@@ -383,5 +383,36 @@ describe("仮のラベル（replayOffline の tentativeLabels）", () => {
     const result = yield* replayOffline(numbered(lines));
 
     expect(JSON.stringify(result)).not.toContain("tentative");
+  }));
+});
+
+
+describe("オフライン再生の発言出力時刻", () => {
+  it.effect("発言が位置の到着で出た元の arrival を記録し、入力の相対秒や STT 到着時刻を使わない", () => Effect.gen(function* () {
+    const lines: Line[] = [
+      { arrival: 104, type: "speaker-settled", track: "相手", to: 2 },
+      { arrival: 101, type: "remark", track: "相手", start: 0, end: 2, text: "あいう", duplicate: false },
+      { arrival: 90, type: "origin", hostTime: "123" },
+      { arrival: 103, type: "speaker", track: "相手", start: 0, end: 2, slot: 7, final: true },
+    ];
+    const result = yield* replayOffline(numbered(lines));
+    expect(result.remarks).toEqual([{ source: "r1", track: "相手", start: 0, end: 2, speaker: "相手 A", emittedAt: 104 }]);
+  }));
+
+  it.effect("時間切れで出た発言には、その解放を引き起こした入力の arrival を付ける", () => Effect.gen(function* () {
+    const lines: Line[] = [
+      { arrival: 101, type: "remark", track: "相手", start: 0, end: 2, text: "あいう", duplicate: false },
+      { arrival: 106, type: "partial", track: "自分", start: 9, end: 10, text: "", duplicate: false },
+    ];
+    const result = yield* replayOffline(numbered(lines));
+    expect(result.remarks).toEqual([{ source: "r1", track: "相手", start: 0, end: 2, emittedAt: 106 }]);
+    expect(result.timeouts).toBe(1);
+  }));
+
+  it.effect("終了時の強制解放は最後の処理入力の時刻と drained で区別する", () => Effect.gen(function* () {
+    const result = yield* replayOffline(numbered([
+      { arrival: 101, type: "remark", track: "相手", start: 0, end: 2, text: "あいう", duplicate: false },
+    ]));
+    expect(result.remarks).toEqual([{ source: "r1", track: "相手", start: 0, end: 2, emittedAt: 101, drained: true }]);
   }));
 });

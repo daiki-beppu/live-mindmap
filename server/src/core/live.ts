@@ -39,7 +39,7 @@ export const HelperEvent = Schema.Union([
   Schema.Struct({ type: Schema.Literal("file-audio-tracks"), count: Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)) }),
   Schema.Struct({ type: Schema.Literal("speaker-off"), start: Schema.Finite, reason: Schema.Literals(["モデルなし", "読み込みに失敗", "途中で停止"]) }),
   Schema.Struct({ type: Schema.Literal("speaker-settled"), track: Track, to: Schema.Finite }),
-  // 相手の話者の枠 slot に、別の声が混ざっている（Issue #1024。Sortformer の枠は 4 つまでで、5 人目以降が声の近い人の枠に混ざる）。
+  // 相手の話者の枠 slot に、別の声が混ざっている（Issue #1024。Nemotron 3 の枠は 8 つで、同じ枠に別の声が混ざることがある）。
   Schema.Struct({ type: Schema.Literal("speaker-mixed"), track: Track, slot: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)), start: Schema.Finite }),
   Schema.Struct({ type: Schema.Literal("speaker-centroid"), track: Track, slot: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)), centroid: Schema.Array(Schema.Finite) }),
 ]);

@@ -19,15 +19,15 @@ test("unit のファイルに WebSocketServer(port: があれば違反にする"
   assert.deepEqual(violations, [{ path: "FooTests.swift", line: 1, pattern: "WebSocketServer(port:" }]);
 });
 
-test("unit のファイルに SortformerSpeakerDiarizer( があれば違反にする", () => {
-  const violations = findRealResourceUses("FooTests.swift", "let d = SortformerSpeakerDiarizer(modelDirectory: dir)");
-  assert.deepEqual(violations, [{ path: "FooTests.swift", line: 1, pattern: "SortformerSpeakerDiarizer(" }]);
+test("unit のファイルに Nemotron3SpeakerDiarizer( があれば違反にする", () => {
+  const violations = findRealResourceUses("FooTests.swift", "let d = Nemotron3SpeakerDiarizer(modelDirectory: dir)");
+  assert.deepEqual(violations, [{ path: "FooTests.swift", line: 1, pattern: "Nemotron3SpeakerDiarizer(" }]);
 });
 
-test("HeavyTests.swift と ITTests.swift は SortformerSpeakerDiarizer( を使っても違反にしない", () => {
-  const content = "let d = SortformerSpeakerDiarizer()";
-  assert.deepEqual(findRealResourceUses("SortformerSpeakerDiarizerHeavyTests.swift", content), []);
-  assert.deepEqual(findRealResourceUses("SortformerSpeakerDiarizerITTests.swift", content), []);
+test("HeavyTests.swift と ITTests.swift は Nemotron3SpeakerDiarizer( を使っても違反にしない", () => {
+  const content = "let d = Nemotron3SpeakerDiarizer()";
+  assert.deepEqual(findRealResourceUses("Nemotron3SpeakerDiarizerHeavyTests.swift", content), []);
+  assert.deepEqual(findRealResourceUses("Nemotron3SpeakerDiarizerITTests.swift", content), []);
 });
 
 test("unit のファイルに WeSpeakerEmbedder( があれば違反にする", () => {
@@ -45,8 +45,8 @@ test("FakeSpeakerEmbedder( のように語の途中にある別の型名は、un
   assert.deepEqual(findRealResourceUses("FooTests.swift", "let e = FakeSpeakerEmbedder()"), []);
 });
 
-test("MockSortformerSpeakerDiarizer( のように語の途中にある別の型名は、unit でも違反にしない", () => {
-  assert.deepEqual(findRealResourceUses("FooTests.swift", "let d = MockSortformerSpeakerDiarizer()"), []);
+test("MockNemotron3SpeakerDiarizer( のように語の途中にある別の型名は、unit でも違反にしない", () => {
+  assert.deepEqual(findRealResourceUses("FooTests.swift", "let d = MockNemotron3SpeakerDiarizer()"), []);
 });
 
 test("補助ファイル（EchoTestSupport.swift）も unit として扱い、temporaryDirectory を違反にする", () => {

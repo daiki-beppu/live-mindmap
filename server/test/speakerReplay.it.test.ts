@@ -86,7 +86,7 @@ describe("speakerReplay の CLI（light IT）", () => {
     { flag: "--without-longest-overlap", name: "最も長い重なり", log: overlapLog, on: ["相手 A", "相手 B", "相手 A"], off: ["相手 A", "相手 B", "相手 B"] },
     { flag: "--without-fill", name: "誰もいない語を寄せる", log: fillLog, on: ["相手 A", "相手 B"], off: ["相手 A", undefined, "相手 B"] },
     { flag: "--without-min-run", name: "0.5 秒の下限", log: minRunLog, on: ["相手 A"], off: ["相手 A", "相手 B", "相手 A"] },
-    { flag: "--without-wait", name: "3 秒の待ち", log: waitLog, on: [undefined], off: ["相手 A"] },
+    { flag: "--without-wait", name: "5 秒の待ち", log: waitLog, on: [undefined], off: ["相手 A"] },
   ];
   it.effect.each(flagCases)("$flag は「$name」の規則だけを外し、旗なしとは結果が変わる", ({ flag, log, on, off }) => Effect.gen(function* () {
     const dir = yield* temporaryDirectory;

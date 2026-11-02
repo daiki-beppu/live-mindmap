@@ -6,6 +6,7 @@ import { exitNaturally } from "../src/exitNaturally.ts";
 import { benchProgram, InvalidInputFile, readInputText, write } from "./entry.ts";
 import { type InputLine, readLines, replayOffline, type ReplayResult, replayOptionsOf, ruleFlags } from "./speakerReplay.ts";
 import { parseTimeline } from "./sttAccuracy.ts";
+import { lineDelays, percentile } from "./sttLatency.ts";
 
 const EPSILON = 1e-6;
 const DER_COLLAR_SECONDS = 0.25;
@@ -300,6 +301,18 @@ export function countUnsplit({ self, timeline, remarks }: { self: string; timeli
   return heardRemarks(remarks).filter((r) => overlapByPerson(r, rows).size >= 2).length;
 }
 
+export function remarkLatency({ self, timeline, remarks }: { self: string; timeline: readonly TruthRow[]; remarks: ReplayResult["remarks"] }) {
+  const rows = otherRows(self, timeline);
+  const timed = remarks.flatMap((r) => r.track === "相手" && r.emittedAt !== undefined && !r.drained
+    ? [{ start: r.start, end: r.end, at: r.emittedAt }] : []);
+  const delays = lineDelays(rows, timed);
+  return {
+    matched: delays.length, total: rows.length,
+    drained: remarks.filter((r) => r.track === "相手" && r.drained).length,
+    p50: percentile(delays, 0.5), p90: percentile(delays, 0.9),
+  };
+}
+
 const Arrival = Schema.Struct({ arrival: Schema.Finite });
 const decodeArrival = Schema.decodeUnknownEffect(Arrival);
 
@@ -321,11 +334,15 @@ const finalSegments = (lines: readonly InputLine[], path: string) =>
 
 const percent = (value: number) => (Number.isNaN(value) ? "n/a" : `${(value * 100).toFixed(1)}%`);
 
-function renderTable(attribution: Attribution, der: Der, tentative: { changed: number; total: number }, replay: Pick<ReplayResult, "cuts" | "timeouts">, unsplit: number, mixing: Mixing, relinking: Relinking | undefined): string {
+function renderTable(attribution: Attribution, der: Der, tentative: { changed: number; total: number }, replay: Pick<ReplayResult, "cuts" | "timeouts">, unsplit: number, mixing: Mixing, relinking: Relinking | undefined, latency: ReturnType<typeof remarkLatency>): string {
   const { correct, wrong, none, noTruth, rates } = attribution;
   const judged = correct + wrong + none === 0;
   const columns: Array<[string, string]> = [
     ["発言数", String(correct + wrong + none + noTruth)],
+    ["遅延対象行", `${latency.matched}/${latency.total}`],
+    ["終了時解放", String(latency.drained)],
+    ["発言遅延p50秒", Number.isNaN(latency.p50) ? "—" : latency.p50.toFixed(2)],
+    ["発言遅延p90秒", Number.isNaN(latency.p90) ? "—" : latency.p90.toFixed(2)],
     ["正解", percent(judged ? Number.NaN : rates.correct)],
     ["取り違え", percent(judged ? Number.NaN : rates.wrong)],
     ["話者なし", percent(judged ? Number.NaN : rates.none)],
@@ -333,7 +350,7 @@ function renderTable(attribution: Attribution, der: Der, tentative: { changed: n
     ["DER", percent(der.der)],
     ["仮→確定", percent(tentative.total === 0 ? Number.NaN : tentative.changed / tentative.total)],
     ["切った", String(replay.cuts)],
-    ["3秒で話者なし", String(replay.timeouts)],
+    ["5秒で話者なし", String(replay.timeouts)],
     ["切れなかった", String(unsplit)],
     ["相手の人数", String(mixing.people)],
     ["混入の検出", String(mixing.detected)],
@@ -380,6 +397,7 @@ export const command = Command.make("speakerAccuracy", {
     countUnsplit({ self: args.self, timeline, remarks: scored }),
     scoreMixing({ ...recovery, mixed: replay.mixed }),
     scoreRelinking({ ...recovery, links: replay.links, personOf }),
+    remarkLatency(input),
   );
   yield* write(table);
 })).pipe(Command.withDescription("合成会議の発言を、正解・取り違え・話者なしに分けた割合と、DER・仮から確定で替わった割合・規則の効き目の数を、本文なしの表で出す"));

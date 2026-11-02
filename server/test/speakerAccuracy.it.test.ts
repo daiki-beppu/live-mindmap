@@ -10,7 +10,7 @@ import { logText, offlineMixedRestartLog, type Line } from "./speakerReplayFixtu
 // 呼び方: node bench/speakerAccuracy.ts --self <話者> [--without-* の旗] <timeline.tsv> <events.jsonl>
 // events.jsonl は `stt-bench run --events` の出力（届いた時刻 arrival つき）。speakerReplay --offline の経路で中核に通して採点する。
 // 標準出力は Markdown の表 1 つ（見出し + 1 行）。割合の列は百分率（66.7% のように）、数の列は整数。
-// 列（見出しの先頭の語）: 正解・取り違え・話者なし・DER・仮→確定 / 規則の効き目: 切った・3秒で話者なし・切れなかった。発言の本文は出さない
+// 列（見出しの先頭の語）: 正解・取り違え・話者なし・DER・仮→確定 / 規則の効き目: 切った・5秒で話者なし・切れなかった。発言の本文は出さない
 
 const BODY = ["TIMELINESECRETALPHA", "EVENTSSECRETBETA", "EVENTSSECRETGAMMA", "EVENTSSECRETDELTA", "SELFSECRETOMEGA", "EVENTSSECRETALPHA"];
 
@@ -77,7 +77,7 @@ function expectNoBody(stdout: string, stderr: string) {
     expect(stderr).not.toContain(body);
   }
   // 標準出力は表の行だけで、セルは百分率・n/a・整数・見出しの語・区切りのどれか（本文の断片が混ざれば外れる）
-  const known = /^(\d+(\.\d+)?%?|n\/a|—|-+|発言数|正解|取り違え|話者なし|採点対象外|DER|仮→確定|切った|3秒で話者なし|切れなかった|相手の人数|混入の検出|当たり|誤検出|検出まで|誤ってつないだ|正しくつないだ|新しいラベル)$/;
+  const known = /^(-?\d+(\.\d+)?%?|\d+\/\d+|n\/a|—|-+|発言数|遅延対象行|終了時解放|発言遅延p50秒|発言遅延p90秒|正解|取り違え|話者なし|採点対象外|DER|仮→確定|切った|5秒で話者なし|切れなかった|相手の人数|混入の検出|当たり|誤検出|検出まで|誤ってつないだ|正しくつないだ|新しいラベル)$/;
   for (const line of stdout.split("\n").filter((l) => l.trim() !== "")) {
     expect(line.trim().startsWith("|") && line.trim().endsWith("|"), "表の行").toBe(true);
     for (const c of line.trim().replace(/^\||\|$/g, "").split("|").map((x) => x.trim())) expect(c).toMatch(known);
@@ -107,8 +107,9 @@ describe("speakerAccuracy の CLI（light IT）", () => {
     expect(stderr).toBe("");
     const table = parseTable(stdout);
     const added = ["相手の人数", "混入の検出", "当たり", "誤検出", "検出まで", "誤ってつないだ", "正しくつないだ", "新しいラベル", "話者なし"];
-    expect(table.header).toHaveLength(19);
-    expect(table.row).toHaveLength(19);
+    expect(table.header).toContain("発言遅延p50秒");
+    expect(table.header).toContain("発言遅延p90秒");
+    expect(table.row).toHaveLength(table.header.length);
     expect(table.header.slice(-9)).toEqual(added);
     expect(table.row.slice(-9)).toEqual(["4", "1", "1", "0", "2.0", "0", "1", "1", "2"]);
     expectNoBody(stdout, stderr);
@@ -141,7 +142,7 @@ describe("speakerAccuracy の CLI（light IT）", () => {
     // 参照に --self の行が入っていれば、仮説に無い 2 秒が取りこぼしになり 0 にならない
     expect(cell(table, "DER")).toBeCloseTo(0, 0);
     expect(cell(table, "仮→確定")).toBeCloseTo(50, 0);
-    expect([cell(table, "切った"), cell(table, "3秒で話者なし"), cell(table, "切れなかった")]).toEqual([0, 0, 0]);
+    expect([cell(table, "切った"), cell(table, "5秒で話者なし"), cell(table, "切れなかった")]).toEqual([0, 0, 0]);
     expectNoBody(stdout, stderr);
   }).pipe(Effect.scoped));
 
@@ -153,7 +154,7 @@ describe("speakerAccuracy の CLI（light IT）", () => {
     expect(code).toBe(0);
     const table = parseTable(stdout);
     expect([cell(table, "正解"), cell(table, "取り違え"), cell(table, "話者なし")]).toEqual([100, 0, 0]);
-    expect([cell(table, "切った"), cell(table, "3秒で話者なし"), cell(table, "切れなかった")]).toEqual([1, 0, 0]);
+    expect([cell(table, "切った"), cell(table, "5秒で話者なし"), cell(table, "切れなかった")]).toEqual([1, 0, 0]);
     // 参照 4 秒 − collar 1.0 秒 = 3 秒のうち、確定区間が無い [2,2.75] の 0.75 秒が取りこぼし
     expect(cell(table, "DER")).toBeCloseTo(25, 0);
     expectNoBody(stdout, stderr);
@@ -187,7 +188,7 @@ describe("speakerAccuracy の CLI（light IT）", () => {
     expectNoBody(stdout, stderr);
   }).pipe(Effect.scoped));
 
-  it.effect("3 秒の待ちを外す旗 --without-wait が中核に届く（時間切れの話者なし 1 → 0）", () => Effect.gen(function* () {
+  it.effect("5 秒の待ちを外す旗 --without-wait が中核に届く（時間切れの話者なし 1 → 0）", () => Effect.gen(function* () {
     // 確定結果 [3,5] の後に時計が 3 秒進み（自分の途中結果）、区間が届く前に時間切れで話者なしになる
     const events: Line[] = [
       remark(1, "相手", 3, 5, BODY[1]!),
@@ -203,8 +204,8 @@ describe("speakerAccuracy の CLI（light IT）", () => {
     expect(flagged.code).toBe(0);
     const before = parseTable(plain.stdout);
     const after = parseTable(flagged.stdout);
-    expect([cell(before, "3秒で話者なし"), cell(before, "話者なし")]).toEqual([1, 100]);
-    expect([cell(after, "3秒で話者なし"), cell(after, "正解")]).toEqual([0, 100]);
+    expect([cell(before, "5秒で話者なし"), cell(before, "話者なし")]).toEqual([1, 100]);
+    expect([cell(after, "5秒で話者なし"), cell(after, "正解")]).toEqual([0, 100]);
   }).pipe(Effect.scoped));
 
   it.effect("--self が台本に無い話者だと非ゼロ終了し、台本の本文を出さない", () => Effect.gen(function* () {

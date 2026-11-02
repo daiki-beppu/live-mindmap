@@ -1,7 +1,7 @@
 import Foundation
 
 /// 話者分離が返す 1 件の区間（Issue #1020）。`start` / `end` は、`diarize` に渡した `origin` を 0 とする秒数で、STT の結果と同じ原点。
-/// `slot` は Sortformer の出力の番号（0 始まり）。ラベル（相手 A など）への変換はここではしない。
+/// `slot` は Nemotron 3 の出力の番号（0 始まり）。ラベル（相手 A など）への変換はここではしない。
 /// `isFinal` が false なら仮の区間（後で変わり得る）、true なら確定。
 public struct SpeakerSegment: Sendable, Equatable {
     public var start: Double
@@ -50,7 +50,7 @@ public enum SpeakerDiarizerError: Error, Equatable, CustomStringConvertible {
     }
 }
 
-/// 話者分離のアダプタ。配線側はこのプロトコルだけを知る（本物は `SortformerSpeakerDiarizer`、unit テストは偽の実装を入れる）。
+/// 話者分離のアダプタ。配線側はこのプロトコルだけを知る（本物は `Nemotron3SpeakerDiarizer`、unit テストは偽の実装を入れる）。
 public protocol SpeakerDiarizer {
     /// モデルの読み込み。音声を流す前に呼ぶ。ネットワークへは行かない（モデルが無ければ `SpeakerDiarizerError.modelMissing`）。
     func prepare() async throws
