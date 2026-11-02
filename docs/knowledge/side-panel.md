@@ -11,9 +11,9 @@
 
 裏返すと、段に出した文字は、マップだけの書き出しにも載る。TODO の段はノードの本文・担当者・期限・時刻だけを出すので、発言の文字は増えない。発言を出す段を足すときは、[エクスポートの公開](export-publish.md)の「外に出す物は HTML に埋め込んだデータで数える」に照らす。
 
-## 段の高さは件数で変えない。新しい段も既存と同じ `flex-1 min-h-0 overflow-y-auto` にする
+## 段の高さは件数で変えない。新しい段も `styles.css` の `.evidence, .todos, .changes`（`flex: 1; min-height: 0; overflow-y: auto`）に並べる
 
-3 段は 1:1:1 の固定で、それぞれの段の中でスクロールする。TODO が増えるたびに他の段が縮むと、共有画面に映る右の列の中が動いてしまう。1 つの段だけ `flex-none` や `max-h` にすると、件数で高さが変わる。右の列の幅（300px）も変えない。字幕の位置・幅の式とマップの幅は右の列の中身に依存しないので、段を足しても字幕とマップは動かない。
+3 段は 1:1:1 の固定で、それぞれの段の中でスクロールする。TODO が増えるたびに他の段が縮むと、共有画面に映る右の列の中が動いてしまう。1 つの段だけ `flex: none` や `max-height` にすると、件数で高さが変わる。右の列の幅（300px）も変えない。字幕の位置・幅の式とマップの幅は右の列の中身に依存しないので、段を足しても字幕とマップは動かない。
 
 ## 一覧は Model に持たず、`snapshot.nodes` から view で毎回導く。描かれた木から取らない
 
@@ -53,3 +53,4 @@
 - [マップの「畳めるノード」の規則を 1 つの module に集めたときの開発ログ](../devlog/2026-10-28.md#folding-module)、[PR #1690](https://github.com/daiki-beppu/live-mindmap/pull/1690)（変更一覧のクリックを `refold` の `point` に移した）
 - 仕様 [#1284](https://github.com/daiki-beppu/live-mindmap/issues/1284)、親 [#1286](https://github.com/daiki-beppu/live-mindmap/issues/1286)、チケット [#1287](https://github.com/daiki-beppu/live-mindmap/issues/1287)、[PR #1292](https://github.com/daiki-beppu/live-mindmap/pull/1292)
 - #1287 の takt の run（`20261017-060712-implement-using-only-the-files-sugyi4`）の計画・決定ログ・3 人のレビュー・修正計画・最終検証
+- [web の CSS から Tailwind を外したときの開発ログ](../devlog/2026-11-02.md#tailwind-removal)（段の高さの節を素の CSS の規則に書き換えた）
