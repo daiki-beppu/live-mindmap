@@ -79,6 +79,8 @@ PR のレビューの run（`evaluate-pull-request-*`）も、最終の段で「
 
 採るかどうかは run ごとに揺れる。仕様 [#1702](https://github.com/daiki-beppu/live-mindmap/issues/1702) の子 [#1713](https://github.com/daiki-beppu/live-mindmap/issues/1713)・[#1715](https://github.com/daiki-beppu/live-mindmap/issues/1715) は、どちらも「足した行が直す前に落ちたことを実装の報告に書く」を完了条件に入れていた。同じモデル・同じワークフローの PR のレビューの run で、裁定の時刻は 1 分しか違わない。[PR #1742](https://github.com/daiki-beppu/live-mindmap/pull/1742)（#1715）の裁定は「未確認」として通し、[PR #1743](https://github.com/daiki-beppu/live-mindmap/pull/1743)（#1713）の裁定は「issue が報告への記載を明示している」として直す対象（中）にした。#1743 の run は 24 イテレーション・49 分かかり、#1742 の 11 イテレーション・13 分の約 4 倍だった。
 
+照合の結果も同じだった。仕様 [#1817](https://github.com/daiki-beppu/live-mindmap/issues/1817) の子はどれも「照合の差分を実装の報告に書く」を完了条件にしていたが、[PR #1841](https://github.com/daiki-beppu/live-mindmap/pull/1841)（#1831）の本文は 1 行だけで、実装の run の記録も `interventions.jsonl` しか残っていない。差分 0 だったかを後から確かめる手段が無い。[PR #1853](https://github.com/daiki-beppu/live-mindmap/pull/1853)（#1833）では、裁定の段が最初のレビュアーの APPROVE を覆し、照合の結果・検査の失敗の確かめ・層の結果が無いという 3 件（P2）を差し戻した。実装の run の証跡（`.takt/evidence-1833`）がレビューの worktree に無かったためで、fix の段は、撤去で消した照合スクリプトを比較元のコミットから一時的に取り出して照合をやり直した。
+
 ## PR の本文に書くこと（`Closes #N` など）を完了条件に入れない。run は確かめられず、レビューが全員 APPROVE でも ABORT を繰り返す
 
 takt が PR を作るのは実装の run が終わった後なので、run の中からは PR の本文を確かめられない。[#1628](https://github.com/daiki-beppu/live-mindmap/issues/1628) は、別の issue（#1524）を同じ PR で閉じるために、完了条件に「PR の本文に `Closes #1524` を書く」を入れていた。1 本目の run は 36 分で 5 観点のレビューまで進み、全員 APPROVE、裁定も「直すものなし」だったが、最終の関門が「PR の本文の `Closes #1524` は未確認」で BLOCKED を出し、再計画が「外を待つだけ」として ABORT した。自動の再投入の 2 本も、再計画から約 2.5 分で同じ理由で ABORT した。
@@ -118,6 +120,8 @@ AGENTS.md の Checks の順（APM → 話者のモデル → `pnpm typecheck` �
 ## コミットの分け方やマージの仕方を完了条件にしたチケットは、takt に流さず手で引き取る
 
 [#1388](https://github.com/daiki-beppu/live-mindmap/issues/1388) は、「`git mv` だけのコミットを先に置き、英語版の新規作成とは別のコミットにする」を完了条件にしていた。takt の run はこれを満たせず、計画のやり直し（replan）で止まり、takt-sequence のセッションも止まって案内役が判断依頼を出した。結局、run が書いた文面を使って手でコミットを 2 つに分け、rebase でマージした（[PR #1392](https://github.com/daiki-beppu/live-mindmap/pull/1392)）。
+
+[#1833](https://github.com/daiki-beppu/live-mindmap/issues/1833) の「照合した後のコミットで照合スクリプトを消す」も、2 本目の run の再計画が「エージェントのコミット禁止と両立しない」として止まった。この場合は分ける理由が「照合の結果を残してから消す」だけだったので、人が「結果を実装の報告に載せた後に、同じ PR で消せばよい」と書き換えて takt のまま通した。
 
 takt の PR は squash で予約されるので、run がコミットを分けても main では 1 つになる。コミットの並びや rebase でのマージが要る作業（履歴を残す移動など。[README の 2 つの版](readme-versions.md)）は、起票の時点で手で行う作業として書き、takt-sequence に積む並びから外す。
 
@@ -196,6 +200,15 @@ takt は ABORT で終わったタスクを自動で再投入する（上限 2 �
 
 [PR #1732](https://github.com/daiki-beppu/live-mindmap/pull/1732)（#1710）は、先に main に入った #1731 が、#1732 の消した関数を使っていて、合わせると型チェックが落ちた。人は 15:42 にその行を直すコミットを手で push した。同じころ、PR のレビューの run（`20261030-063313-merge-pr-1732-vddezh`）も同じ指摘で差し戻し、15:51〜16:01 に同じ直し（2 行の追加と 2 行の削除）を作っていた。run の push は `! [rejected] ... (fetch first)` で落ち、そのレビューは失敗で終わった。手で直す前に、その PR のレビューの run が動いていないかを見る。動いていたら、止めるか終わるのを待つ。
 
+## 照合の「差分 0」を完了条件にするなら、意図して足す・消すものを「許す差分」として先に並べる。両立しない条件は、自動の再投入では解けない
+
+仕様 [#1817](https://github.com/daiki-beppu/live-mindmap/issues/1817)（Tailwind を外す移行）では、6 本の run が完了条件の書き方で止まった。
+
+- [#1832](https://github.com/daiki-beppu/live-mindmap/issues/1832) は「話し手の名前の色を `h.Style` の要素の変数で渡す」と「照合の差分 0」を両方求めた。変数を足せば、その変数が差分に出る（48 件）。最初の計画は「追加する要素変数も照合の対象になる。差分 0 は未確認」と書きながら「利用者の判断が要る不明点は無い」として進み、実装に約 15 分かけた後の再計画で、7 つの回避策をすべて退けて ABORT した。自動の再投入の 2 本は再計画だけを約 4 分ずつ流して同じ ABORT を出し、1 本あたり入力 130 万〜180 万トークンを使った
+- [#1833](https://github.com/daiki-beppu/live-mindmap/issues/1833) は、消すと決めた `--spacing`・`--font-weight-semibold` の消失（4,998 件）が「差分 0」に反するかと、上の節のコミットの分け方で、3 本が止まった
+
+どちらも、人が完了条件に「ただし次の差分は許す」と書き足すと、次の run で通った。足す・消すと決めたものは、起票の時点で分かっている。差分 0 を求めるチケットは、その一覧を完了条件に並べてから積む。計画が「〜は未確認」と書いたまま進んだら、その行が後で ABORT の理由になる。照合が何を数えるかは [web の CSS](web-css.md) の「computed style を全件比べる道具は…」にある。
+
 ## 出典
 
 - チケット [#1287](https://github.com/daiki-beppu/live-mindmap/issues/1287)、[PR #1292](https://github.com/daiki-beppu/live-mindmap/pull/1292)
@@ -219,3 +232,4 @@ takt は ABORT で終わったタスクを自動で再投入する（上限 2 �
 - 仕様 [#1706](https://github.com/daiki-beppu/live-mindmap/issues/1706) の子 [#1714](https://github.com/daiki-beppu/live-mindmap/issues/1714)・[#1718](https://github.com/daiki-beppu/live-mindmap/issues/1718)・[#1719](https://github.com/daiki-beppu/live-mindmap/issues/1719)〜[#1722](https://github.com/daiki-beppu/live-mindmap/issues/1722) の本文の編集と案内役のコメント、[PR #1730](https://github.com/daiki-beppu/live-mindmap/pull/1730)・[#1740](https://github.com/daiki-beppu/live-mindmap/pull/1740) の本文、[CI を段に分けたとき](../devlog/2026-10-31.md#ci-stages)
 - [clone 直後の初回の準備を `pnpm bootstrap` にまとめたとき](../devlog/2026-11-02.md#bootstrap-one-build)、仕様 [#1423](https://github.com/daiki-beppu/live-mindmap/issues/1423) の子の PR #1464・#1490・#1513・#1519
 - 仕様 [#1755](https://github.com/daiki-beppu/live-mindmap/issues/1755) の子 [#1776](https://github.com/daiki-beppu/live-mindmap/issues/1776) の takt の run（`20261031-143340-issue-1776-no-truth-json-ni-no-skmgfu`・`20261031-143724-issue-1776-no-truth-json-ni-no-0es57x`・`20261031-144058-issue-1776-no-truth-json-ni-no-mwyyuv`・`20261101-133733-issue-1776-no-truth-json-ni-no-474pu8`）の trace と reports、[#1772](https://github.com/daiki-beppu/live-mindmap/issues/1772)・[PR #1782](https://github.com/daiki-beppu/live-mindmap/pull/1782) の本文、[補足を作ったとき](../devlog/2026-11-02.md#supplement-spec)
+- [web の CSS から Tailwind を外したときの開発ログ](../devlog/2026-11-02.md#tailwind-removal)、仕様 [#1817](https://github.com/daiki-beppu/live-mindmap/issues/1817)、#1832・#1833 の takt の run と [PR #1841](https://github.com/daiki-beppu/live-mindmap/pull/1841)・[#1853](https://github.com/daiki-beppu/live-mindmap/pull/1853)
