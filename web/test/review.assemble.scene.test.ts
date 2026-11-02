@@ -140,7 +140,7 @@ const rowsOf = (sim: Sim): readonly VNode[] => findAll(sim.html, ".captions__row
 const nameOf = (row: VNode): string => textsIn(row, ".captions__name").join("");
 
 describe("見返しの Scene: 字幕はライブと同じ吹き出しで、最後に付いた名前で出る", () => {
-  it("話し始めの順に、相手は左（justify-start）・自分は右（justify-end）の行が並び、名前の欄は名前（最後に付いた名前）・空・ラベルのまま", () => {
+  it("話し始めの順に、相手は左・自分は右の行が並び、名前の欄は名前（最後に付いた名前）・空・ラベルのまま", () => {
     scene(
       speakerApp,
       given(stateAt(speakerContext, 6)),
@@ -148,7 +148,7 @@ describe("見返しの Scene: 字幕はライブと同じ吹き出しで、最�
       tap((sim) => {
         const rows = rowsOf(sim);
         expect(rows.map((row) => textsIn(row, ".captions__bubble").join(""))).toEqual(["最初の話です。", "はい。", "続きです。"]);
-        expect(rows.map((row) => hasClass(row, "justify-start") ? "left" : hasClass(row, "justify-end") ? "right" : "?")).toEqual(["left", "right", "left"]);
+        expect(rows.map((row) => hasClass(row, "captions__row--right"))).toEqual([false, true, false]);
         expect(rows.map(nameOf)).toEqual(["田中", "", "相手 A"]);
       }),
     );
@@ -166,7 +166,7 @@ describe("見返しの Scene: 字幕はライブと同じ吹き出しで、最�
     );
   });
 
-  it("名前の欄は押せる欄（button）ではなく、名前を付ける入力も開かない。どの欄にも薄い表示（opacity-50）は付かない", () => {
+  it("名前の欄は押せる欄（button）ではなく、名前を付ける入力も開かない。どの欄にも仮の名前の薄い表示は付かない", () => {
     scene(
       speakerApp,
       given(stateAt(speakerContext, 6)),
@@ -179,7 +179,7 @@ describe("見返しの Scene: 字幕はライブと同じ吹き出しで、最�
         expect(cells).toHaveLength(3);
         for (const cell of cells) {
           expect(tagOf(cell)).toBe("div");
-          expect(hasClass(cell, "opacity-50")).toBe(false);
+          expect(hasClass(cell, "captions__name--provisional")).toBe(false);
         }
       }),
     );
@@ -195,10 +195,10 @@ describe("見返しの Scene: 字幕はライブと同じ吹き出しで、最�
       tap((sim) => {
         const rows = rowsOf(sim);
         expect(rows.map((row) => textsIn(row, ".captions__bubble").join(""))).toEqual(["古い発言です。", "了解です。"]);
-        expect(rows.map((row) => hasClass(row, "justify-end"))).toEqual([false, true]);
+        expect(rows.map((row) => hasClass(row, "captions__row--right"))).toEqual([false, true]);
         expect(rows.map(nameOf)).toEqual(["相手", ""]);
         expect(findAll(sim.html, "button.captions__name")).toHaveLength(0);
-        expect(findAll(sim.html, ".captions__name").some((cell) => hasClass(cell, "opacity-50"))).toBe(false);
+        expect(findAll(sim.html, ".captions__name").some((cell) => hasClass(cell, "captions__name--provisional"))).toBe(false);
       }),
     );
   });

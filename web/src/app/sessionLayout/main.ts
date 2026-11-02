@@ -199,20 +199,20 @@ const bubbleTextView = (h: H, bubble: DisplayBubble): ReadonlyArray<Html | strin
   const pending = bubble.text.slice(bubble.settledLength);
   return pending === ""
     ? [settled]
-    : [settled, h.span([h.Class("captions__pending opacity-50")], [pending, h.span([h.Class("captions__cursor")], [])])];
+    : [settled, h.span([h.Class("captions__pending")], [pending, h.span([h.Class("captions__cursor")], [])])];
 };
 
 const bubbleRowView = (h: H, bubble: DisplayBubble, nameEdit: Model["nameEdit"]): Html =>
   h.keyed("div")(
     bubble.id,
     [
-      h.Class(`captions__row flex items-baseline gap-[8px] ${bubble.side === "right" ? "justify-end" : "justify-start"}`),
+      h.Class(`captions__row ${bubble.side === "right" ? "captions__row--right" : ""}`),
       h.DataAttribute(CAPTION_ID_KEY, bubble.id),
     ],
     [
       speakerNameCell(h, bubble, nameEdit),
       h.p(
-        [h.Class(`captions__bubble ${bubble.side === "right" ? "captions__bubble--right " : ""}m-0 flex-none text-[16px] leading-[1.5] wrap-anywhere ${bubble.side === "right" ? "text-right" : "text-left"} ${SPEAKER_NAME_COLORS[bubble.colorIndex] ?? SPEAKER_NAME_COLORS[0]}`)],
+        [h.Class(`captions__bubble ${bubble.side === "right" ? "captions__bubble--right" : ""}`), h.Style({ "--speaker-name-color": SPEAKER_NAME_COLORS[bubble.colorIndex] ?? SPEAKER_NAME_COLORS[0] })],
         bubbleTextView(h, bubble),
       ),
     ],
@@ -262,8 +262,8 @@ function localModeViews(h: H, model: Model): ReadonlyArray<Html> {
   });
   const data = Option.match(status, { onNone: () => [], onSome: (s) => [h.DataAttribute("status", s)] });
   return [
-    h.div([h.Class("local-mode-line absolute top-0 left-0 right-0 h-[2px] bg-[var(--local-mode-color)] pointer-events-none z-6"), ...data, h.AriaHidden(true)], []),
-    h.div([h.Class("local-mode-notice absolute top-[8px] left-[12px] text-[12px] leading-[18px] text-[color:var(--local-mode-color)] pointer-events-none z-6"), ...data, h.Role("status")], [`ローカルモード・Apple Intelligence${suffix}`]),
+    h.div([h.Class("local-mode-line"), ...data, h.AriaHidden(true)], []),
+    h.div([h.Class("local-mode-notice"), ...data, h.Role("status")], [`ローカルモード・Apple Intelligence${suffix}`]),
   ];
 }
 
@@ -276,16 +276,16 @@ const diffUpdateView = (h: H, model: Model): Html | null =>
     onNone: () => null,
     onSome: (state) =>
       state.status === "paused"
-        ? h.div([h.Class("diff-update-notice absolute top-[8px] left-[12px] text-[12px] text-gray-500 z-5 pointer-events-none"), h.Role("status")], [`マップの更新が止まっています（${state.reason}）`])
+        ? h.div([h.Class("diff-update-notice"), h.Role("status")], [`マップの更新が止まっています（${state.reason}）`])
         : null,
   });
 
 export const view = (model: Model, h: H, slots: Slots): Html =>
   h.div(
-    [h.Class(model.local ? "layout layout--local flex w-full h-full relative" : "layout flex w-full h-full relative")],
+    [h.Class(model.local ? "layout layout--local" : "layout")],
     [
       ...localModeViews(h, model),
-      h.div([h.Class("map flex-1 min-w-0 h-full relative")], [slots.map, noticeViewP(h, model.viewingToast), slots.keyList ?? null]),
+      h.div([h.Class("map")], [slots.map, noticeViewP(h, model.viewingToast), slots.keyList ?? null]),
       captionsView(h, model),
       noticeView(h, "intake-notice", model.intakeToast),
       noticeView(h, "screen-notice", model.screenToast),
@@ -297,7 +297,7 @@ export const view = (model: Model, h: H, slots: Slots): Html =>
   );
 
 function noticeViewP(h: H, toast: NoticeModel): Html | null {
-  return Option.match(shownText(toast), { onNone: () => null, onSome: (text) => h.p([h.Class("viewing-notice absolute left-[16px] bottom-[4px] m-0 text-[13px] leading-[16px] whitespace-nowrap text-gray-500 pointer-events-none z-5")], [text]) });
+  return Option.match(shownText(toast), { onNone: () => null, onSome: (text) => h.p([h.Class("viewing-notice")], [text]) });
 }
 
 type SlotViews = { readonly map: (notice: Html | null) => Html; readonly keyList: () => Html | null; readonly side: () => Html | null };

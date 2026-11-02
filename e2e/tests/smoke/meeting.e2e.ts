@@ -28,10 +28,10 @@ test("会議中: start で届いた発言が字幕とノードになり、stop �
 
   if (runInfo.events === SMOKE_EVENTS) {
     const theirs = browser.locator(".captions__row").filter({ hasText: "検索の改善を先にやりた" });
-    await expect(theirs).toHaveAttribute("class", /justify-start/);
+    await expect(theirs).not.toHaveAttribute("class", /captions__row--right/);
     await expect(theirs.filter({ has: browser.locator(".captions__name").filter({ hasText: /^相手( B)?$/ }) })).toBeVisible();
     const mine = browser.locator(".captions__row").filter({ hasText: "担当を分け" });
-    await expect(mine).toHaveAttribute("class", /justify-end/);
+    await expect(mine).toHaveAttribute("class", /captions__row--right/);
     await expect(browser.locator(".captions__name")).toHaveCount(2);
     await expect(browser.locator(".captions__name").filter({ hasText: /\S/ })).toHaveCount(1);
   }
