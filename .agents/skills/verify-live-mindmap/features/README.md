@@ -28,3 +28,5 @@
 - [ノードの根拠と変わったこと](./node-evidence.md): ノードを選ぶと根拠の発言が出る。右の列の「変わったこと」。
 - [見返し](./review.md): `review` で作った `map.html` の時刻のスライダー・再生の速さ・字幕と右の列の出し入れ。
 - [取り込みの状態とマップの取り出し](./cli-session-state.md): `status`・`export`・`restore`。
+- [判断軸](./criteria.md): `start --criteria` の帯・案に添える軸名・書き出しと見返しに残る軸。
+- [堂々巡りの知らせ](./discussion-notice.md): 決まらない論点が続くと、判断軸の整理を勧める知らせが出る。
