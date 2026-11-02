@@ -1,6 +1,6 @@
 ---
 name: verify-live-mindmap
-description: live-mindmap の実物（server・CLI・web の画面）を立てて、利用者と同じ操作で動きを確かめ、証拠（画面の写し・CLI の出力・書き出したファイル）を残す。会議中の流れ（start → 字幕とノード → stop → 書き出し）・ノードの根拠・見返しの map.html・CLI の status / export / restore を変えたとき、または変えた振る舞いを画面で示すときに使う。
+description: live-mindmap の実物（server・CLI・web の画面）を立てて、利用者と同じ操作で動きを確かめ、証拠（画面の写し・CLI の出力・書き出したファイル）を残す。会議中の流れ（start → 字幕とノード → stop → 書き出し）・ノードの根拠・見返しの map.html・CLI の status / export / restore・判断軸（start --criteria）・堂々巡りの知らせを変えたとき、または変えた振る舞いを画面で示すときに使う。
 ---
 
 # live-mindmap を立てて、利用者の操作で確かめる
@@ -8,11 +8,11 @@ description: live-mindmap の実物（server・CLI・web の画面）を立て�
 確かめ用の 1 組は `e2e/scripts/serve.ts` が立てます。server は本体の `startup` / `realLayers` そのままで、境界の 2 つだけを差し替えます。
 
 - helper（macOS の音声の取り込み）は `server/test/fixtures/fake-helper.ts`。台本 `e2e/fixtures/meeting.json`（架空の発言 14 件）を流します。
-- 差分更新（モデル）は偽の updater。確定した発言 1 件ごとに、ルート直下へノードを 1 つ足し、文言は発言そのままです。
+- 差分更新（モデル）は偽の updater。確定した発言 1 件ごとに、ルート直下へノードを 1 つ足し、文言は発言そのままです。`start --criteria` で判断軸を渡したときと、`LIVE_MINDMAP_VERIFY_DISCUSSION=1` で立てたとき（台本は `e2e/fixtures/discussion.json`）は、決まった形のノードを足す別の振る舞いになります（[判断軸](features/criteria.md)・[堂々巡りの知らせ](features/discussion-notice.md)）。
 
 ポートは空きポート、セッションのフォルダは一時フォルダです。開発中の server（4319）・`~/.live-mindmap`・利用者のブラウザには触れないので、複数の run を並べて立てられます。他人が立てた server や `pnpm dev` を操作しないでください。
 
-確かめられないもの: 実物の helper（会議アプリの音声・共有画面）、実物のモデルによるマップの中身、`map.png`（一時の管理依存に Chromium が無いので、stop は警告を出して作りません）、`share`・`publish`（外のネットワーク）。これらを変えたときは、`AGENTS.md` の Evals と実機の確認に回します。
+確かめられないもの: 実物の helper（会議アプリの音声・共有画面）、実物のモデルによるマップの中身、`map.png`（一時の管理依存に Chromium が無いので作りません。`start` の標準エラーに Chromium が無い警告が、`stop` の後の `serve.log` に `map.png を書き出せませんでした` が出ます）、`share`・`publish`（外のネットワーク）。これらを変えたときは、`AGENTS.md` の Evals と実機の確認に回します。
 
 ヘルパーはすべて `.agents/skills/verify-live-mindmap/scripts/` にあり、repo（worktree）のルートから呼びます。以下 `S=.agents/skills/verify-live-mindmap/scripts` とします。
 
@@ -21,6 +21,7 @@ description: live-mindmap の実物（server・CLI・web の画面）を立て�
 ```sh
 S=.agents/skills/verify-live-mindmap/scripts
 RUN=$(bash $S/launch.sh)        # 台本の先頭 4 件。全件は bash $S/launch.sh 14
+# 堂々巡りの知らせを確かめるときだけ: RUN=$(LIVE_MINDMAP_VERIFY_DISCUSSION=1 bash $S/launch.sh 2)
 P=$(cat "$RUN/web-port")
 ```
 
@@ -40,7 +41,7 @@ bash $S/doctor.sh "$RUN"
 
 - **画面:** `bash $S/browser.sh "$RUN" <playwright-cli のコマンド>`。セッション名 `verify-<ポート>` の headless の Chromium を使います。最初に `open "http://127.0.0.1:$P/"`、以降は `snapshot`・`click <ref>`・`press <key>`・`eval <式>`・`screenshot --filename shots/<名前>.png`。要素は `snapshot` の role と名前（例 `button "字幕"`、`slider "時刻"`）で探し、その `ref` を渡します。座標や並び順には頼りません。
 - **CLI:** `bash $S/cli.sh "$RUN" <サブコマンド> [引数...]`。この run の server のポートとセッションのフォルダを環境変数で渡し、設定ファイルと既定のモデルは読ませません。会議アプリは台本にある `us.zoom.xos` だけです（`start --app us.zoom.xos`）。
-- **セッションのフォルダ:** `cat "$RUN/sessions-dir"`。書き出しや `log.jsonl` はここにできます。画面からは `http://127.0.0.1:$P/session-files/<セッション名>/<ファイル>` で開けます（`.html` 以外は text/plain）。
+- **セッションのフォルダ:** `cat "$RUN/sessions-dir"`。書き出しや `log.jsonl` はここにできます。画面からは `http://127.0.0.1:$P/session-files/<セッション名>/<ファイル>` で開けます（`.html` 以外は text/plain）。この配信は確かめ用に `serve.ts` が足したもので、本体の server にはありません。playwright-cli は `file:` の URL を開かないので、`map.html` はこの経路で開きます。
 
 機能ごとの手順は [`features/README.md`](features/README.md) から辿ります。変えた振る舞いに当たる機能の入り口は、地図に並ぶものをすべて通します。都合のよい 1 つだけを通した結果を、その機能を確かめたとは報告しません。
 
@@ -53,7 +54,7 @@ run のフォルダ `e2e/.e2e/verify/<時刻>-<ポート>/`（gitignore 済み�
 | CLI の標準出力・標準エラー・終了コード | `cli/<連番>-<サブコマンド>.{out,err,code}`（`cli.sh` が書く） |
 | 画面の写し | `shots/`（`screenshot --filename shots/...` で自分で撮る） |
 | 画面の構造（ARIA の snapshot）とコンソール | `.playwright-cli/page-*.yml`・`console-*.log`（`browser.sh` の `snapshot` が書く） |
-| セッションのフォルダ（`log.jsonl`・`map.md`・`map.json`・`map.drawnix`・`map.html`・録音の代わりの小さなファイル） | `sessions/`（`stop.sh` が止める前に写す） |
+| セッションのフォルダ（`log.jsonl`・`map.md`・`map.json`・`map.drawnix`・`map.html`・`map-audio.html`・録音の代わりの小さなファイル） | `sessions/`（`stop.sh` が止める前に写す） |
 | server と web のログ | `serve.log` |
 
 証拠の基準:

@@ -6,9 +6,9 @@
 
 - `status-none`: セッションが無いとき `セッションなし` と `閲覧の共有: 無し`。
 - `status-running`: 動いているとき `動いている`・`セッションのフォルダ: ...`・`起動し直した回数: 0`。
-- `export-none`: セッションが 1 つも無いとき、終了コード 1 で `セッションがありません: <フォルダ>`。
+- `export-none`: `export.json` を持つセッションのフォルダが 1 つも無いとき、終了コード 1 で `セッションがありません: <フォルダ>`。
 - `export-md`: 最新のセッションのマップを標準出力に Markdown で出す。ファイルは作らない。
-- `restore-log`: 最新のセッションのログから、差分更新を呼ばずにマップを戻し、そのフォルダを出す。
+- `restore-log`: `log.jsonl` を持つ最新のセッションから、差分更新を呼ばずにマップを戻して `export.json` と語彙の蓄えを書き直し、そのフォルダを出す。
 
 ## How to get to it (user POV)
 
@@ -27,5 +27,6 @@ Preconditions:
 
 ## Gotchas
 
-- `cli.sh` は `LIVE_MINDMAP_CONFIG` を無いファイルに向け、`LIVE_MINDMAP_MODEL` を空にします。利用者の設定（`~/.live-mindmap`）の既定のモデルを読ませないためです。素の `pnpm cli` を流すと、開発中の server（4319）に繋がります。
-- `restore` はログを読み直すだけで、`stop` が書き出した `map.*` を消しません。戻ったことは標準出力のフォルダと終了コードで見ます。
+- `cli.sh` は `LIVE_MINDMAP_CONFIG` を無いファイルに向けます。利用者の設定（`~/.live-mindmap`）の既定のモデルを読ませないためです。`LIVE_MINDMAP_MODEL` を空にするのは、外から受け継いだ値を消すためだけです（空は未設定と同じ扱い）。素の `pnpm cli` を流すと、開発中の server（4319）に繋がります。
+- `restore` は `export.json` と語彙の蓄えを書き直しますが、`stop` が書き出した `map.*` は消しません。
+- 「最新」はフォルダ名の並びで決まり、見るファイルはサブコマンドごとに違います（`export` は `export.json`、`restore` は `log.jsonl`）。戻ったことは標準出力のフォルダと終了コードで見ます。
