@@ -73,6 +73,8 @@ run の報告を読むときは、どの段が実際にコマンドを流した�
 
 PR のレビューの run（`evaluate-pull-request-*`）も、最終の段で「機械ゲートは審査しない」と書いて APPROVE する。#1370 のコーディングレビューは、GitHub の CI の check（型検査・unit・IT・heavy IT・E2E）の成功を見て、それを根拠にした。層が通ったかは CI の check で見る。PR の本文に結果を残させたいなら、報告を本文に書く手順をチケットの完了条件とは別に用意する。
 
+計測の値も同じだ。仕様 [#1423](https://github.com/daiki-beppu/live-mindmap/issues/1423) の子は 4 本とも「流した結果と表を実装の報告に書く」を受け入れ条件にしていたが、本文に報告が残ったのは [PR #1513](https://github.com/daiki-beppu/live-mindmap/pull/1513) だけで、`measure-bootstrap.sh` の表は 計測の値で立てた不具合の issue（[#1518](https://github.com/daiki-beppu/live-mindmap/issues/1518)）の本文にしか無い。後で比べるために残したい数字は、issue のコメントに書くことを完了条件にする。
+
 裁定の段が、本文に無いことを指摘として採ることもある。[PR #1674](https://github.com/daiki-beppu/live-mindmap/pull/1674)（#1654）は、実装の run で 5 観点が全員 APPROVE だった。ところが PR のレビューの run の裁定が、「TLC の結果が PR に無い」「必須の検査の層と結果が PR に無い」の 2 件（中）を採った。実装の run の検査のログ（`.takt/issue-1654-*.log`）は、レビューの worktree からは見えない。fix の段が TLC と全部の層を回し直し、PR のレビューの run は 16 イテレーション・42 分かかった。回し直しても、マージされた本文は 1 行のままだった。
 
 採るかどうかは run ごとに揺れる。仕様 [#1702](https://github.com/daiki-beppu/live-mindmap/issues/1702) の子 [#1713](https://github.com/daiki-beppu/live-mindmap/issues/1713)・[#1715](https://github.com/daiki-beppu/live-mindmap/issues/1715) は、どちらも「足した行が直す前に落ちたことを実装の報告に書く」を完了条件に入れていた。同じモデル・同じワークフローの PR のレビューの run で、裁定の時刻は 1 分しか違わない。[PR #1742](https://github.com/daiki-beppu/live-mindmap/pull/1742)（#1715）の裁定は「未確認」として通し、[PR #1743](https://github.com/daiki-beppu/live-mindmap/pull/1743)（#1713）の裁定は「issue が報告への記載を明示している」として直す対象（中）にした。#1743 の run は 24 イテレーション・49 分かかり、#1742 の 11 イテレーション・13 分の約 4 倍だった。
@@ -97,9 +99,11 @@ PR の本文と同じく、Actions の run も PR ができた後にしか動か
 
 実装の段の計画・決定ログ・層の結果を学びにしたいときは、マージを予約する前に worktree の `.takt/runs/` を読むか、どこかへ写しておく。消えた後に読めるのは、PR の差分とレビューの報告だけになる。
 
-## 隔離コピーで `pnpm` を流すと、リンク先の依存が入れ直される。`verifyDepsBeforeRun` を切る
+## 隔離コピーで `pnpm` を流すときは、実行前の依存の確認が切れているか確かめる。入れ直しはリンク先の依存を書き換える
 
 #1317 の破壊検証は、`server/` の下を隔離コピーし、`node_modules` をシンボリックリンクにして、コピーの `sessions.ts` だけを壊した。そのコピーで `pnpm test` を流すと、pnpm の実行前の依存の確認が依存を入れ直し、リンク先の worktree の Vitest が 5.0.3 から 5.0.5 に変わった。直後の IT は 3 ファイルとも `SyntaxError: The requested module 'effect/Path' does not provide an export named 'make'` で読み込めず、0 件で終わった。`pnpm install --frozen-lockfile --force` で lockfile どおりに戻し、隔離の側の実行に `--config.verifyDepsBeforeRun=false` を付けてから、壊す検証と層をやり直した。
+
+いまは `pnpm-workspace.yaml` に `verifyDepsBeforeRun: false` があり（[PR #1490](https://github.com/daiki-beppu/live-mindmap/pull/1490)、[初回の準備とその計測](bootstrap.md)）、リポジトリの中では既定で確認が切れている。隔離コピーに `pnpm-workspace.yaml` を写さない、または設定を上書きする場合は、同じ入れ直しが起きるので `--config.verifyDepsBeforeRun=false` を付ける。
 
 テストが 0 件で終わった実行は、通ったことにも落ちたことにも数えない。
 
@@ -205,3 +209,4 @@ takt は ABORT で終わったタスクを自動で再投入する（上限 2 �
 - 仕様 [#1682](https://github.com/daiki-beppu/live-mindmap/issues/1682) の子 [#1704](https://github.com/daiki-beppu/live-mindmap/issues/1704) の takt の run（`20261028-131126-issue-1704-main-no-ruleset-no-7pe7g3`・`20261028-132535-issue-1704-main-no-ruleset-no-zd3ch2`・`20261028-132719-issue-1704-main-no-ruleset-no-sbh9j5`）の trace と reports、dotfiles#407 の timeline、[main の ruleset の strict を外したとき](../devlog/2026-10-30.md#drop-strict)
 - 仕様 [#1702](https://github.com/daiki-beppu/live-mindmap/issues/1702) の子 [#1710](https://github.com/daiki-beppu/live-mindmap/issues/1710)（takt の run `20261030-055419-issue-1710-mu-wo-1-dake-ri-no-c3xmb5`、PR のレビューの run `20261030-063313-merge-pr-1732-vddezh`・`20261030-071712-merge-pr-1732-1-8oofmo`、[PR #1732](https://github.com/daiki-beppu/live-mindmap/pull/1732) のコメント）・[#1713](https://github.com/daiki-beppu/live-mindmap/issues/1713)（`20261030-114356-merge-pr-1743-y1lqpr`）・[#1715](https://github.com/daiki-beppu/live-mindmap/issues/1715)（`20261030-114248-merge-pr-1742-nf3rm0`）・[#1717](https://github.com/daiki-beppu/live-mindmap/issues/1717)（実装の run 4 本の `interventions.jsonl`、`20261030-164903-merge-pr-1757-fve4lj`）、[画面のカメラの決め方を 1 つの表に集めたとき](../devlog/2026-10-31.md#camera-module)
 - 仕様 [#1706](https://github.com/daiki-beppu/live-mindmap/issues/1706) の子 [#1714](https://github.com/daiki-beppu/live-mindmap/issues/1714)・[#1718](https://github.com/daiki-beppu/live-mindmap/issues/1718)・[#1719](https://github.com/daiki-beppu/live-mindmap/issues/1719)〜[#1722](https://github.com/daiki-beppu/live-mindmap/issues/1722) の本文の編集と案内役のコメント、[PR #1730](https://github.com/daiki-beppu/live-mindmap/pull/1730)・[#1740](https://github.com/daiki-beppu/live-mindmap/pull/1740) の本文、[CI を段に分けたとき](../devlog/2026-10-31.md#ci-stages)
+- [clone 直後の初回の準備を `pnpm bootstrap` にまとめたとき](../devlog/2026-11-02.md#bootstrap-one-build)、仕様 [#1423](https://github.com/daiki-beppu/live-mindmap/issues/1423) の子の PR #1464・#1490・#1513・#1519
