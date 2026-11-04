@@ -98,11 +98,6 @@ export const makeUpdate = (context: Context) => {
   const storeSurface = (model: Model, surface: MapSurface.Model): Model => {
     return modifyFields(model, { mapSurface: () => MapSurface.toStored(surface) });
   };
-  const { foldMapSurface, foldSnapshot, foldEscapeKey, foldKeyListToggled, toggleSide: toggledSide, keyHandlers: surfaceKeyHandlers } = surfaceFolds<Model, Message>({
-    read: (model) => Option.some(surfaceOf(context, model)),
-    write: (model, surface) => storeSurface(model, surface),
-    toParentMessage: (message) => Message.GotMapSurfaceMessage({ message }),
-  });
   const { foldSessionLayout, foldViewingMode } = SessionLayout.sessionLayoutFolds<Model, Message>({
     read: (model) => Option.some(layoutOf(context, model)),
     write: (model, layout) => {
@@ -110,6 +105,12 @@ export const makeUpdate = (context: Context) => {
       return modifyFields(model, { sessionLayout: () => sessionLayout });
     },
     toParentMessage: (message) => Message.GotSessionLayoutMessage({ message }),
+  });
+  const { foldMapSurface, foldSnapshot, withViewingNotice, foldEscapeKey, foldKeyListToggled, toggleSide: toggledSide, keyHandlers: surfaceKeyHandlers } = surfaceFolds<Model, Message>({
+    read: (model) => Option.some(surfaceOf(context, model)),
+    write: (model, surface) => storeSurface(model, surface),
+    toParentMessage: (message) => Message.GotMapSurfaceMessage({ message }),
+    onViewingMode: foldViewingMode,
   });
   const foldSeekSlider = Update.foldChild({
     update: Slider.update,
@@ -267,12 +268,7 @@ export const makeUpdate = (context: Context) => {
       CompletedReleaseFocus: () => ({ model }),
       CompletedReleaseFocusAfterMenuClose: () => ({ model }),
     });
-  return (model: Model, message: Message): Return => {
-    const result = updateOwn(model, message);
-    const { mode } = result.model.mapSurface.camera;
-    if (mode === model.mapSurface.camera.mode) return result;
-    return Update.combine(model, [() => result, (next: Model) => foldViewingMode(next, mode)]);
-  };
+  return (model: Model, message: Message): Return => withViewingNotice(model, updateOwn(model, message));
 };
 
 export const makeView = (context: Context) => (model: Model, h: HtmlBuilder<Message>): Html => {

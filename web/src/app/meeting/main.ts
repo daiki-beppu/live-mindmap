@@ -51,16 +51,17 @@ const stripLayout = (layout: SessionLayout.Model): SessionModel["sessionLayout"]
   return rest;
 };
 
-const { foldMapSurface, foldSnapshot, foldEscapeKey, foldKeyListToggled, keyHandlers: surfaceKeyHandlers } = surfaceFolds<Model, Message>({
-  read: (model) => Option.flatMap(model.session, (s) => surfaceOf(model.feed, s)),
-  write: (model, surface) => modifyFields(model, { session: Option.map((s: SessionModel) => ({ ...s, mapSurface: MapSurface.toStored(surface) })) }),
-  toParentMessage: (message) => Message.GotMapSurfaceMessage({ message }),
-});
-
 const { foldSessionLayout, foldViewingMode, foldIntake, foldScreenNotice, foldTapNotice, foldDiscussionNotice, foldSelfPause, foldDiffUpdate, foldSessionMode } = SessionLayout.sessionLayoutFolds<Model, Message>({
   read: (model) => Option.map(model.session, (s) => layoutOf(model.feed, s)),
   write: (model, layout) => modifyFields(model, { session: Option.map((s: SessionModel) => ({ ...s, sessionLayout: stripLayout(layout) })) }),
   toParentMessage: (message) => Message.GotSessionLayoutMessage({ message }),
+});
+
+const { foldMapSurface, foldSnapshot, withViewingNotice, foldEscapeKey, foldKeyListToggled, keyHandlers: surfaceKeyHandlers } = surfaceFolds<Model, Message>({
+  read: (model) => Option.flatMap(model.session, (s) => surfaceOf(model.feed, s)),
+  write: (model, surface) => modifyFields(model, { session: Option.map((s: SessionModel) => ({ ...s, mapSurface: MapSurface.toStored(surface) })) }),
+  toParentMessage: (message) => Message.GotMapSurfaceMessage({ message }),
+  onViewingMode: foldViewingMode,
 });
 
 const { foldKeyList, foldKeyListOpen, foldKeyListClose } = keyListFolds<Model, Message>({
@@ -99,18 +100,10 @@ const received = (model: Model, feed: LiveFeed.Model): Return => {
   const reflected = Option.isSome(before.snapshot) && Option.isSome(feed.snapshot) && before.snapshot.value !== feed.snapshot.value
     ? foldSnapshot(model, feed.snapshot.value)
     : { model };
-  return viewingNotices(model, Update.combine(model, [
+  return Update.combine(model, [
     () => ({ ...reflected, model: modifyFields(reflected.model, { feed: () => feed }) }),
     ...steps,
-  ]));
-};
-
-const viewingModeOf = (model: Model) => Option.map(model.session, (s) => s.mapSurface.camera.mode);
-const viewingNotices = (before: Model, result: Return): Return => {
-  const was = viewingModeOf(before);
-  const now = viewingModeOf(result.model);
-  if (Option.isNone(now) || sameOption(was, now)) return result;
-  return Update.combine(before, [() => result, (m: Model) => foldViewingMode(m, now.value)]);
+  ]);
 };
 
 const inert: KeyHandler<Model, Message> = (model) => ({ model });
@@ -136,7 +129,7 @@ const updateOwn = (model: Model, message: Message): Return =>
     PressedKey: ({ key, metaKey, ctrlKey, altKey }) => (Option.isNone(model.session) ? { model } : KEY_HANDLERS[key](model, { metaKey, ctrlKey, altKey })),
   });
 
-export const update = (model: Model, message: Message): Return => viewingNotices(model, updateOwn(model, message));
+export const update = (model: Model, message: Message): Return => withViewingNotice(model, updateOwn(model, message));
 
 export const view = (model: Model, h: HtmlBuilder<Message>): Html =>
   Option.match(model.session, {
