@@ -9,6 +9,42 @@ import Testing
 enum FileAudioTestSupport {
     static let sampleRate = 16_000.0
 
+    private actor ExportTurns {
+        private var isBusy = false
+        private var waiting: [CheckedContinuation<Void, Never>] = []
+
+        func acquire() async {
+            guard isBusy else {
+                isBusy = true
+                return
+            }
+            await withCheckedContinuation { waiting.append($0) }
+        }
+
+        func release() {
+            if waiting.isEmpty {
+                isBusy = false
+            } else {
+                waiting.removeFirst().resume()
+            }
+        }
+    }
+
+    private static let exportTurns = ExportTurns()
+
+    /// Why: 並列の export は MediaToolbox の中の dispatch_sync で詰まり、期限が進む間に他のテストの
+    /// AVAssetReader.startReading まで止める（#1819）。fixture の export は 1 本ずつ順番に流す。
+    static func export(_ session: AVAssetExportSession, to url: URL, as fileType: AVFileType) async throws {
+        await exportTurns.acquire()
+        do {
+            try await session.export(to: url, as: fileType)
+        } catch {
+            await exportTurns.release()
+            throw error
+        }
+        await exportTurns.release()
+    }
+
     static func temporaryDirectory() throws -> URL {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("live-mindmap-file-audio-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
@@ -89,7 +125,7 @@ enum FileAudioTestSupport {
             item.value = creationDate as NSString
             session.metadata = [item]
         }
-        try await session.export(to: url, as: .mov)
+        try await export(session, to: url, as: .mov)
     }
 
     private static func writeVideo(_ url: URL, seconds: Int, content: Video, frameRate: Int) async throws {
