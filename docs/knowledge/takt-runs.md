@@ -215,6 +215,10 @@ takt は ABORT で終わったタスクを自動で再投入する（上限 2 �
 
 同じ PR では、チケットの一覧に無い scene テストにも 9 か所の追記が要った。親が足していた Command を子へ移すと、親を通らないテストにも Command が現れる（[マップ面のつなぎ方](map-surface-wiring.md)）。#1898 の「既存のテストを書き換えずに通る」は、Command の出どころを動かさないチケットにだけ書ける。
 
+## deep-research の run は、調査が認められた後でも納品の前に手順の上限で止まることがある。止まったら調査をやり直さず、手元でまとめる
+
+[#1887](https://github.com/daiki-beppu/live-mindmap/issues/1887) の run（`20261103-075117-issue-1887-no-wo-takt-no-deep-5zvyzy`）は、最終確認の段で調査の内容を認められた後、納品の前に手順の上限（15 回）で止まった。文書へのまとめと issue のコメントは手元で行い、npm の空きは `npm view` で確かめ直して閉じた。この run は本体の `.takt/runs/` に `interventions.jsonl` だけが残っていて、止まった段の詳細は後から読めない。止まった直後に、調査の中身を取り出して issue に写す。
+
 ## 出典
 
 - チケット [#1287](https://github.com/daiki-beppu/live-mindmap/issues/1287)、[PR #1292](https://github.com/daiki-beppu/live-mindmap/pull/1292)
@@ -240,3 +244,4 @@ takt は ABORT で終わったタスクを自動で再投入する（上限 2 �
 - 仕様 [#1755](https://github.com/daiki-beppu/live-mindmap/issues/1755) の子 [#1776](https://github.com/daiki-beppu/live-mindmap/issues/1776) の takt の run（`20261031-143340-issue-1776-no-truth-json-ni-no-skmgfu`・`20261031-143724-issue-1776-no-truth-json-ni-no-0es57x`・`20261031-144058-issue-1776-no-truth-json-ni-no-mwyyuv`・`20261101-133733-issue-1776-no-truth-json-ni-no-474pu8`）の trace と reports、[#1772](https://github.com/daiki-beppu/live-mindmap/issues/1772)・[PR #1782](https://github.com/daiki-beppu/live-mindmap/pull/1782) の本文、[補足を作ったとき](../devlog/2026-11-02.md#supplement-spec)
 - [web の CSS から Tailwind を外したときの開発ログ](../devlog/2026-11-02.md#tailwind-removal)、仕様 [#1817](https://github.com/daiki-beppu/live-mindmap/issues/1817)、#1832・#1833 の takt の run と [PR #1841](https://github.com/daiki-beppu/live-mindmap/pull/1841)・[#1853](https://github.com/daiki-beppu/live-mindmap/pull/1853)
 - [会議の画面と見返しのつなぎ方を 1 か所に集めたときの開発ログ](../devlog/2026-11-04.md#map-surface-folds)、仕様 [#1876](https://github.com/daiki-beppu/live-mindmap/issues/1876) の子 #1900・[PR #1904](https://github.com/daiki-beppu/live-mindmap/pull/1904) の差分（takt の run は素材にしていない）
+- 仕様 [#1896](https://github.com/daiki-beppu/live-mindmap/issues/1896) の元の map の子 [#1887](https://github.com/daiki-beppu/live-mindmap/issues/1887) の解決コメント（run の trace と reports は残っていない）、[開発ログ](../devlog/2026-11-04.md#live-acronym)
