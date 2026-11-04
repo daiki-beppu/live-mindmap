@@ -51,7 +51,7 @@ const stripLayout = (layout: SessionLayout.Model): SessionModel["sessionLayout"]
   return rest;
 };
 
-const { foldMapSurface, foldSnapshot, foldEscapeKey, keyHandlers: surfaceKeyHandlers } = surfaceFolds<Model, Message>({
+const { foldMapSurface, foldSnapshot, foldEscapeKey, foldKeyListToggled, keyHandlers: surfaceKeyHandlers } = surfaceFolds<Model, Message>({
   read: (model) => Option.flatMap(model.session, (s) => surfaceOf(model.feed, s)),
   write: (model, surface) => modifyFields(model, { session: Option.map((s: SessionModel) => ({ ...s, mapSurface: MapSurface.toStored(surface) })) }),
   toParentMessage: (message) => Message.GotMapSurfaceMessage({ message }),
@@ -115,14 +115,13 @@ const viewingNotices = (before: Model, result: Return): Return => {
 
 const inert: KeyHandler<Model, Message> = (model) => ({ model });
 const keyListOpen = (model: Model) => Option.exists(model.session, (s) => s.keyList.isOpen);
-const toggledKeyList = (result: Return): Return => ({ ...result, model: modifyFields(result.model, { session: Option.map((s: SessionModel) => ({ ...s, mapSurface: MapSurface.toStored(MapSurface.toggledKeyList({ mode: "live", snapshot: Option.getOrThrow(result.model.feed.snapshot), speakerNames: {}, ...s.mapSurface })) })) }) });
 const toggledCaptions = (model: Model): Model => modifyFields(model, { session: Option.map((s: SessionModel) => ({ ...s, sessionLayout: { ...s.sessionLayout, captionsHidden: !s.sessionLayout.captionsHidden } })) });
 
 const KEY_HANDLERS: Record<KeyId, KeyHandler<Model, Message>> = {
   ...surfaceKeyHandlers,
-  Escape: (model, modifiers) => (keyListOpen(model) ? toggledKeyList(foldKeyListClose(model)) : foldEscapeKey(model, modifiers)),
+  Escape: (model, modifiers) => (keyListOpen(model) ? Update.combine(model, [foldKeyListClose, foldKeyListToggled]) : foldEscapeKey(model, modifiers)),
   C: plainKey((model) => ({ model: toggledCaptions(model) })),
-  "?": plainKey((model) => toggledKeyList(keyListOpen(model) ? foldKeyListClose(model) : foldKeyListOpen(model))),
+  "?": plainKey((model) => Update.combine(model, [keyListOpen(model) ? foldKeyListClose : foldKeyListOpen, foldKeyListToggled])),
   Space: inert, K: inert, J: inert, L: inert, ",": inert, ".": inert, "<": inert, ">": inert, Home: inert, End: inert,
   M: plainKey((model) => ({ model, commands: [RequestSelfPause({ paused: !Option.exists(model.session, (s) => s.sessionLayout.selfPaused !== false) })] })),
 };

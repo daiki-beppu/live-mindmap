@@ -54,6 +54,7 @@ export const surfaceFolds = <Model, Message>(parent: {
   return {
     foldMapSurface,
     foldSnapshot: (model: Model, snapshot: Snapshot) => foldMapSurface(model, MapSurfaceMessage.ChangedSnapshot({ snapshot })),
+    foldKeyListToggled: foldMapSurface(MapSurfaceMessage.ToggledKeyList()),
     foldEscapeKey: Update.foldChild({ update: MapSurface.pressEscapeKey, ...fold }),
     toggleSide,
     keyHandlers,

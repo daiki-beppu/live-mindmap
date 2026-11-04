@@ -266,8 +266,6 @@ export const pressEscapeKey = (model: Model, input: KeyModifiers): Return => upd
 export const pressSideKey = (model: Model, input: KeyModifiers): Return => update(model, Message.PressedSideKey(input));
 export const pressEnterKey = (model: Model, input: KeyModifiers): Return => update(model, Message.PressedEnterKey(input));
 
-export const toggledKeyList = (model: Model): Model => update(model, Message.ToggledKeyList()).model;
-
 export const movedTime = (model: Model): Model => update(model, Message.MovedTime()).model;
 
 const clickedNode = (model: Model, nodeId: string): Return => {
