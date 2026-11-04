@@ -9,6 +9,8 @@ A mind map that AI builds in real time from what is said in Japanese meetings.
 
 live-mindmap listens to your meeting app (Zoom, Google Meet, a webinar in the browser), transcribes it on your Mac, and keeps updating a mind map while people talk. Instead of reading AI minutes after the meeting, everyone discusses while looking at a map the AI updates after each remark.
 
+LIVE, the first part of the name, is a recursive acronym: **L**IVE **I**nstantly **V**isualizes **E**xchanges.
+
 ## How it works
 
 - **Transcribed on your Mac.** Audio from the meeting app and your microphone is captured and transcribed on the Mac. The audio itself does not leave the Mac.
