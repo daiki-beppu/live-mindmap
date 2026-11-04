@@ -24,20 +24,7 @@ import { ObserveAudio } from "./mount.ts";
 
 export const Model = Schema.Struct({
   playback: PlaybackState,
-  mapSurface: Schema.Struct({
-    foldingContext: MapSurface.Model.fields.foldingContext,
-    size: MapSurface.Model.fields.size,
-    nodeHeights: MapSurface.Model.fields.nodeHeights,
-    isMac: MapSurface.Model.fields.isMac,
-    pointer: MapSurface.Model.fields.pointer,
-    nodePress: MapSurface.Model.fields.nodePress,
-    scrollAxisLock: MapSurface.Model.fields.scrollAxisLock,
-    motion: MapSurface.Model.fields.motion,
-    viewing: MapSurface.Model.fields.viewing,
-    camera: MapSurface.Model.fields.camera,
-    gestureScale: MapSurface.Model.fields.gestureScale,
-    idleStamp: MapSurface.Model.fields.idleStamp,
-  }),
+  mapSurface: MapSurface.Stored,
   seekSlider: Slider.Model,
   volumeSlider: Slider.Model,
   rateMenu: Menu.Model,
@@ -74,7 +61,7 @@ const seekSliderInit = (context: Context): Slider.Model => Slider.init({ id: SEE
 const volumeSliderInit = (): Slider.Model => Slider.init({ id: VOLUME_SLIDER_ID, min: 0, max: 1, step: VOLUME_STEP });
 
 export const init = (context: Context, flags: Flags = WIDE): Model => {
-  const { mode: _mode, snapshot: _snapshot, speakerNames: _speakerNames, ...surface } = MapSurface.init(snapshotAt(context.timeline, context.playback.duration), "review", context.isMac);
+  const surface = MapSurface.toStored(MapSurface.init(snapshotAt(context.timeline, context.playback.duration), "review", context.isMac));
   const mapSurface = startingSurface(surface, flags);
   const tooltip = (key: keyof Model["tooltips"]) => Tooltip.init({ id: tooltipId(key), showDelay: 0 });
   const { captions: _captions, captionsHidden: _captionsHidden, ...sessionLayout } = SessionLayout.init();
@@ -109,8 +96,7 @@ type Return = Update.Return<Model, Message>;
 
 export const makeUpdate = (context: Context) => {
   const storeSurface = (model: Model, surface: MapSurface.Model): Model => {
-    const { mode: _mode, snapshot: _snapshot, speakerNames: _speakerNames, ...next } = surface;
-    return modifyFields(model, { mapSurface: () => next });
+    return modifyFields(model, { mapSurface: () => MapSurface.toStored(surface) });
   };
   const { foldMapSurface, foldEscapeKey, toggleSide: toggledSide, keyHandlers: surfaceKeyHandlers } = surfaceFolds<Model, Message>({
     read: (model) => Option.some(surfaceOf(context, model)),
