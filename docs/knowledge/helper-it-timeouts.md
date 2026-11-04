@@ -58,6 +58,8 @@ bash scripts/stress-it.sh 3   # コア数の 1.6 倍の yes を走らせて、IT
 
 [#1819](https://github.com/daiki-beppu/live-mindmap/issues/1819) は、`yes` で CPU を埋めても再現せず、効率コアに寄せると再現する（`STRESS_EFFICIENCY_CORES=1 bash scripts/stress-it.sh`）。`FileReadingAlignmentITTests` が `待っていた条件が成り立たなかった: 2 本とも読み切る` で落ち、全体が止まることもある。原因は製品の読み出しではなく、動画の fixture の並列の `AVAssetExportSession.export` だった。MediaToolbox の中の `dispatch_sync` で詰まり、他のテストの `AVAssetReader.startReading` を止めたまま期限だけが進む。新しい export・動画 fixture は `FileAudioTestSupport.export` を通す。
 
+[#1854](https://github.com/daiki-beppu/live-mindmap/issues/1854) は IT ではなく unit で起きる。`STRESS_UNIT=1 bash scripts/stress-it.sh` で再現する。`RunAudioTests.myRecordingFailureEndsRunWhileMicrophoneIsOpen` など U2 の 3 テストが、16 本の `yes` のもとで 5 秒の `within` を `DeadlineExceeded` で切らし、14 回のうち 3 回落ちた。プールの 10 本はどれも待っておらず、最適化なしのコードを走らせていた。テストの CPU サンプルの 8 割超を `ScreenImageComparison` の画面のテストが占め、スタックの上は `-2...2` のループの generic metadata の検索だった。`HelperCore` を debug でも `-O` でビルドして直した。unit は 24〜27 秒から 1.6〜1.8 秒になり、`within` の最大は 16 本の `yes` で 0.54 秒、32 本でも 0.5 秒以下だった。ループを手で書き直す案は 4.4〜4.9 秒までしか縮まず、32 本で 4 回中 1 回落ちたので退けた。代償として、`HelperCore` を debugger でステップ実行すると行と変数の対応が粗くなる。デバッグするときは手元で `helper/Package.swift` のフラグを外す。
+
 IT・heavy の suite には `.timeLimit` が必須で、無ければ helper の `typecheck`（`checkTestLayers`）が `path:line` で落とす（[PR #1724](https://github.com/daiki-beppu/live-mindmap/pull/1724)）。止まったテストは名前つきで落ちる。期限を延ばすだけで直さない。
 
 ## 出典

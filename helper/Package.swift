@@ -24,7 +24,12 @@ let package = Package(
     ],
     targets: [
         // 純粋なロジック（イベントの形・アプリの選択）と、Core Audio / SpeechAnalyzer / WebSocket の実装
-        .target(name: "HelperCore", dependencies: ["CWebRTCAPM", .product(name: "FluidAudio", package: "FluidAudio")]),
+        // 最適化なしの画面の比較がテスト中に協調スレッドを埋め、他のテストの期限を切らすので、debug でも最適化する（#1854）
+        .target(
+            name: "HelperCore",
+            dependencies: ["CWebRTCAPM", .product(name: "FluidAudio", package: "FluidAudio")],
+            swiftSettings: [.unsafeFlags(["-O"], .when(configuration: .debug))]
+        ),
         // WebRTC AEC3 の C++ を閉じ込め、C の関数だけを公開するシム（Issue #112）
         .target(
             name: "CWebRTCAPM",
