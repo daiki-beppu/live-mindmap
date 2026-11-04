@@ -1,8 +1,9 @@
 import type { Option } from "effect";
 import { Update } from "foldkit";
 import type { ArrowDir, ViewKey } from "../../viewing.ts";
+import type { Snapshot } from "../../../../server/src/core/index.ts";
 import * as MapSurface from "./main.ts";
-import type { Message as MapSurfaceMessage } from "./message.ts";
+import { Message as MapSurfaceMessage } from "./message.ts";
 
 export type KeyHandler<Model, Message> = (model: Model, modifiers: MapSurface.KeyModifiers) => Update.Return<Model, Message>;
 
@@ -25,6 +26,7 @@ export const surfaceFolds = <Model, Message>(parent: {
   readonly toParentMessage: (message: MapSurfaceMessage) => Message;
 }) => {
   const fold = { ...parent, foldOutMessage: () => (model: Model) => ({ model }) };
+  const foldMapSurface = Update.foldChild({ update: MapSurface.update, ...fold });
   const foldViewKey = Update.foldChild({ update: MapSurface.pressViewKey, ...fold });
   const foldArrowKey = Update.foldChild({ update: MapSurface.pressArrowKey, ...fold });
   const foldEnterKey = Update.foldChild({ update: MapSurface.pressEnterKey, ...fold });
@@ -50,7 +52,8 @@ export const surfaceFolds = <Model, Message>(parent: {
     E: plainKey(toggleSide),
   };
   return {
-    foldMapSurface: Update.foldChild({ update: MapSurface.update, ...fold }),
+    foldMapSurface,
+    foldSnapshot: (model: Model, snapshot: Snapshot) => foldMapSurface(model, MapSurfaceMessage.ChangedSnapshot({ snapshot })),
     foldEscapeKey: Update.foldChild({ update: MapSurface.pressEscapeKey, ...fold }),
     toggleSide,
     keyHandlers,

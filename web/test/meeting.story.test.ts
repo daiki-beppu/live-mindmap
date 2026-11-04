@@ -185,18 +185,11 @@ describe("会議中の update: M（自分の休止・再開。Issue #1069）", (
 describe("会議中の update: 反映で点滅の再生し直し（RestartBlink）を出す", () => {
   const first = run([snapshotMessage(FIRST), measured]).model;
 
-  it("測定済みで、反映の番号が変わり、変わったノードがある反映のときだけ出る", () => {
-    expect(names(update(first, snapshotMessage(SECOND)))).toEqual(["RestartBlink"]);
-  });
-
-  it("最初のスナップショット（まだ表示面が無い）・測る前の反映・変わったこと無しの反映・同じ反映の再送・字幕や知らせの frame では出ない", () => {
+  it("最初のスナップショット・変わったこと無しの反映・同じ反映の再送・知らせの frame では出ない", () => {
     expect(names(update(init(false), snapshotMessage(FIRST)))).not.toContain("RestartBlink");
-    const unmeasured = run([snapshotMessage(FIRST)]).model;
-    expect(names(update(unmeasured, snapshotMessage(SECOND)))).not.toContain("RestartBlink");
     const second = run([snapshotMessage(SECOND), measured]).model;
     expect(names(update(second, snapshotMessage(THIRD_QUIET)))).not.toContain("RestartBlink");
     expect(names(update(second, snapshotMessage(SECOND)))).not.toContain("RestartBlink");
-    expect(names(update(first, frameMessage(spokenFrame("字幕。", "相手"))))).not.toContain("RestartBlink");
     expect(names(update(first, frameMessage({ type: "intake", status: "running" })))).not.toContain("RestartBlink");
   });
 

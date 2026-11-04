@@ -1,6 +1,6 @@
 import { Menu, Popover, Slider, Tooltip } from "@foldkit/ui";
 import { Option, Schema } from "effect";
-import { Command, Update } from "foldkit";
+import { Update } from "foldkit";
 import type { Html, HtmlBuilder } from "foldkit/html";
 import { modifyFields } from "foldkit/struct";
 import type { Snapshot } from "../../../../server/src/core/index.ts";
@@ -98,7 +98,7 @@ export const makeUpdate = (context: Context) => {
   const storeSurface = (model: Model, surface: MapSurface.Model): Model => {
     return modifyFields(model, { mapSurface: () => MapSurface.toStored(surface) });
   };
-  const { foldMapSurface, foldEscapeKey, toggleSide: toggledSide, keyHandlers: surfaceKeyHandlers } = surfaceFolds<Model, Message>({
+  const { foldMapSurface, foldSnapshot, foldEscapeKey, toggleSide: toggledSide, keyHandlers: surfaceKeyHandlers } = surfaceFolds<Model, Message>({
     read: (model) => Option.some(surfaceOf(context, model)),
     write: (model, surface) => storeSurface(model, surface),
     toParentMessage: (message) => Message.GotMapSurfaceMessage({ message }),
@@ -159,41 +159,42 @@ export const makeUpdate = (context: Context) => {
     toParentMessage: (message: Menu.Message) => Message.GotRateMenuMessage({ message }),
     foldOutMessage: () => (model: Model) => ({ model }),
   });
-  const reduce = (model: Model, event: PlaybackEvent): Model => {
+  const reduce = (model: Model, event: PlaybackEvent): Return => {
     const playback = playbackReducer(model.playback, event, context.playback);
-    const replaced = modifyFields(model, { playback: () => playback });
     const before = snapshotAt(context.timeline, model.playback.time);
     const after = snapshotAt(context.timeline, playback.time);
-    if (before === after || Option.isNone(model.mapSurface.size)) return replaced;
-    return storeSurface(replaced, MapSurface.changedSnapshot(surfaceOf(context, model), after));
+    const result = before === after ? { model } : foldSnapshot(model, after);
+    return { ...result, model: modifyFields(result.model, { playback: () => playback }) };
   };
   const hasAudio = Option.isSome(context.maybeAudioUrl);
   const moved = (model: Model, event: PlaybackEvent): Return => {
-    const next = reduce(model, event);
-    if (hasAudio && next.playback.time !== model.playback.time) return { model: next, commands: [SeekAudio({ time: next.playback.time })] };
-    return { model: next };
+    const result = reduce(model, event);
+    const next = result.model;
+    if (hasAudio && next.playback.time !== model.playback.time) return { ...result, commands: [...(result.commands ?? []), SeekAudio({ time: next.playback.time })] };
+    return result;
   };
   const toggled = (model: Model): Return => {
-    const next = reduce(model, { type: "toggle" });
-    if (!hasAudio) return { model: next };
-    if (!next.playback.playing) return { model: next, commands: [PauseAudio()] };
+    const result = reduce(model, { type: "toggle" });
+    const next = result.model;
+    if (!hasAudio) return result;
+    if (!next.playback.playing) return { ...result, commands: [...(result.commands ?? []), PauseAudio()] };
     const { rate, muted, volume } = next.playback;
     const play = [WriteAudioSettings({ rate, muted, volume }), PlayAudio()];
-    if (next.playback.time !== model.playback.time) return { model: next, commands: [SeekAudio({ time: next.playback.time }), ...play] };
-    return { model: next, commands: play };
+    if (next.playback.time !== model.playback.time) return { ...result, commands: [...(result.commands ?? []), SeekAudio({ time: next.playback.time }), ...play] };
+    return { ...result, commands: [...(result.commands ?? []), ...play] };
   };
   const heardTime = (model: Model, time: number): Return => {
-    const next = reduce(model, { type: "audioTime", time });
-    if (model.playback.playing && !next.playback.playing) return { model: next, commands: [PauseAudio()] };
-    return { model: next };
+    const result = reduce(model, { type: "audioTime", time });
+    if (model.playback.playing && !result.model.playback.playing) return { ...result, commands: [...(result.commands ?? []), PauseAudio()] };
+    return result;
   };
   const failedPlay = (model: Model, isAborted: boolean): Return =>
-    !isAborted && model.playback.playing ? { model: reduce(model, { type: "toggle" }) } : { model };
+    !isAborted && model.playback.playing ? reduce(model, { type: "toggle" }) : { model };
   const changedSettings = (model: Model, event: PlaybackEvent, extra: ReadonlyArray<ReturnType<typeof ReleaseFocus> | ReturnType<typeof ReleaseFocusAfterMenuClose>> = []): Return => {
-    const next = reduce(model, event);
-    const { rate, muted, volume } = next.playback;
-    const commands = [...(hasAudio ? [WriteAudioSettings({ rate, muted, volume })] : []), ...extra];
-    return commands.length === 0 ? { model: next } : { model: next, commands };
+    const result = reduce(model, event);
+    const { rate, muted, volume } = result.model.playback;
+    const commands = [...(result.commands ?? []), ...(hasAudio ? [WriteAudioSettings({ rate, muted, volume })] : []), ...extra];
+    return commands.length === 0 ? result : { ...result, commands };
   };
   const toggledKeyList = (result: Return): Return => ({ ...result, model: storeSurface(result.model, MapSurface.toggledKeyList(surfaceOf(context, result.model))) });
   const released = (model: Model): Return => ({ model, commands: [ReleaseFocus()] });
@@ -234,9 +235,9 @@ export const makeUpdate = (context: Context) => {
       ClickedPrev: () => byHuman(moved(model, { type: "prev" })),
       ClickedNext: () => byHuman(moved(model, { type: "next" })),
       ClickedToggle: () => byHuman(toggled(model)),
-      TickedFrame: ({ ms }) => ({ model: reduce(model, { type: "elapsed", seconds: ms / 1000 }) }),
+      TickedFrame: ({ ms }) => reduce(model, { type: "elapsed", seconds: ms / 1000 }),
       UpdatedAudioTime: ({ time }) => heardTime(model, time),
-      EndedAudio: () => ({ model: reduce(model, { type: "ended" }) }),
+      EndedAudio: () => reduce(model, { type: "ended" }),
       FailedPlayAudio: ({ isAborted }) => failedPlay(model, isAborted),
       SucceededPlayAudio: () => ({ model }),
       CompletedPauseAudio: () => ({ model }),
@@ -267,16 +268,11 @@ export const makeUpdate = (context: Context) => {
       CompletedReleaseFocus: () => ({ model }),
       CompletedReleaseFocusAfterMenuClose: () => ({ model }),
     });
-  const withBlinkRestart = (model: Model, result: Return): Return => {
-    if (result.model.playback.time === model.playback.time) return result;
-    const restarts = Command.mapMessages(MapSurface.blinkRestartsOf(surfaceOf(context, model), surfaceOf(context, result.model)), (message: MapSurfaceMessage) => Message.GotMapSurfaceMessage({ message }));
-    return restarts.length === 0 ? result : { ...result, commands: [...(result.commands ?? []), ...restarts] };
-  };
   return (model: Model, message: Message): Return => {
     const result = updateOwn(model, message);
     const { mode } = result.model.mapSurface.camera;
-    if (mode === model.mapSurface.camera.mode) return withBlinkRestart(model, result);
-    return withBlinkRestart(model, Update.combine(model, [() => result, (next: Model) => foldViewingMode(next, mode)]));
+    if (mode === model.mapSurface.camera.mode) return result;
+    return Update.combine(model, [() => result, (next: Model) => foldViewingMode(next, mode)]);
   };
 };
 

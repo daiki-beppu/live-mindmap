@@ -5,6 +5,7 @@ import { PauseAudio, PlayAudio, SeekAudio, WriteAudioSettings } from "../src/app
 import { makeContext } from "../src/app/review/context.ts";
 import { init, Model, makeUpdate } from "../src/app/review/main.ts";
 import { Message } from "../src/app/review/message.ts";
+import { Message as SurfaceMessage } from "../src/app/mapSurface/message.ts";
 import { AUDIO_RATE, AUDIO_RATES, initialPlayback, PLAYBACK_RATE, PLAYBACK_RATES } from "../src/reviewPlayback.ts";
 
 // 見返しの録音つきの再生（Issue #824）の update。再生・一時停止・終わり・時刻の同期（書く側）と、録音なしの時計。
@@ -32,6 +33,23 @@ const stateAt = (context: typeof audioContext, time: number, playing: boolean): 
 };
 const summary = (commands: ReadonlyArray<{ name: string; args?: unknown }> | undefined) => (commands ?? []).map((c) => ({ name: c.name, args: c.args }));
 const SETTINGS = { name: "WriteAudioSettings", args: { rate: AUDIO_RATE, muted: false, volume: 1 } };
+
+describe("反映をまたぐ録音の時刻移動", () => {
+  const measuredAt = (time: number, playing: boolean) => audioUpdate(stateAt(audioContext, time, playing), Message.GotMapSurfaceMessage({ message: SurfaceMessage.MeasuredMapSurface({ width: 800, height: 600, nodeHeights: {} }) })).model;
+
+  it("測定済みで前へ戻ると、点滅の再生し直しと音声のシークを両方返す", () => {
+    const result = audioUpdate(measuredAt(30, false), Message.ClickedPrev());
+    expect(result.model.playback.time).toBe(10);
+    expect(summary(result.commands).filter((c) => c.name === "RestartBlink")).toHaveLength(1);
+    expect(summary(result.commands).filter((c) => c.name === "SeekAudio")).toEqual([{ name: "SeekAudio", args: { time: 10 } }]);
+  });
+
+  it("音声の通知が最後の反映をまたいで終端へ届くと、点滅の再生し直しと停止を両方返す", () => {
+    const result = audioUpdate(measuredAt(10, true), Message.UpdatedAudioTime({ time: 30 }));
+    expect(result.model.playback).toMatchObject({ time: 30, playing: false });
+    expect(summary(result.commands).map((c) => c.name).sort()).toEqual(["PauseAudio", "RestartBlink"]);
+  });
+});
 
 describe("録音つきの初期状態と Context", () => {
   it("録音つきは速さ 1 で止まって始まり、速さの並びは AUDIO_RATES", () => {

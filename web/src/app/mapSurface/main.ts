@@ -268,18 +268,34 @@ export const pressEnterKey = (model: Model, input: KeyModifiers): Return => upda
 
 export const toggledKeyList = (model: Model): Model => update(model, Message.ToggledKeyList()).model;
 
-export const blinkRestartsOf = (before: Model, after: Model): ReadonlyArray<ReturnType<typeof RestartBlink>> => {
-  if (after.mode === "still" || Option.isNone(after.size) || before.snapshot.round === after.snapshot.round) return [];
-  return (surfaceOf(after).view?.blink.size ?? 0) > 0 ? [RestartBlink()] : [];
-};
-
-export const changedSnapshot = (model: Model, snapshot: Snapshot): Model => update(model, Message.ChangedSnapshot({ snapshot })).model;
-
 export const movedTime = (model: Model): Model => update(model, Message.MovedTime()).model;
 
 const clickedNode = (model: Model, nodeId: string): Return => {
   const surface = surfaceOf(model);
   return surface.view?.openness[nodeId]?.state === "bundle" ? { model } : { model: applyViewing(model, { type: "select", id: nodeId }, { model, surface }), outMessage: OutMessage.SelectedNode({ nodeId }) };
+};
+
+const replaceSnapshot = (model: Model, snapshot: Snapshot): Model => {
+  const replaced = modifyFields(model, { snapshot: () => snapshot });
+  const unchangedWhileHeld = sameNodes(model.snapshot.nodes, snapshot.nodes) && !sameFoldingContext(model.foldingContext, foldingContextOf(model.snapshot));
+  if (model.mode === "live" && (changedOnlyCriteria(model.snapshot, snapshot) || unchangedWhileHeld)) return replaced;
+  if (sameSnapshot(model.snapshot, snapshot)) return replaced;
+  if (onlyDigressionChanged(model.snapshot, snapshot) && samePositions(surfaceOf(model).seen.targets, surfaceOf(replaced).seen.targets)) return replaced;
+  const refreshed = modifyFields(replaced, { foldingContext: () => foldingContextOf(snapshot) });
+  const previous = { model, surface: surfaceOf(model) };
+  const surface = surfaceOf(refreshed);
+  const reflection = reflectionOf(previous, refreshed, surface);
+  if (reflection !== null) return applyViewing(refreshed, reflection, previous, surface);
+  const selectedSupplement = model.snapshot.nodes.some((node) => node.id === model.viewing.selection?.id && node.kind === "補足");
+  const reconciled = refreshed.mode === "still" || !selectedSupplement ? refreshed : modifyFields(refreshed, {
+    viewing: (state) => relocateSelection(state, relocations({ tree: previous.surface.tree, snapshot: model.snapshot, selectedId: state.selection?.id ?? null }, { tree: surface.tree, snapshot })),
+  });
+  const current = surfaceOf(reconciled);
+  const followed = followTarget(model, reconciled, previous.surface.seen, current);
+  if (snapshot.round === model.snapshot.round && snapshot.currentTopic === model.snapshot.currentTopic && snapshot.lastChanged === model.snapshot.lastChanged
+    && sameNodes(model.snapshot.nodes.filter((n) => n.kind !== "補足"), snapshot.nodes.filter((n) => n.kind !== "補足"))) return followed;
+  const seen = seenAfterMotion(followed, current.seen);
+  return updateCamera(followed, { type: "replacedSnapshot" }, previous.surface.seen, seen);
 };
 
 export const update = (model: Model, message: Message): Return =>
@@ -300,26 +316,10 @@ export const update = (model: Model, message: Message): Return =>
       return { model: updateCamera(followed, { type: "measured", heightsChanged }, previous.seen, seen) };
     },
     ChangedSnapshot: ({ snapshot }) => {
-      const replaced = modifyFields(model, { snapshot: () => snapshot });
-      const unchangedWhileHeld = sameNodes(model.snapshot.nodes, snapshot.nodes) && !sameFoldingContext(model.foldingContext, foldingContextOf(model.snapshot));
-      if (model.mode === "live" && (changedOnlyCriteria(model.snapshot, snapshot) || unchangedWhileHeld)) return { model: replaced };
-      if (sameSnapshot(model.snapshot, snapshot)) return { model: replaced };
-      if (onlyDigressionChanged(model.snapshot, snapshot) && samePositions(surfaceOf(model).seen.targets, surfaceOf(replaced).seen.targets)) return { model: replaced };
-      const refreshed = modifyFields(replaced, { foldingContext: () => foldingContextOf(snapshot) });
-      const previous = { model, surface: surfaceOf(model) };
-      const surface = surfaceOf(refreshed);
-      const reflection = reflectionOf(previous, refreshed, surface);
-      if (reflection !== null) return { model: applyViewing(refreshed, reflection, previous, surface) };
-      const selectedSupplement = model.snapshot.nodes.some((node) => node.id === model.viewing.selection?.id && node.kind === "補足");
-      const reconciled = refreshed.mode === "still" || !selectedSupplement ? refreshed : modifyFields(refreshed, {
-        viewing: (state) => relocateSelection(state, relocations({ tree: previous.surface.tree, snapshot: model.snapshot, selectedId: state.selection?.id ?? null }, { tree: surface.tree, snapshot })),
-      });
-      const current = surfaceOf(reconciled);
-      const followed = followTarget(model, reconciled, previous.surface.seen, current);
-      if (snapshot.round === model.snapshot.round && snapshot.currentTopic === model.snapshot.currentTopic && snapshot.lastChanged === model.snapshot.lastChanged
-        && sameNodes(model.snapshot.nodes.filter((n) => n.kind !== "補足"), snapshot.nodes.filter((n) => n.kind !== "補足"))) return { model: followed };
-      const seen = seenAfterMotion(followed, current.seen);
-      return { model: updateCamera(followed, { type: "replacedSnapshot" }, previous.surface.seen, seen) };
+      const next = replaceSnapshot(model, snapshot);
+      const restarts = next.mode !== "still" && Option.isSome(next.size)
+        && model.snapshot.round !== next.snapshot.round && (surfaceOf(next).view?.blink.size ?? 0) > 0;
+      return restarts ? { model: next, commands: [RestartBlink()] } : { model: next };
     },
     MovedTime: () => pressed(model, { type: "timeMoved" }),
     PressedViewKey: ({ key, metaKey, ctrlKey, altKey }) => pressed(model, { type: "key", key, meta: metaKey, ctrl: ctrlKey, alt: altKey }),
