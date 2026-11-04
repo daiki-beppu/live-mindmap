@@ -291,7 +291,7 @@ struct FileTranscriptionITTests {
     /// mov の映像と音声を、再エンコードせずに mp4 に入れ替える。
     private static func remuxToMP4(_ source: URL, into output: URL) async throws {
         let session = try #require(AVAssetExportSession(asset: AVURLAsset(url: source), presetName: AVAssetExportPresetPassthrough))
-        try await session.export(to: output, as: .mp4)
+        try await FileAudioTestSupport.export(session, to: output, as: .mp4)
     }
 
     /// 無音の WAV の後ろに音のある WAV をつないだ、4 秒の m4a。
@@ -307,7 +307,7 @@ struct FileTranscriptionITTests {
             cursor = CMTimeAdd(cursor, duration)
         }
         let session = try #require(AVAssetExportSession(asset: composition, presetName: AVAssetExportPresetAppleM4A))
-        try await session.export(to: output, as: .m4a)
+        try await FileAudioTestSupport.export(session, to: output, as: .m4a)
         return output
     }
 }

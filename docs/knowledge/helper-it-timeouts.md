@@ -56,6 +56,8 @@ bash scripts/stress-it.sh 3   # コア数の 1.6 倍の yes を走らせて、IT
 
 映像を読む suite を新しく足すなら、同じキューに並ぶので `.serialized` にする。代償として、直列の relay の suite が IT の一番長い道になり、CI の helper の IT は 72.4 秒（それまで 28〜41 秒）になった。短くするなら、その suite の中の引数つきの `textBesideVideoDoesNotStallRecording`・`smallChangeDoesNotStallRecording` から手を付ける。負荷をかけた after の 9 回でも、範囲の外の失敗が残っている（`closingRelayFinishesPendingScreenSends` の止まりは [#1798](https://github.com/daiki-beppu/live-mindmap/issues/1798)、`FileReadingAlignmentITTests` の時間切れは [#1819](https://github.com/daiki-beppu/live-mindmap/issues/1819)）。新しい時間切れを見たら、まずこのスクリプトで再現するかを見る。
 
+[#1819](https://github.com/daiki-beppu/live-mindmap/issues/1819) は、`yes` で CPU を埋めても再現せず、効率コアに寄せると再現する（`STRESS_EFFICIENCY_CORES=1 bash scripts/stress-it.sh`）。`FileReadingAlignmentITTests` が `待っていた条件が成り立たなかった: 2 本とも読み切る` で落ち、全体が止まることもある。原因は製品の読み出しではなく、動画の fixture の並列の `AVAssetExportSession.export` だった。MediaToolbox の中の `dispatch_sync` で詰まり、他のテストの `AVAssetReader.startReading` を止めたまま期限だけが進む。新しい export・動画 fixture は `FileAudioTestSupport.export` を通す。
+
 IT・heavy の suite には `.timeLimit` が必須で、無ければ helper の `typecheck`（`checkTestLayers`）が `path:line` で落とす（[PR #1724](https://github.com/daiki-beppu/live-mindmap/pull/1724)）。止まったテストは名前つきで落ちる。期限を延ばすだけで直さない。
 
 ## 出典
