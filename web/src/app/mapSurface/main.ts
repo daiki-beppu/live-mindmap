@@ -76,6 +76,13 @@ export const Model = Schema.Struct({
 });
 export type Model = typeof Model.Type;
 
+export const Stored = Model.mapFields(Struct.omit(["mode", "snapshot", "speakerNames"]));
+
+export const toStored = (surface: Model): typeof Stored.Type => {
+  const { mode: _mode, snapshot: _snapshot, speakerNames: _speakerNames, ...rest } = surface;
+  return rest;
+};
+
 const IDENTITY: Viewport = { x: 0, y: 0, zoom: 1 };
 
 export const init = (snapshot: Snapshot, mode: Model["mode"], isMac: boolean): Model => ({

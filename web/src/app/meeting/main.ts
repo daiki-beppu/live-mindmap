@@ -19,20 +19,7 @@ import { RequestSelfPause } from "./command.ts";
 import { Message } from "./message.ts";
 
 const Session = Schema.Struct({
-  mapSurface: Schema.Struct({
-    foldingContext: MapSurface.Model.fields.foldingContext,
-    size: MapSurface.Model.fields.size,
-    nodeHeights: MapSurface.Model.fields.nodeHeights,
-    isMac: MapSurface.Model.fields.isMac,
-    pointer: MapSurface.Model.fields.pointer,
-    nodePress: MapSurface.Model.fields.nodePress,
-    scrollAxisLock: MapSurface.Model.fields.scrollAxisLock,
-    motion: MapSurface.Model.fields.motion,
-    viewing: MapSurface.Model.fields.viewing,
-    camera: MapSurface.Model.fields.camera,
-    gestureScale: MapSurface.Model.fields.gestureScale,
-    idleStamp: MapSurface.Model.fields.idleStamp,
-  }),
+  mapSurface: MapSurface.Stored,
   sessionLayout: Schema.Struct({
     captionsHidden: SessionLayout.Model.fields.captionsHidden,
     intake: SessionLayout.Model.fields.intake,
@@ -59,10 +46,6 @@ export const init = (isMac: boolean, { startsNarrow }: Flags = WIDE): Model => (
 
 const surfaceOf = (feed: LiveFeed.Model, session: SessionModel): Option.Option<MapSurface.Model> =>
   Option.map(feed.snapshot, (snapshot) => ({ mode: "live" as const, snapshot, speakerNames: feed.speakerNames, ...session.mapSurface }));
-const stripSurface = (surface: MapSurface.Model): SessionModel["mapSurface"] => {
-  const { mode: _mode, snapshot: _snapshot, speakerNames: _speakerNames, ...rest } = surface;
-  return rest;
-};
 const layoutOf = (feed: LiveFeed.Model, session: SessionModel): SessionLayout.Model => ({ ...session.sessionLayout, captions: { _tag: "Bubbles", bubbles: displayBubbles(feed.captions, feed.captions.clock, feed.speakerNames) } });
 const stripLayout = (layout: SessionLayout.Model): SessionModel["sessionLayout"] => {
   const { captions: _captions, ...rest } = layout;
@@ -71,7 +54,7 @@ const stripLayout = (layout: SessionLayout.Model): SessionModel["sessionLayout"]
 
 const { foldMapSurface, foldEscapeKey, keyHandlers: surfaceKeyHandlers } = surfaceFolds<Model, Message>({
   read: (model) => Option.flatMap(model.session, (s) => surfaceOf(model.feed, s)),
-  write: (model, surface) => modifyFields(model, { session: Option.map((s: SessionModel) => ({ ...s, mapSurface: stripSurface(surface) })) }),
+  write: (model, surface) => modifyFields(model, { session: Option.map((s: SessionModel) => ({ ...s, mapSurface: MapSurface.toStored(surface) })) }),
   toParentMessage: (message) => Message.GotMapSurfaceMessage({ message }),
 });
 
@@ -94,7 +77,7 @@ const received = (model: Model, feed: LiveFeed.Model): Return => {
     if (Option.isNone(feed.snapshot)) return { model: withFeed };
     const surface = startingSurface(MapSurface.init(feed.snapshot.value, "live", model.isMac), { startsNarrow: model.startsNarrow });
     const layout = { ...SessionLayout.init(), captionsHidden: model.startsNarrow };
-    const session: SessionModel = { mapSurface: stripSurface(surface), sessionLayout: stripLayout(layout), keyList: initKeyList() };
+    const session: SessionModel = { mapSurface: MapSurface.toStored(surface), sessionLayout: stripLayout(layout), keyList: initKeyList() };
     const created = modifyFields(withFeed, { session: () => Option.some(session) });
     return Update.combine(created, [
       (m: Model) => foldIntake(m, feed.intake),
@@ -128,7 +111,7 @@ const received = (model: Model, feed: LiveFeed.Model): Return => {
 };
 
 const foldSnapshot = (model: Model, previous: Snapshot, snapshot: Snapshot): Return => ({
-  model: modifyFields(model, { session: Option.map((s: SessionModel) => ({ ...s, mapSurface: stripSurface(MapSurface.changedSnapshot({ mode: "live", snapshot: previous, speakerNames: {}, ...s.mapSurface }, snapshot)) })) }),
+  model: modifyFields(model, { session: Option.map((s: SessionModel) => ({ ...s, mapSurface: MapSurface.toStored(MapSurface.changedSnapshot({ mode: "live", snapshot: previous, speakerNames: {}, ...s.mapSurface }, snapshot)) })) }),
 });
 
 const viewingModeOf = (model: Model) => Option.map(model.session, (s) => s.mapSurface.camera.mode);
@@ -141,7 +124,7 @@ const viewingNotices = (before: Model, result: Return): Return => {
 
 const inert: KeyHandler<Model, Message> = (model) => ({ model });
 const keyListOpen = (model: Model) => Option.exists(model.session, (s) => s.keyList.isOpen);
-const toggledKeyList = (result: Return): Return => ({ ...result, model: modifyFields(result.model, { session: Option.map((s: SessionModel) => ({ ...s, mapSurface: stripSurface(MapSurface.toggledKeyList({ mode: "live", snapshot: Option.getOrThrow(result.model.feed.snapshot), speakerNames: {}, ...s.mapSurface })) })) }) });
+const toggledKeyList = (result: Return): Return => ({ ...result, model: modifyFields(result.model, { session: Option.map((s: SessionModel) => ({ ...s, mapSurface: MapSurface.toStored(MapSurface.toggledKeyList({ mode: "live", snapshot: Option.getOrThrow(result.model.feed.snapshot), speakerNames: {}, ...s.mapSurface })) })) }) });
 const toggledCaptions = (model: Model): Model => modifyFields(model, { session: Option.map((s: SessionModel) => ({ ...s, sessionLayout: { ...s.sessionLayout, captionsHidden: !s.sessionLayout.captionsHidden } })) });
 
 const KEY_HANDLERS: Record<KeyId, KeyHandler<Model, Message>> = {
