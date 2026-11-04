@@ -266,8 +266,6 @@ export const pressEscapeKey = (model: Model, input: KeyModifiers): Return => upd
 export const pressSideKey = (model: Model, input: KeyModifiers): Return => update(model, Message.PressedSideKey(input));
 export const pressEnterKey = (model: Model, input: KeyModifiers): Return => update(model, Message.PressedEnterKey(input));
 
-export const toggledKeyList = (model: Model): Model => update(model, Message.ToggledKeyList()).model;
-
 export const blinkRestartsOf = (before: Model, after: Model): ReadonlyArray<ReturnType<typeof RestartBlink>> => {
   if (after.mode === "still" || Option.isNone(after.size) || before.snapshot.round === after.snapshot.round) return [];
   return (surfaceOf(after).view?.blink.size ?? 0) > 0 ? [RestartBlink()] : [];

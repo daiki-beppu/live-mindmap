@@ -1,4 +1,4 @@
-import { Duration, Schema } from "effect";
+import { Duration, Option, Schema } from "effect";
 import { Command, given, message, model, story } from "foldkit/story";
 import { describe, expect, it } from "vitest";
 import { RESUMED_NOTICE_MS } from "../src/intake.ts";
@@ -112,6 +112,18 @@ describe("会議中の update: キー（会議中の行だけ。見返しのキ�
       const once = run([keyMessage(key)], shown);
       expect(once.model, key).not.toEqual(shown);
       expect(run([keyMessage(key)], once.model).model, key).toEqual(shown);
+    }
+  });
+
+  it("? の開閉と Escape で一覧を閉じるたびに idleStamp が 1 進み、ほかの表示面の状態は変わらない", () => {
+    let current = update(shown, keyMessage("=")).model;
+    expect(Option.getOrThrow(current.session).mapSurface.camera.mode).toBe("manual");
+    for (const [key, isOpen] of [["?", true], ["?", false], ["?", true], ["Escape", false]] as const) {
+      const before = Option.getOrThrow(current.session).mapSurface;
+      current = update(current, keyMessage(key)).model;
+      const session = Option.getOrThrow(current.session);
+      expect(session.keyList.isOpen, key).toBe(isOpen);
+      expect(session.mapSurface, key).toEqual({ ...before, idleStamp: before.idleStamp + 1 });
     }
   });
 });
