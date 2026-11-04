@@ -209,6 +209,12 @@ takt は ABORT で終わったタスクを自動で再投入する（上限 2 �
 
 どちらも、人が完了条件に「ただし次の差分は許す」と書き足すと、次の run で通った。足す・消すと決めたものは、起票の時点で分かっている。差分 0 を求めるチケットは、その一覧を完了条件に並べてから積む。計画が「〜は未確認」と書いたまま進んだら、その行が後で ABORT の理由になる。照合が何を数えるかは [web の CSS](web-css.md) の「computed style を全件比べる道具は…」にある。
 
+## 振る舞いを変えない作り替えのチケットは、落ちると分かるテストを「書き直すテスト」に先に載せる。「落ちるテストが出たら戻す」だけでは素通りされる
+
+[#1900](https://github.com/daiki-beppu/live-mindmap/issues/1900) は見返しの守りを外すチケットで、「外して落ちるテストが出たときだけ、両方の画面に同じ守りを置く」と書いた。[PR #1904](https://github.com/daiki-beppu/live-mindmap/pull/1904) では守りの効果を確かめていた既存の `toEqual` が落ちる（旧テストを今の実装で流して確かめた）。テストは `size`・`nodeHeights` の比較に狭められて守りは戻らず、チケットの一覧にも PR の本文にも記録が無い。書き換え自体は妥当だったが、「落ちるテストが出たら」は、害を示すテストと、消す仕組みの効果を確かめるだけのテストを区別しない。逃げ道の条件は振る舞いで書き（「測った後の表示や点滅が変わるテストが落ちたら」）、判断が要るなら PR の本文に書かせる。
+
+同じ PR では、チケットの一覧に無い scene テストにも 9 か所の追記が要った。親が足していた Command を子へ移すと、親を通らないテストにも Command が現れる（[マップ面のつなぎ方](map-surface-wiring.md)）。#1898 の「既存のテストを書き換えずに通る」は、Command の出どころを動かさないチケットにだけ書ける。
+
 ## 出典
 
 - チケット [#1287](https://github.com/daiki-beppu/live-mindmap/issues/1287)、[PR #1292](https://github.com/daiki-beppu/live-mindmap/pull/1292)
@@ -233,3 +239,4 @@ takt は ABORT で終わったタスクを自動で再投入する（上限 2 �
 - [clone 直後の初回の準備を `pnpm bootstrap` にまとめたとき](../devlog/2026-11-02.md#bootstrap-one-build)、仕様 [#1423](https://github.com/daiki-beppu/live-mindmap/issues/1423) の子の PR #1464・#1490・#1513・#1519
 - 仕様 [#1755](https://github.com/daiki-beppu/live-mindmap/issues/1755) の子 [#1776](https://github.com/daiki-beppu/live-mindmap/issues/1776) の takt の run（`20261031-143340-issue-1776-no-truth-json-ni-no-skmgfu`・`20261031-143724-issue-1776-no-truth-json-ni-no-0es57x`・`20261031-144058-issue-1776-no-truth-json-ni-no-mwyyuv`・`20261101-133733-issue-1776-no-truth-json-ni-no-474pu8`）の trace と reports、[#1772](https://github.com/daiki-beppu/live-mindmap/issues/1772)・[PR #1782](https://github.com/daiki-beppu/live-mindmap/pull/1782) の本文、[補足を作ったとき](../devlog/2026-11-02.md#supplement-spec)
 - [web の CSS から Tailwind を外したときの開発ログ](../devlog/2026-11-02.md#tailwind-removal)、仕様 [#1817](https://github.com/daiki-beppu/live-mindmap/issues/1817)、#1832・#1833 の takt の run と [PR #1841](https://github.com/daiki-beppu/live-mindmap/pull/1841)・[#1853](https://github.com/daiki-beppu/live-mindmap/pull/1853)
+- [会議の画面と見返しのつなぎ方を 1 か所に集めたときの開発ログ](../devlog/2026-11-04.md#map-surface-folds)、仕様 [#1876](https://github.com/daiki-beppu/live-mindmap/issues/1876) の子 #1900・[PR #1904](https://github.com/daiki-beppu/live-mindmap/pull/1904) の差分（takt の run は素材にしていない）
