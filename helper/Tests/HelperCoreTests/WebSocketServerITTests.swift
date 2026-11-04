@@ -59,6 +59,134 @@ private actor Completion {
     }
 }
 
+/// 小さいフレームだけでは、stop より先に送信が完了してしまう。
+private let closingScreenImage = String(repeating: "A", count: 1024 * 1024)
+
+/// 確定する 4 枚の `screen` を出して流れを閉じる。戻り値は届くべきテキスト。
+private func emitClosingScreens(to emitter: ScreenEventEmitter) throws -> [String] {
+    for (time, value) in [(0.0, UInt8(30)), (1, 200), (15, 200), (16, 30), (30, 30), (31, 200), (45, 200)] {
+        emitter.emit(ScreenFrame(luma: [UInt8](repeating: value, count: screenGridWidth * screenGridHeight), time: time, title: "Gmail")) {
+            ScreenShot(image: closingScreenImage, lines: ["Gmail OCR"])
+        }
+    }
+    emitter.close()
+    return try [0.0, 1, 16, 31].map { try HelperEvent.screen(start: $0, image: closingScreenImage, lines: ["Gmail OCR"]).jsonString() }
+}
+
+private enum SlowReaderEnding: Equatable {
+    case endOfStream
+    case endOfStreamMidFrame(unparsedBytes: Int)
+    case socketError(errno: Int32)
+}
+
+private struct SlowReaderOutcome {
+    var texts: [String] = []
+    var closeCode: UInt16?
+    var ending = SlowReaderEnding.endOfStream
+}
+
+/// 少しずつしか読まない WebSocket クライアント。URLSession は先回りして読み切るので、読み残しの不具合が見えない。
+/// 読むたびにスレッドを止めるので、協調スレッドを塞がないように専用のスレッドで動かす。
+private func runSlowReader(port: UInt16) async -> SlowReaderOutcome {
+    await withCheckedContinuation { continuation in
+        Thread.detachNewThread { continuation.resume(returning: readSlowly(port: port)) }
+    }
+}
+
+private func readSlowly(port: UInt16) -> SlowReaderOutcome {
+    var outcome = SlowReaderOutcome()
+    let fd = socket(AF_INET, SOCK_STREAM, 0)
+    guard fd >= 0 else {
+        outcome.ending = .socketError(errno: errno)
+        return outcome
+    }
+    defer { close(fd) }
+    // 期待したものが来なければ、固まらずに失敗として返す
+    var timeout = timeval(tv_sec: 10, tv_usec: 0)
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
+    // 相手が先に閉じていても、close の返事の書き込みでテストのプロセスごと落とさない
+    var noSigpipe: Int32 = 1
+    setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &noSigpipe, socklen_t(MemoryLayout<Int32>.size))
+    var address = sockaddr_in()
+    address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+    address.sin_family = sa_family_t(AF_INET)
+    address.sin_port = port.bigEndian
+    address.sin_addr.s_addr = inet_addr("127.0.0.1")
+    let connected = withUnsafePointer(to: &address) {
+        $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) }
+    }
+    guard connected == 0 else {
+        outcome.ending = .socketError(errno: errno)
+        return outcome
+    }
+    let upgrade = "GET / HTTP/1.1\r\nHost: 127.0.0.1:\(port)\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n"
+    guard writeAll(fd, Array(upgrade.utf8)) else {
+        outcome.ending = .socketError(errno: errno)
+        return outcome
+    }
+
+    var buffer: [UInt8] = []
+    var chunk = [UInt8](repeating: 0, count: 16 * 1024)
+    var upgraded = false
+    while true {
+        let count = recv(fd, &chunk, chunk.count, 0)
+        if count < 0 {
+            outcome.ending = .socketError(errno: errno)
+            return outcome
+        }
+        if count == 0 {
+            outcome.ending = buffer.isEmpty ? .endOfStream : .endOfStreamMidFrame(unparsedBytes: buffer.count)
+            return outcome
+        }
+        buffer.append(contentsOf: chunk[..<count])
+        if !upgraded, let headerEnd = buffer.firstRange(of: Array("\r\n\r\n".utf8)) {
+            buffer.removeFirst(headerEnd.upperBound)
+            upgraded = true
+        }
+        while upgraded, let frame = takeServerFrame(from: &buffer) {
+            switch frame.opcode {
+            case 0x1:
+                outcome.texts.append(String(decoding: frame.payload, as: UTF8.self))
+            case 0x8:
+                if frame.payload.count >= 2 { outcome.closeCode = UInt16(frame.payload[0]) << 8 | UInt16(frame.payload[1]) }
+                _ = writeAll(fd, maskedCloseReply(echoing: frame.payload))
+            default:
+                break
+            }
+        }
+        Thread.sleep(forTimeInterval: 0.002)
+    }
+}
+
+private func writeAll(_ fd: Int32, _ bytes: [UInt8]) -> Bool {
+    var written = 0
+    while written < bytes.count {
+        let count = bytes[written...].withUnsafeBytes { send(fd, $0.baseAddress, $0.count, 0) }
+        if count <= 0 { return false }
+        written += count
+    }
+    return true
+}
+
+/// サーバーのフレームはマスクされない。FIN は立っている前提。揃っていなければ nil。
+private func takeServerFrame(from buffer: inout [UInt8]) -> (opcode: UInt8, payload: [UInt8])? {
+    guard buffer.count >= 2 else { return nil }
+    let shortLength = Int(buffer[1] & 0x7f)
+    let headerSize = shortLength == 126 ? 4 : shortLength == 127 ? 10 : 2
+    guard buffer.count >= headerSize else { return nil }
+    let payloadSize = shortLength < 126 ? shortLength : buffer[2..<headerSize].reduce(0) { $0 << 8 | Int($1) }
+    guard buffer.count >= headerSize + payloadSize else { return nil }
+    let frame = (opcode: buffer[0] & 0x0f, payload: Array(buffer[headerSize..<(headerSize + payloadSize)]))
+    buffer.removeFirst(headerSize + payloadSize)
+    return frame
+}
+
+private func maskedCloseReply(echoing payload: [UInt8]) -> [UInt8] {
+    let mask: [UInt8] = [1, 2, 3, 4]
+    let body = payload.prefix(2).enumerated().map { $0.element ^ mask[$0.offset] }
+    return [0x88, 0x80 | UInt8(body.count)] + mask + body
+}
+
 @Suite("localhost の WebSocket", .timeLimit(.minutes(1)))
 struct WebSocketServerITTests {
     @Test("初回接続では保持枠を表の順に送り、その後に接続前の発言・話者イベントを送信順で届ける")
@@ -199,18 +327,32 @@ struct WebSocketServerITTests {
         }
         defer { receiving.cancel() }
 
-        // 小さいフレームだけでは、送信登録とstopの間に送信が完了してしまう。
-        let image = String(repeating: "A", count: 1024 * 1024)
-        for (time, value) in [(0.0, UInt8(30)), (1, 200), (15, 200), (16, 30), (30, 30), (31, 200), (45, 200)] {
-            emitter.emit(ScreenFrame(luma: [UInt8](repeating: value, count: screenGridWidth * screenGridHeight), time: time, title: "Gmail")) {
-                ScreenShot(image: image, lines: ["Gmail OCR"])
-            }
-        }
-        emitter.close()
+        let expected = try emitClosingScreens(to: emitter)
         await relay.value
         await server.stop()
-        let expected = try [0.0, 1, 16, 31].map { try HelperEvent.screen(start: $0, image: image, lines: ["Gmail OCR"]).jsonString() }
         #expect(try await receiving.value == expected)
+    }
+
+    @Test("読むのが遅いクライアントにも、stop の前に送ったフレームがすべて届き、close コード 1000 で閉じる")
+    func slowReaderReceivesEveryFrameBeforeStopReturns() async throws {
+        let server = WebSocketServer(port: 0)
+        let port = try await server.start()
+        let emitter = ScreenEventEmitter(bundleID: "com.google.Chrome", writeStderr: { _ in })
+        let relay = Task { await relayScreenEvents(emitter.events, to: server) }
+        let reader = Task { await runSlowReader(port: port) }
+        try await waitForClients(server, count: 1)
+
+        let expected = try emitClosingScreens(to: emitter)
+        await relay.value
+        await server.stop()
+
+        let outcome = await reader.value
+        // 比べるのは 1 MB の文字列なので、失敗の出力に全文を出さない
+        let sameTexts = outcome.texts == expected
+        #expect(outcome.texts.count == expected.count)
+        #expect(sameTexts)
+        #expect(outcome.closeCode == 1000)
+        #expect(outcome.ending == .endOfStream)
     }
 
     @Test("仮画像は接続中へ配送し、後続接続には復帰または継続中の最新画面を再送する", arguments: [false, true])
