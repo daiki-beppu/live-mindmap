@@ -66,11 +66,15 @@ describe("キーの一覧の Model: Popover（モーダルでない）で、最�
 });
 
 describe("? でキーの一覧を開閉する（背景を止めない）", () => {
-  it("? で開き、もう一度の ? で閉じる", () => {
-    const start = measured(plainContext, plainUpdate);
-    const opened = plainUpdate(start, keyOf("?")).model;
-    expect(opened.keyList.isOpen).toBe(true);
-    expect(plainUpdate(opened, keyOf("?")).model.keyList.isOpen).toBe(false);
+  it("? の開閉と Escape で一覧を閉じるたびに idleStamp が 1 進み、ほかの表示面の状態は変わらない", () => {
+    let current = plainUpdate(measured(plainContext, plainUpdate), keyOf("=")).model;
+    expect(current.mapSurface.camera.mode).toBe("manual");
+    for (const [key, isOpen] of [["?", true], ["?", false], ["?", true], ["Escape", false]] as const) {
+      const before = current.mapSurface;
+      current = plainUpdate(current, keyOf(key)).model;
+      expect(current.keyList.isOpen, key).toBe(isOpen);
+      expect(current.mapSurface, key).toEqual({ ...before, idleStamp: before.idleStamp + 1 });
+    }
   });
 
   it("開いても、背景を止める Command（InertOthers・LockScroll）は出ない。マップの状態も変わらない", () => {
@@ -79,8 +83,6 @@ describe("? でキーの一覧を開閉する（背景を止めない）", () =>
     const names = commandNames(result.commands);
     expect(names).not.toContain("InertOthers");
     expect(names).not.toContain("LockScroll");
-    // マップの状態は idleStamp（10 秒の計り直し）以外が変わらない
-    expect(result.model.mapSurface).toEqual({ ...start.mapSurface, idleStamp: start.mapSurface.idleStamp + 1 });
     expect(result.model.playback).toEqual(start.playback);
   });
 
@@ -110,7 +112,7 @@ describe("? でキーの一覧を開閉する（背景を止めない）", () =>
 describe("Esc: 速さのメニュー → キーの一覧 → 見る状態 の優先で、閉じるだけ", () => {
   const menuOpened = Message.GotRateMenuMessage({ message: Menu.Message.Opened({ maybeActiveItemIndex: Option.none() }) });
   const selectedOpen = (update: Update, context: Context) => {
-    const selected = withSelection(update, measured(context, update));
+    const selected = withSelection(update, update(measured(context, update), keyOf("=")).model);
     expect(selected.mapSurface.viewing.selection).toBeDefined();
     const listed = update(selected, keyOf("?")).model;
     return update(listed, menuOpened).model;
@@ -124,6 +126,7 @@ describe("Esc: 速さのメニュー → キーの一覧 → 見る状態 の優
     expect(after.rateMenu.isOpen).toBe(false);
     expect(after.keyList.isOpen).toBe(true);
     expect(after.mapSurface.viewing.selection).toBeDefined();
+    expect(after.mapSurface).toEqual(both.mapSurface);
   });
 
   it("続けた 2 回目の Esc は一覧だけを閉じる。選択は残る。3 回目で選択が外れる（同じ Model の上の続き）", () => {
@@ -133,6 +136,7 @@ describe("Esc: 速さのメニュー → キーの一覧 → 見る状態 の優
     expect(second.rateMenu.isOpen).toBe(false);
     expect(second.keyList.isOpen).toBe(false);
     expect(second.mapSurface.viewing.selection).toBeDefined();
+    expect(second.mapSurface).toEqual({ ...first.mapSurface, idleStamp: first.mapSurface.idleStamp + 1 });
     const third = plainUpdate(second, keyOf("Escape")).model;
     expect(third.mapSurface.viewing.selection).toBeUndefined();
     expect(third.keyList.isOpen).toBe(false);
@@ -145,6 +149,8 @@ describe("Esc: 速さのメニュー → キーの一覧 → 見る状態 の優
     const after = plainUpdate(menuOnly, keyOf("Escape")).model;
     expect(after.rateMenu.isOpen).toBe(false);
     expect(after.mapSurface.viewing.selection).toBeDefined();
+    expect(after.keyList.isOpen).toBe(false);
+    expect(after.mapSurface).toEqual(menuOnly.mapSurface);
   });
 
   it("どちらも閉じているときは、表示面の Esc（PressedEscapeKey）と同じ結果になる", () => {

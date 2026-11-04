@@ -98,7 +98,7 @@ export const makeUpdate = (context: Context) => {
   const storeSurface = (model: Model, surface: MapSurface.Model): Model => {
     return modifyFields(model, { mapSurface: () => MapSurface.toStored(surface) });
   };
-  const { foldMapSurface, foldEscapeKey, toggleSide: toggledSide, keyHandlers: surfaceKeyHandlers } = surfaceFolds<Model, Message>({
+  const { foldMapSurface, foldEscapeKey, foldKeyListToggled, toggleSide: toggledSide, keyHandlers: surfaceKeyHandlers } = surfaceFolds<Model, Message>({
     read: (model) => Option.some(surfaceOf(context, model)),
     write: (model, surface) => storeSurface(model, surface),
     toParentMessage: (message) => Message.GotMapSurfaceMessage({ message }),
@@ -195,7 +195,6 @@ export const makeUpdate = (context: Context) => {
     const commands = [...(hasAudio ? [WriteAudioSettings({ rate, muted, volume })] : []), ...extra];
     return commands.length === 0 ? { model: next } : { model: next, commands };
   };
-  const toggledKeyList = (result: Return): Return => ({ ...result, model: storeSurface(result.model, MapSurface.toggledKeyList(surfaceOf(context, result.model))) });
   const released = (model: Model): Return => ({ model, commands: [ReleaseFocus()] });
   const byHuman = (result: Return): Return => ({ ...result, model: storeSurface(result.model, MapSurface.movedTime(surfaceOf(context, result.model))) });
   const toggledCaptions = (model: Model): Model => modifyFields(model, { captionsHidden: (hidden) => !hidden });
@@ -204,7 +203,7 @@ export const makeUpdate = (context: Context) => {
     model.rateMenu.isOpen
       ? foldRateMenuClose(model)
       : model.keyList.isOpen
-        ? toggledKeyList(foldKeyListClose(model))
+        ? Update.combine(model, [foldKeyListClose, foldKeyListToggled])
         : foldEscapeKey(model, modifiers);
   const reviewKey = (action: ReviewKeyAction): KeyHandler<Model, Message> => (model, { metaKey, ctrlKey, altKey }) => {
     const keyEvent = reviewKeyEvent(action, { meta: metaKey, ctrl: ctrlKey, alt: altKey }, model.playback.time, context.playback.duration);
@@ -216,7 +215,7 @@ export const makeUpdate = (context: Context) => {
     ...surfaceKeyHandlers,
     Escape: escapeKey,
     C: plainKey((model) => ({ model: toggledCaptions(model) })),
-    "?": plainKey((model) => toggledKeyList(model.keyList.isOpen ? foldKeyListClose(model) : foldKeyListOpen(model))),
+    "?": plainKey((model) => Update.combine(model, [model.keyList.isOpen ? foldKeyListClose : foldKeyListOpen, foldKeyListToggled])),
     Space: reviewKey("toggle"),
     K: reviewKey("toggle"),
     J: reviewKey("back"),
