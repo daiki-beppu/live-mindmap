@@ -18,12 +18,20 @@ public actor WebSocketServer {
     private let requestedPort: UInt16
     private var listener: NWListener?
     private var clients: [ObjectIdentifier: NWConnection] = [:]
-    private var stopped = false
+    private enum Lifecycle {
+        case running
+        case closing(deadline: Task<Void, Never>)
+        case closed
+    }
+    private var lifecycle = Lifecycle.running
+    private var isRunning: Bool {
+        if case .running = lifecycle { return true }
+        return false
+    }
     /// 最初のクライアントの接続を待っている呼び出し（`waitForClient`）。
     private var clientWaiters: [CheckedContinuation<Void, Never>] = []
-    /// 送信を依頼して、まだ送り終わっていない（`contentProcessed` が来ていない）フレームの数と、その完了を待っている呼び出し（`waitUntilSent`）。
-    private var pendingSends = 0
-    private var sendWaiters: [CheckedContinuation<Void, Never>] = []
+    private var closeWaiters: [CheckedContinuation<Void, Never>] = []
+    private let closeDeadline: Duration
     private let queue = DispatchQueue(label: "live-mindmap.websocket")
     private var retained: [HelperEventRetentionSlot: HelperEvent] = [:]
     /// nil は初回接続済み。全接続が切れても蓄積を再開しない。
@@ -40,8 +48,11 @@ public actor WebSocketServer {
         })
     }
 
-    init(port: UInt16, writeStderr: @escaping @Sendable (String) -> Void) {
+    /// `closeDeadline` は、`stop` が受け手の close の返事を待つ上限。`contentProcessed` はバイトが出ていく前に返り、`cancel` は残りを捨てるので、
+    /// 受け手が読み終えた証拠は close の返事しかない。返事をしない相手でも止まれるように上限を置き、3 秒は server の SIGKILL までの 5 秒（`HELPER_STOP_TIMEOUT_MS`）に収める。
+    init(port: UInt16, closeDeadline: Duration = .seconds(3), writeStderr: @escaping @Sendable (String) -> Void) {
         requestedPort = port
+        self.closeDeadline = closeDeadline
         self.writeStderr = writeStderr
         (messages, messageContinuation) = AsyncStream.makeStream(of: String.self)
     }
@@ -87,9 +98,9 @@ public actor WebSocketServer {
         }
     }
 
-    /// 種類に従って保持し、初回接続前の通常イベントも失わずに届ける。
+    /// 種類に従って保持し、初回接続前の通常イベントも失わずに届ける。`stop` の前に送ったものは `stop` が届くまで待つ。`stop` の後に送ったものは捨てる。
     public func send(_ event: HelperEvent) {
-        guard !stopped, let text = encode(event) else { return }
+        guard isRunning, let text = encode(event) else { return }
         switch event.delivery(retained: retained[.screen]) {
         case .retain(let slot): retained[slot] = event
         case .bufferUntilFirstClient: initialEvents?.append(event)
@@ -113,34 +124,27 @@ public actor WebSocketServer {
 
     /// 録画の読み始めを接続後に揃える。接続済みならすぐ戻り、`stop` でも戻る。
     public func waitForClient() async {
-        if !clients.isEmpty || stopped { return }
+        if !clients.isEmpty || !isRunning { return }
         await withCheckedContinuation { clientWaiters.append($0) }
     }
 
-    /// これまでに送った全フレームが、送り終わる（失敗を含む）まで待つ。`stop` は接続を cancel して送りかけのフレームを捨てうるので、
-    /// 最後のイベントまで届けたい呼び出しは、`stop` の前にこれを待つ。
-    public func waitUntilSent() async {
-        if pendingSends == 0 || stopped { return }
-        await withCheckedContinuation { sendWaiters.append($0) }
-    }
-
     private func send(_ text: String, to connection: NWConnection) {
-        let metadata = NWProtocolWebSocket.Metadata(opcode: .text)
-        let context = NWConnection.ContentContext(identifier: "text", metadata: [metadata])
-        let id = ObjectIdentifier(connection)
-        pendingSends += 1
-        connection.send(content: Data(text.utf8), contentContext: context, isComplete: true, completion: .contentProcessed { [weak self] error in
-            guard let self else { return }
-            Task { await self.sendFinished(id, failed: error != nil) }
-        })
+        enqueue(Data(text.utf8), metadata: NWProtocolWebSocket.Metadata(opcode: .text), identifier: "text", to: connection)
     }
 
-    private func sendFinished(_ id: ObjectIdentifier, failed: Bool) {
-        // `stop` が数を 0 に戻した後に届く完了通知で、数を負にしない
-        guard !stopped else { return }
-        pendingSends -= 1
-        if failed { remove(id) }
-        if pendingSends == 0 { resumeAll(&sendWaiters) }
+    private func sendClose(to connection: NWConnection) {
+        let metadata = NWProtocolWebSocket.Metadata(opcode: .close)
+        metadata.closeCode = .protocolCode(.normalClosure)
+        enqueue(nil, metadata: metadata, identifier: "close", to: connection)
+    }
+
+    private func enqueue(_ content: Data?, metadata: NWProtocolWebSocket.Metadata, identifier: String, to connection: NWConnection) {
+        let context = NWConnection.ContentContext(identifier: identifier, metadata: [metadata])
+        let id = ObjectIdentifier(connection)
+        connection.send(content: content, contentContext: context, isComplete: true, completion: .contentProcessed { [weak self] error in
+            guard let self, error != nil else { return }
+            Task { await self.remove(id) }
+        })
     }
 
     private func resumeAll(_ waiters: inout [CheckedContinuation<Void, Never>]) {
@@ -149,23 +153,44 @@ public actor WebSocketServer {
         for waiter in pending { waiter.resume() }
     }
 
-    /// 待ち受けと全接続を閉じる。以後、新しい接続は受け付けない。
-    public func stop() {
-        stopped = true
+    /// 新しい接続を断り、接続ごとに、それまでに送ったフレームの後ろへ close を送る。全接続が返事をする（または上限が来る）まで戻らない。
+    /// 戻ったとき `clientCount` は 0 で、`messages` は終わっている。同時に呼ぶと同じ閉じ方に相乗りし、閉じた後はすぐ戻る。
+    public func stop() async {
+        if isRunning { beginClosing() }
+        guard case .closing = lifecycle else { return }
+        await withCheckedContinuation { closeWaiters.append($0) }
+    }
+
+    private func beginClosing() {
         listener?.cancel()
         listener = nil
-        for connection in clients.values { connection.cancel() }
-        clients.removeAll()
         initialEvents = nil
-        messageContinuation.finish()
         // 待っている呼び出しは、止まった以上これ以上待てないので戻す
         resumeAll(&clientWaiters)
-        pendingSends = 0
-        resumeAll(&sendWaiters)
+        lifecycle = .closing(deadline: Task {
+            do { try await Task.sleep(for: closeDeadline) } catch { return }
+            giveUpClosing()
+        })
+        for connection in clients.values { sendClose(to: connection) }
+        finishClosingIfDrained()
+    }
+
+    private func giveUpClosing() {
+        guard case .closing = lifecycle else { return }
+        writeStderr("WebSocket: \(clients.count) 件の接続から \(closeDeadline) 待っても close の返事が来なかったので、届いたか確かめずに切る")
+        for id in Array(clients.keys) { remove(id) }
+    }
+
+    private func finishClosingIfDrained() {
+        guard case .closing(let deadline) = lifecycle, clients.isEmpty else { return }
+        deadline.cancel()
+        messageContinuation.finish()
+        lifecycle = .closed
+        resumeAll(&closeWaiters)
     }
 
     private func accept(_ connection: NWConnection) {
-        guard !stopped else { return connection.cancel() }
+        guard isRunning else { return connection.cancel() }
         let id = ObjectIdentifier(connection)
         connection.stateUpdateHandler = { [weak self] state in
             guard let self else { return }
@@ -182,7 +207,7 @@ public actor WebSocketServer {
     }
 
     private func register(_ connection: NWConnection) {
-        guard !stopped else { return connection.cancel() }
+        guard isRunning else { return connection.cancel() }
         clients[ObjectIdentifier(connection)] = connection
         for slot in HelperEventRetentionSlot.allCases {
             if let event = retained[slot], let text = encode(event) { send(text, to: connection) }
@@ -219,6 +244,7 @@ public actor WebSocketServer {
 
     private func remove(_ id: ObjectIdentifier) {
         clients.removeValue(forKey: id)?.cancel()
+        finishClosingIfDrained()
     }
 }
 

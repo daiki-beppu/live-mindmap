@@ -14,9 +14,9 @@ helper のライブのセッション（`cli start` から helper が取り込�
 
 ## 片付けは 5 段。守る順は段の並びで、段の中は順不同
 
-`run()` の片付けは、止める → 流し切る → 送り終わりを待って server を閉じる → 指示の Task を待つ → 失敗を選ぶ、の順に書いてある。段の中の順は守る順ではないので、並べて待ってよい。段の中の順を確かめるテストは足さない。
+`run()` の片付けは、止める → 流し切る → 受け手の受信を確かめて server を閉じる → 指示の Task を待つ → 失敗を選ぶ、の順に書いてある。段の中の順は守る順ではないので、並べて待ってよい。段の中の順を確かめるテストは足さない。
 
-- **送り終わりの待ちは、共有画面の有無によらず段 3 に置く。** 前は共有画面の Task の末尾がついでに `waitUntilSent` を呼んでいただけで、`--no-screen` や画面収録の許可が無い Mac では誰も待たず、止める直前の発言・話者の区間・`self-pause-state` が落ちえた（[#1666](https://github.com/daiki-beppu/live-mindmap/issues/1666)）。送り手の Task の中で待ちを済ませる形に戻さない。
+- **送り終わりの確認は、共有画面の有無によらず段 3 の `stop` が持つ。** 前は共有画面の Task の末尾がついでに送り終わりを待っていただけで、`--no-screen` や画面収録の許可が無い Mac では誰も待たず、止める直前の発言・話者の区間・`self-pause-state` が落ちえた（[#1666](https://github.com/daiki-beppu/live-mindmap/issues/1666)）。送り手の Task の中で待ちを済ませる形に戻さない。
 - **指示の Task は段 3 の後で待つ。** server の受け取りの流れ（`messages`）は server を止めたときにしか終わらないので、逆にするとハングする。
 - **失敗は、本処理 → `相手` の録音 → `自分` の録音の順に最初のものを投げる。** マイクの機器の変化（`MicrophoneError.configurationChanged`、終了コード 75）を録音の失敗で上書きすると、server が起動し直しを失敗として数える。
 
@@ -40,11 +40,16 @@ helper のライブのセッション（`cli start` から helper が取り込�
 
 表は socket なしの unit（`HelperEventDeliveryTests`）、溜め方と接続時の順は本物の server とクライアントの light IT（`WebSocketServerITTests`）が持つ。`LiveSessionITTests` では「後から来たクライアントに残す」を確かめない（同じ壊れ方を 2 つの層で見ない）。
 
-## `waitUntilSent` は「送信の完了のコールバックが返った」までで、受け手が読み終えたことではない。大きなフレームの直後に閉じると届かないことがある
+## `stop` は close の往復で受け手の受信を確かめる。送信の完了のコールバックは受信の証拠にならない
 
-#1666 の実装の run で、server だけを立てて「`origin` → 524,288 文字の発言（JSON で 1,573,025 バイト）→ `waitUntilSent` → `stop`」とすると、未完了の送信が 0 件・完了のコールバックに失敗なしでも、受け手には `origin` しか届かなかった。同じ入力で、受け取った後に `stop` すると届いた。
+`contentProcessed` は、バイトが相手に届く前に返る。その後で `NWConnection.cancel()` を呼ぶと、Network.framework が抱えている残りを捨てて、きれいな FIN を送る。#1666 の実装の run では、未完了の送信が 0 件・完了のコールバックに失敗なしでも、「`origin` → 1,573,025 バイトの発言 → 閉じる」で受け手に `origin` しか届かなかった。[#1798](https://github.com/daiki-beppu/live-mindmap/issues/1798) では、本番のクライアント（node の `ws`）の socket を 300 ms 止めるだけで、1 MB の `screen` 4 枚のうち 3 枚しか届かず、close コードは 1006 だった（6 回中 6 回）。CPU の負荷は要らない。
 
-本物の認識がこの量の発言を作る根拠は無いので、要件にはせず、テストの発言は通常の一文にした（直したとは扱っていない。比べたコードは run の `.takt/close-timing-*` に残したが、worktree とともに消える）。ただし、共有画面の `screen` は JPEG の base64 を載せるので、発言より大きなフレームになる。どの大きさから読み残しが起きるかは測っていない。止める直前の画面が届かない報告が来たら、まずここを疑い、段 3 の待ちを「受け手が読んだ」まで延ばすかを決める。
+今の `stop` は、接続ごとに、送ったフレームの後ろへ close フレーム（1000）を積み、受け手の close の返事が来た接続から閉じる。TCP は順番を保つので、返事が来れば、その前のフレームはすべて読まれている。全接続が閉じると `messages` が終わり、`clientCount` が 0 になって `stop` が戻る。同時に呼んだ `stop` は同じ閉じ方に相乗りする（`main.swift` の signal と本体の経路がそうなる）。閉じている間も `messages` は流れ、`send` は捨てる。
+
+- **ローカルの完了を待つ形に戻さない。** close フレームを `.finalMessage` つきで送って完了を待っても、読むのが遅い相手では 24 回中 3 回、35〜65 KB が落ちた。
+- **返事の上限は 3 秒（`closeDeadline`）。** 返事をしない相手でも、server の SIGKILL までの 5 秒（`HELPER_STOP_TIMEOUT_MS`）に収める。上限が来たら、標準エラーに件数だけを書いて切る。
+- **URLSession は `receive()` を待っている間しか close に返事をしない。** テストで受信を待っていないクライアントを繋いだまま `await server.stop()` すると、上限まで待つ。
+- **URLSession では読み残しの不具合が見えにくい。** 先回りして読み切るからで、`WebSocketServerITTests` の少しずつ読む生の socket のクライアントが、負荷なしで再現する。
 
 ## テストは `LiveSessionITTests`（light IT）に置き、偽の `LiveDevices` は同じファイルの private に置く
 
@@ -58,5 +63,6 @@ helper のライブのセッション（`cli start` から helper が取り込�
 
 - [helper のライブのセッションを差し替えられる module にしたら、止める直前のイベントの欠けが直り、CI の時間切れの 1 つはテスト自身が協調スレッドを塞いでいた話](../devlog/2026-10-28.md#live-session-module)
 - 仕様 [#1639](https://github.com/daiki-beppu/live-mindmap/issues/1639)（Formal Spec のコメントを含む）、親 [#1658](https://github.com/daiki-beppu/live-mindmap/issues/1658)
+- 不具合 [#1798](https://github.com/daiki-beppu/live-mindmap/issues/1798)（close の往復に変えた）
 - チケット [#1665](https://github.com/daiki-beppu/live-mindmap/issues/1665)・[PR #1679](https://github.com/daiki-beppu/live-mindmap/pull/1679)、[#1666](https://github.com/daiki-beppu/live-mindmap/issues/1666)・[PR #1680](https://github.com/daiki-beppu/live-mindmap/pull/1680)、[#1667](https://github.com/daiki-beppu/live-mindmap/issues/1667)・[PR #1683](https://github.com/daiki-beppu/live-mindmap/pull/1683) の差分
 - #1666 の takt の run（`20261027-151836-issue-1666-raibunosesshonwo-li-13zueu`）の plan・implementation-report・coder-decisions
