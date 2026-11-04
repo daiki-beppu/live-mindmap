@@ -1,9 +1,10 @@
 import { HashMap, Option, Schema } from "effect";
-import { given, message, model, story } from "foldkit/story";
+import { Command, given, message, model, story } from "foldkit/story";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Snapshot, type ChangeEntry, type SnapshotNode } from "../../server/src/core/index.ts";
-import { blinkRestartsOf, changedSnapshot, displayedPositions, init, Model, update } from "../src/app/mapSurface/main.ts";
+import { displayedPositions, init, Model, update } from "../src/app/mapSurface/main.ts";
 import { Message } from "../src/app/mapSurface/message.ts";
+import { RestartBlink } from "../src/app/mapSurface/command.ts";
 import * as Meeting from "../src/app/meeting/main.ts";
 import { Message as MeetingMessage } from "../src/app/meeting/message.ts";
 import { Message as LiveFeedMessage } from "../src/app/liveFeed/message.ts";
@@ -153,7 +154,7 @@ describe("補足とカメラ", () => {
     const supplemented: Snapshot = { ...normal, nodes: [...normal.nodes, supplement] };
     let viewport: Viewport;
     story(update, given(settle(tree())),
-      message(changed(normal)), message(tick(1000)),
+      message(changed(normal)), Command.resolve(RestartBlink, Message.CompletedRestartBlink()), message(tick(1000)),
       model((m) => { viewport = m.camera.viewport; }),
       message(changed(supplemented)), message(measure(SIZE, { ...HEIGHTS, s: 2000 })), message(tick(1000)),
       model((m) => expectViewport(m.camera.viewport, viewport)));
@@ -1054,18 +1055,20 @@ describe("差分を見ている間のカメラ", () => {
         nodes: baseNodes().map((n) => n.id === "B" ? { ...n, ...(digression ? { digression: true } : {}), evidence: ["r1", `r${round}`], evidenceRound: round } : n),
         changes: [{ change: "更新", node: "B", kind: "議題", text: "B", round, at: round }],
       });
-      const next = changedSnapshot(current, snapshot);
+      const result = update(current, Message.ChangedSnapshot({ snapshot }));
+      const next = result.model;
       expect(next.camera.viewport).toEqual(start.camera.viewport);
       expect(next.viewing).toEqual(start.viewing);
       expect(cameraViewOf(next)).toEqual(cameraViewOf(start));
       expect(next.snapshot).toEqual(snapshot);
-      expect(blinkRestartsOf(current, next)).toHaveLength(1);
+      expect((result.commands ?? []).filter((c) => c.name === "RestartBlink")).toHaveLength(1);
       current = next;
       for (let repeat = 0; repeat < 2; repeat++) {
         const received = Schema.decodeUnknownSync(Schema.fromJsonString(Snapshot))(JSON.stringify(snapshot));
-        expect(received).not.toBe(current.snapshot);
         expect(received).toEqual(snapshot);
-        current = changedSnapshot(current, received);
+        const repeated = update(current, Message.ChangedSnapshot({ snapshot: received }));
+        expect((repeated.commands ?? []).filter((c) => c.name === "RestartBlink")).toHaveLength(0);
+        current = repeated.model;
         expect(current.snapshot).toEqual(snapshot);
         expect(current.camera.viewport).toEqual(start.camera.viewport);
         expect(current.viewing).toEqual(start.viewing);
@@ -1087,11 +1090,11 @@ describe("差分を見ている間のカメラ", () => {
       nodes: baseNodes().map((n) => n.id === "B" ? { ...n, digression: true } : n),
       changes: [{ change: "更新", node: "B", kind: "議題", text: "B", round: 3, at: 3 }],
     });
-    const marked = changedSnapshot(start, snapshot);
+    const marked = update(start, Message.ChangedSnapshot({ snapshot })).model;
     const received = Schema.decodeUnknownSync(Schema.fromJsonString(Snapshot))(JSON.stringify(snapshot));
-    const repeated = changedSnapshot(marked, received);
+    const repeated = update(marked, Message.ChangedSnapshot({ snapshot: received })).model;
     const edited = { ...received, nodes: received.nodes.map((n) => n.id === "B" ? { ...n, text: "研修先の検討" } : n) };
-    const next = changedSnapshot(repeated, edited);
+    const next = update(repeated, Message.ChangedSnapshot({ snapshot: edited })).model;
     expect(next.snapshot).toEqual(edited);
     expectViewport(next.camera.viewport, changedExpected(next));
     expectDifferent(next.camera.viewport, start.camera.viewport);

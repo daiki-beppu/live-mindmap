@@ -1,6 +1,7 @@
 import type { Option } from "effect";
 import { Update } from "foldkit";
 import type { ArrowDir, ViewKey } from "../../viewing.ts";
+import type { Snapshot } from "../../../../server/src/core/index.ts";
 import * as MapSurface from "./main.ts";
 import { Message as MapSurfaceMessage } from "./message.ts";
 
@@ -52,6 +53,7 @@ export const surfaceFolds = <Model, Message>(parent: {
   };
   return {
     foldMapSurface,
+    foldSnapshot: (model: Model, snapshot: Snapshot) => foldMapSurface(model, MapSurfaceMessage.ChangedSnapshot({ snapshot })),
     foldKeyListToggled: foldMapSurface(MapSurfaceMessage.ToggledKeyList()),
     foldEscapeKey: Update.foldChild({ update: MapSurface.pressEscapeKey, ...fold }),
     toggleSide,

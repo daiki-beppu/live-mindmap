@@ -1,9 +1,8 @@
 import { Popover } from "@foldkit/ui";
 import { Option, Schema } from "effect";
-import { Command, Update } from "foldkit";
+import { Update } from "foldkit";
 import type { Html, HtmlBuilder } from "foldkit/html";
 import { modifyFields } from "foldkit/struct";
-import type { Snapshot } from "../../../../server/src/core/index.ts";
 import { displayBubbles } from "../../captions.ts";
 import { initKeyList, keyListFolds, keyListView } from "../keys/keyList.ts";
 import type { KeyId } from "../keys/table.ts";
@@ -52,7 +51,7 @@ const stripLayout = (layout: SessionLayout.Model): SessionModel["sessionLayout"]
   return rest;
 };
 
-const { foldMapSurface, foldEscapeKey, foldKeyListToggled, keyHandlers: surfaceKeyHandlers } = surfaceFolds<Model, Message>({
+const { foldMapSurface, foldSnapshot, foldEscapeKey, foldKeyListToggled, keyHandlers: surfaceKeyHandlers } = surfaceFolds<Model, Message>({
   read: (model) => Option.flatMap(model.session, (s) => surfaceOf(model.feed, s)),
   write: (model, surface) => modifyFields(model, { session: Option.map((s: SessionModel) => ({ ...s, mapSurface: MapSurface.toStored(surface) })) }),
   toParentMessage: (message) => Message.GotMapSurfaceMessage({ message }),
@@ -97,22 +96,14 @@ const received = (model: Model, feed: LiveFeed.Model): Return => {
   if (before.selfPaused !== feed.selfPaused) steps.push((m) => foldSelfPause(m, feed.selfPaused));
   if (before.diffUpdate !== feed.diffUpdate) steps.push((m) => foldDiffUpdate(m, feed.diffUpdate));
   if (before.local !== feed.local) steps.push((m) => foldSessionMode(m, feed.local));
-  if (Option.isSome(before.snapshot) && Option.isSome(feed.snapshot) && before.snapshot.value !== feed.snapshot.value) {
-    const next: Snapshot = feed.snapshot.value;
-    steps.push((m) => {
-      const oldSurface = Option.getOrThrow(Option.flatMap(model.session, (s) => surfaceOf(before, s)));
-      const reflected = foldSnapshot(m, Option.getOrThrow(before.snapshot), next);
-      const newSurface = Option.getOrThrow(Option.flatMap(reflected.model.session, (s) => surfaceOf(m.feed, s)));
-      const restarts = Command.mapMessages(MapSurface.blinkRestartsOf(oldSurface, newSurface), (message: MapSurfaceMessage) => Message.GotMapSurfaceMessage({ message }));
-      return restarts.length === 0 ? reflected : { ...reflected, commands: [...(reflected.commands ?? []), ...restarts] };
-    });
-  }
-  return viewingNotices(model, Update.combine(withFeed, steps));
+  const reflected = Option.isSome(before.snapshot) && Option.isSome(feed.snapshot) && before.snapshot.value !== feed.snapshot.value
+    ? foldSnapshot(model, feed.snapshot.value)
+    : { model };
+  return viewingNotices(model, Update.combine(model, [
+    () => ({ ...reflected, model: modifyFields(reflected.model, { feed: () => feed }) }),
+    ...steps,
+  ]));
 };
-
-const foldSnapshot = (model: Model, previous: Snapshot, snapshot: Snapshot): Return => ({
-  model: modifyFields(model, { session: Option.map((s: SessionModel) => ({ ...s, mapSurface: MapSurface.toStored(MapSurface.changedSnapshot({ mode: "live", snapshot: previous, speakerNames: {}, ...s.mapSurface }, snapshot)) })) }),
-});
 
 const viewingModeOf = (model: Model) => Option.map(model.session, (s) => s.mapSurface.camera.mode);
 const viewingNotices = (before: Model, result: Return): Return => {

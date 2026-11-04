@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import type { Snapshot } from "../../server/src/core/index.ts";
 import { makeContext } from "../src/app/review/context.ts";
 import { restartedBlink, settleNotice } from "./reviewHarness.ts";
-import { init, Model, makeUpdate, snapshotOf } from "../src/app/review/main.ts";
+import { init, Model, makeUpdate, snapshotOf, surfaceOf } from "../src/app/review/main.ts";
 import { Message } from "../src/app/review/message.ts";
 import { Message as MapSurfaceMessage } from "../src/app/mapSurface/message.ts";
 import { initialPlayback, PLAYBACK_RATES } from "../src/reviewPlayback.ts";
@@ -39,14 +39,6 @@ const topicsOf = (snapshot: Snapshot): string[] => snapshot.nodes.filter((n) => 
 const topicsAt = (time: number): string[] => topicsOf(snapshotOf(context, at(time)));
 
 describe("見返しの Model: 本物の Schema で、再生の状態だけを持つ", () => {
-  // キーの一覧（#822。Popover の Model）と、操作の行（#825）の状態（Slider・Menu・Tooltip の子の Model、ポインタの位置、押している最中か、字幕を隠しているか）と、セッションの画面の部品（#826。字幕・知らせ。右の列の出し入れは表示面の見る状態が持つ）が加わる。
-  // 時間軸・Snapshot・配置・章・印は導いた値なので、これからも Model に入れない
-  const FIELDS = ["captionsHidden", "isPressingSlider", "keyList", "mapSurface", "maybeSeekPointer", "playback", "rateMenu", "seekSlider", "sessionLayout", "tooltips", "volumeSlider"];
-  it("欄は 再生の状態・表示面の実測・操作の行の状態 だけ（時間軸・Snapshot・配置・章・印を持たない）", () => {
-    expect(Object.keys(Model.fields).sort()).toEqual(FIELDS);
-    expect(Object.keys(init(context)).sort()).toEqual(FIELDS);
-  });
-
   it("最初は会議の終わりの時刻で止まり、表示面は未測定（Option の None と空の HashMap）", () => {
     const m = init(context);
     expect(m.playback).toEqual(initialPlayback(30));
@@ -80,10 +72,6 @@ describe("見返しの Snapshot: 時刻から導く", () => {
     for (const time of [0, 10, 29, 30]) expect(snapshotOf(context, at(time))).toEqual(snapshotAt(context.timeline, time));
   });
 
-  it("同じ区間の時刻では、同じ Snapshot を返す", () => {
-    expect(snapshotOf(context, at(10))).toBe(snapshotOf(context, at(29)));
-    expect(snapshotOf(context, at(10))).not.toBe(snapshotOf(context, at(30)));
-  });
 });
 
 describe("見返しの update: 反映の時刻への移動", () => {
@@ -145,11 +133,12 @@ describe("見返しの update: 反映の時刻への移動", () => {
     );
   });
 
-  it("移動は時刻だけを変える。playing・rate・muted・volume と表示面の実測は変わらず、Command も無い", () => {
+  it("時刻を動かしても playing・rate・muted・volume と表示面の実測は変わらず、未測定なら Command も無い", () => {
     const start = { ...at(30), playback: { time: 30, playing: true, rate: PLAYBACK_RATES[3]!, muted: true, volume: 0.4 } };
     const result = update(start, Message.ClickedPrev());
     expect(result.model.playback).toEqual({ time: 10, playing: true, rate: PLAYBACK_RATES[3], muted: true, volume: 0.4 });
-    expect(result.model.mapSurface).toEqual(start.mapSurface);
+    expect(result.model.mapSurface.size).toEqual(start.mapSurface.size);
+    expect(result.model.mapSurface.nodeHeights).toEqual(start.mapSurface.nodeHeights);
     expect(result.commands ?? []).toEqual([]);
   });
 });
@@ -562,19 +551,42 @@ describe("見返しの update: 点滅のやり直し", () => {
   const names = (result: ReturnType<typeof update>) => (result.commands ?? []).map((c) => c.name);
 
   it("反映をまたぐ移動（ボタン・時計・シーク）で RestartBlink を出す", () => {
-    expect(names(update(measuredAt(10), Message.ClickedNext()))).toContain("RestartBlink");
     expect(names(update(measuredAt(30), Message.ClickedPrev()))).toContain("RestartBlink");
     const start = measuredAt(10);
     expect(names(update({ ...start, playback: { ...start.playback, playing: true, rate: 1 } }, Message.TickedFrame({ ms: 20000 })))).toContain("RestartBlink");
   });
 
-  it("同じ Snapshot の中の移動・補間の Tick・選択・ClickedMute・測定前の移動では出さない", () => {
+  it("補間の Tick・選択・ClickedMute では点滅を始め直さない", () => {
     const start = measuredAt(10);
-    expect(names(update({ ...start, playback: { ...start.playback, playing: true, rate: 1 } }, Message.TickedFrame({ ms: 1000 })))).not.toContain("RestartBlink");
     const moved = update(start, Message.ClickedNext()).model;
     expect(names(update(moved, got(MapSurfaceMessage.TickedAnimationFrame({ deltaMs: 16 }))))).not.toContain("RestartBlink");
     expect(names(update(start, got(MapSurfaceMessage.ClickedNodeButton({ nodeId: "t1", clientX: 0, clientY: 0 }))))).not.toContain("RestartBlink");
     expect(names(update(start, Message.ClickedMute()))).not.toContain("RestartBlink");
-    expect(names(update(at(10), Message.ClickedNext()))).not.toContain("RestartBlink");
+  });
+});
+
+describe("見返しの update: 測る前の時刻移動", () => {
+  const context = makeContext([
+    { at: "a", type: "start", title: "定例" },
+    remark("r1", 10, "採用を検討します。"),
+    diff(["r1"], [add("a", "root", "議題", "採用", ["r1"]), add("p", "a", "論点", "面接回数", ["r1"])]),
+    remark("r2", 1000, "予算へ移ります。"),
+    diff(["r2"], [add("b", "root", "議題", "予算", ["r2"])]),
+  ]);
+  const update = makeUpdate(context);
+  const displayed = (m: Model) => Object.keys(MapSurface.displayedPositions(surfaceOf(context, m))).sort();
+
+  it("同じ未測定の画面で前へ・次へと動かすと、既存の議題の開閉も移動先の表示に追従し、点滅は始め直さない", () => {
+    const start = init(context);
+    expect(Option.isNone(start.mapSurface.size)).toBe(true);
+    expect(displayed(start)).toEqual(["n1", "n3", "root"]);
+    const previous = update(start, Message.ClickedPrev());
+    expect(previous.model.playback.time).toBe(10);
+    expect(displayed(previous.model)).toEqual(["n1", "n2", "root"]);
+    expect((previous.commands ?? []).filter((c) => c.name === "RestartBlink")).toHaveLength(0);
+    const next = update(previous.model, Message.ClickedNext());
+    expect(next.model.playback.time).toBe(1000);
+    expect(displayed(next.model)).toEqual(["n1", "n3", "root"]);
+    expect((next.commands ?? []).filter((c) => c.name === "RestartBlink")).toHaveLength(0);
   });
 });

@@ -1,10 +1,11 @@
 import { getBezierPath, getViewportForBounds, Position } from "./fixtures/xyflowReference.ts";
 import { HashMap, Option } from "effect";
-import { attr, expect as expectScene, findAll, given, Mount, scene, selector, Subscription, tap, textContent } from "foldkit/scene";
+import { attr, Command, expect as expectScene, findAll, given, Mount, scene, selector, Subscription, tap, textContent } from "foldkit/scene";
 import { describe, expect, it } from "vitest";
 import { reviewSnapshot, type Op, type Snapshot, type SnapshotNode } from "../../server/src/core/index.ts";
 import { init, Model, update, view } from "../src/app/mapSurface/main.ts";
 import { Message } from "../src/app/mapSurface/message.ts";
+import { RestartBlink } from "../src/app/mapSurface/command.ts";
 import { ObserveMapSurface } from "../src/app/mapSurface/mount.ts";
 import { CLICK_ZOOM_FACTOR, focusViewport, nodeRect, pinchZoomFactor, zoomAtPoint } from "../src/camera.ts";
 import { foldView } from "../src/folding.ts";
@@ -351,6 +352,7 @@ describe("mapSurface の Scene: 畳み（foldView）は live だけ", () => {
     scene(app, given(modelOf(before, "live")), measured(criteriaHeights),
       expectScene(wrapperOf("n2")).toBeAbsent(),
       Subscription.emit(Message.ChangedSnapshot({ snapshot: after })),
+      Command.resolveAll([RestartBlink, Message.CompletedRestartBlink()]),
       expectScene(wrapperOf("n2")).toExist(),
       expectScene(selector('[data-node-id="n2"] .map-node__text')).toHaveText("議論で更新した案"));
   });
@@ -360,6 +362,7 @@ describe("mapSurface の Scene: 畳み（foldView）は live だけ", () => {
     const after = reflect((id) => [{ op: "update", node: "n2", criteria: ["採用のしやすさ"], evidence: [id] }]);
     scene(app, given(modelOf(before, mode)), measured(criteriaHeights),
       Subscription.emit(Message.ChangedSnapshot({ snapshot: after })),
+      Command.resolveAll([RestartBlink, Message.CompletedRestartBlink()]),
       expectScene(wrapperOf("n2")).toExist(),
       expectScene(selector('[data-node-id="n2"] .map-node__criteria-value')).toHaveText("採用のしやすさ"));
   });
@@ -374,8 +377,10 @@ describe("mapSurface の Scene: 畳み（foldView）は live だけ", () => {
     scene(app, given(modelOf(before, "live")), measured(criteriaHeights),
       expectScene(wrapperOf("n2")).toBeAbsent(), expectScene(wrapperOf("n4")).toExist(),
       Subscription.emit(Message.ChangedSnapshot({ snapshot: linked })),
+      Command.resolveAll([RestartBlink, Message.CompletedRestartBlink()]),
       expectScene(wrapperOf("n2")).toBeAbsent(), expectScene(wrapperOf("n4")).toExist(),
       Subscription.emit(Message.ChangedSnapshot({ snapshot: noop })),
+      Command.resolveAll([RestartBlink, Message.CompletedRestartBlink()]),
       expectScene(wrapperOf("n2")).toBeAbsent(), expectScene(wrapperOf("n4")).toExist());
   });
 
@@ -389,9 +394,12 @@ describe("mapSurface の Scene: 畳み（foldView）は live だけ", () => {
     const expected = update(normal, Message.ChangedSnapshot({ snapshot: resumed })).model;
     scene(app, given(modelOf(before, "live")), measured(criteriaHeights),
       Subscription.emit(Message.ChangedSnapshot({ snapshot: linked })),
+      Command.resolveAll([RestartBlink, Message.CompletedRestartBlink()]),
       Subscription.emit(Message.ChangedSnapshot({ snapshot: noop })),
+      Command.resolveAll([RestartBlink, Message.CompletedRestartBlink()]),
       expectScene(wrapperOf("n2")).toBeAbsent(),
       Subscription.emit(Message.ChangedSnapshot({ snapshot: resumed })),
+      Command.resolveAll([RestartBlink, Message.CompletedRestartBlink()]),
       expectScene(wrapperOf("n2")).toExist(),
       tap(({ html }) => expectNumbers(viewportTransform(html), [expected.camera.viewport.x, expected.camera.viewport.y, expected.camera.viewport.zoom])));
   });
@@ -406,6 +414,7 @@ describe("mapSurface の Scene: 畳み（foldView）は live だけ", () => {
     expect(after.nodes.find((n) => n.id === "n3")?.talkStatus).toBe("済み");
     scene(app, given(modelOf(before, "live")), measured(criteriaHeights),
       Subscription.emit(Message.ChangedSnapshot({ snapshot: after })),
+      Command.resolveAll([RestartBlink, Message.CompletedRestartBlink()]),
       expectScene(wrapperOf("n2")).toExist(), expectScene(wrapperOf("n4")).toBeAbsent());
   });
 
@@ -422,6 +431,7 @@ describe("mapSurface の Scene: 畳み（foldView）は live だけ", () => {
     scene(app, given(modelOf(before, "live")), measured(heights),
       expectScene(wrapperOf("A1")).toBeAbsent(), expectScene(wrapperOf("B1")).toExist(),
       Subscription.emit(Message.ChangedSnapshot({ snapshot: after })),
+      Command.resolveAll([RestartBlink, Message.CompletedRestartBlink()]),
       expectScene(wrapperOf("A1")).toBeAbsent(), expectScene(wrapperOf("B1")).toExist(),
       tap(({ html }) => {
         const positions = layout(foldView(before, undefined, null).nodes, heights);
