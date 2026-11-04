@@ -149,8 +149,7 @@ public final class LiveSession {
         await monitorTask?.value
         do { try await audio.finish() } catch { recordingFailure = error }
 
-        // 3. 送り終わりを待って閉じる。画面の有無によらない。
-        await server.waitUntilSent()
+        // 3. 受け手の受信を確かめて閉じる。画面の有無によらない。
         await server.stop()
 
         // 4. 指示の流れは server を閉じて初めて終わる。

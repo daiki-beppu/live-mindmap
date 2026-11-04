@@ -188,8 +188,6 @@ private func transcribeFile(file: String, selfFile: String?, port: UInt16, audio
     } catch {
         failure = error
     }
-    // 最後のイベントまで届けてから止める（stop は接続を cancel して、送りかけのフレームを捨てうる）
-    await server.waitUntilSent()
     await server.stop()
     if let failure { throw failure }
 }

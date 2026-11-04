@@ -46,23 +46,9 @@ private final class SendDiagnostics: @unchecked Sendable {
     }
 }
 
-/// 別 Task で動く待ちが終わったかを、期限付きで確かめるための印
-private actor Completion {
-    private(set) var done = false
-    func mark() { done = true }
-
-    /// 終わるまで、最大 `seconds` 秒待つ。終われば true
-    func finishes(within seconds: Double) async -> Bool {
-        let deadline = ContinuousClock.now + .seconds(seconds)
-        while !done, ContinuousClock.now < deadline { try? await Task.sleep(for: .milliseconds(20)) }
-        return done
-    }
-}
-
 /// 小さいフレームだけでは、stop より先に送信が完了してしまう。
 private let closingScreenImage = String(repeating: "A", count: 1024 * 1024)
 
-/// 確定する 4 枚の `screen` を出して流れを閉じる。戻り値は届くべきテキスト。
 private func emitClosingScreens(to emitter: ScreenEventEmitter) throws -> [String] {
     for (time, value) in [(0.0, UInt8(30)), (1, 200), (15, 200), (16, 30), (30, 30), (31, 200), (45, 200)] {
         emitter.emit(ScreenFrame(luma: [UInt8](repeating: value, count: screenGridWidth * screenGridHeight), time: time, title: "Gmail")) {
@@ -87,13 +73,13 @@ private struct SlowReaderOutcome {
 
 /// 少しずつしか読まない WebSocket クライアント。URLSession は先回りして読み切るので、読み残しの不具合が見えない。
 /// 読むたびにスレッドを止めるので、協調スレッドを塞がないように専用のスレッドで動かす。
-private func runSlowReader(port: UInt16) async -> SlowReaderOutcome {
+private func runSlowReader(port: UInt16, answersClose: Bool = true) async -> SlowReaderOutcome {
     await withCheckedContinuation { continuation in
-        Thread.detachNewThread { continuation.resume(returning: readSlowly(port: port)) }
+        Thread.detachNewThread { continuation.resume(returning: readSlowly(port: port, answersClose: answersClose)) }
     }
 }
 
-private func readSlowly(port: UInt16) -> SlowReaderOutcome {
+private func readSlowly(port: UInt16, answersClose: Bool) -> SlowReaderOutcome {
     var outcome = SlowReaderOutcome()
     let fd = socket(AF_INET, SOCK_STREAM, 0)
     guard fd >= 0 else {
@@ -101,7 +87,6 @@ private func readSlowly(port: UInt16) -> SlowReaderOutcome {
         return outcome
     }
     defer { close(fd) }
-    // 期待したものが来なければ、固まらずに失敗として返す
     var timeout = timeval(tv_sec: 10, tv_usec: 0)
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
     // 相手が先に閉じていても、close の返事の書き込みでテストのプロセスごと落とさない
@@ -149,7 +134,7 @@ private func readSlowly(port: UInt16) -> SlowReaderOutcome {
                 outcome.texts.append(String(decoding: frame.payload, as: UTF8.self))
             case 0x8:
                 if frame.payload.count >= 2 { outcome.closeCode = UInt16(frame.payload[0]) << 8 | UInt16(frame.payload[1]) }
-                _ = writeAll(fd, maskedCloseReply(echoing: frame.payload))
+                if answersClose { _ = writeAll(fd, maskedCloseReply(echoing: frame.payload)) }
             default:
                 break
             }
@@ -179,6 +164,11 @@ private func takeServerFrame(from buffer: inout [UInt8]) -> (opcode: UInt8, payl
     let frame = (opcode: buffer[0] & 0x0f, payload: Array(buffer[headerSize..<(headerSize + payloadSize)]))
     buffer.removeFirst(headerSize + payloadSize)
     return frame
+}
+
+private func stopAndCountClients(_ server: WebSocketServer) async -> Int {
+    await server.stop()
+    return await server.clientCount
 }
 
 private func maskedCloseReply(echoing payload: [UInt8]) -> [UInt8] {
@@ -295,18 +285,6 @@ struct WebSocketServerITTests {
         #expect(diagnostics.text.contains("partial"))
     }
 
-    @Test("初回接続前の蓄積があってもwaitUntilSentは接続を待たずに戻る")
-    func bufferedEventsDoNotBlockWaitUntilSent() async throws {
-        let server = WebSocketServer(port: 0)
-        _ = try await server.start()
-        defer { Task { await server.stop() } }
-        await server.send(markerEvent())
-        let completion = Completion()
-        let waiting = Task { await server.waitUntilSent(); await completion.mark() }
-        defer { waiting.cancel() }
-        #expect(await completion.finishes(within: 5))
-    }
-
     @Test("closeで確定した保留画像は、配送タスク完了直後にサーバーを止めても最後まで届く")
     func closingRelayFinishesPendingScreenSends() async throws {
         let server = WebSocketServer(port: 0)
@@ -323,6 +301,8 @@ struct WebSocketServerITTests {
         let receiving = Task {
             var received: [String] = []
             for _ in 0..<4 { received.append(try await receiveText(client)) }
+            // URLSession は受信を待っている間しか close に返事をしない
+            _ = try? await client.receive()
             return received
         }
         defer { receiving.cancel() }
@@ -331,9 +311,10 @@ struct WebSocketServerITTests {
         await relay.value
         await server.stop()
         #expect(try await receiving.value == expected)
+        #expect(client.closeCode == .normalClosure)
     }
 
-    @Test("読むのが遅いクライアントにも、stop の前に送ったフレームがすべて届き、close コード 1000 で閉じる")
+    @Test("読むのが遅いクライアントにも、stop の前に送ったフレームがすべて届き、close コード 1000 で閉じてから、同時に呼んだ stop がどちらも戻る")
     func slowReaderReceivesEveryFrameBeforeStopReturns() async throws {
         let server = WebSocketServer(port: 0)
         let port = try await server.start()
@@ -344,7 +325,10 @@ struct WebSocketServerITTests {
 
         let expected = try emitClosingScreens(to: emitter)
         await relay.value
-        await server.stop()
+        async let firstClientCount = stopAndCountClients(server)
+        async let secondClientCount = stopAndCountClients(server)
+        #expect(await firstClientCount == 0)
+        #expect(await secondClientCount == 0)
 
         let outcome = await reader.value
         // 比べるのは 1 MB の文字列なので、失敗の出力に全文を出さない
@@ -353,6 +337,21 @@ struct WebSocketServerITTests {
         #expect(sameTexts)
         #expect(outcome.closeCode == 1000)
         #expect(outcome.ending == .endOfStream)
+    }
+
+    @Test("close に返事をしないクライアントがいても、stop は上限で諦めたことを診断へ書いて戻る")
+    func stopGivesUpOnClientThatNeverAnswersClose() async throws {
+        let diagnostics = SendDiagnostics()
+        let server = WebSocketServer(port: 0, closeDeadline: .milliseconds(200), writeStderr: { diagnostics.write($0) })
+        let port = try await server.start()
+        let reader = Task { await runSlowReader(port: port, answersClose: false) }
+        try await waitForClients(server, count: 1)
+
+        await server.stop()
+
+        #expect(await server.clientCount == 0)
+        #expect(diagnostics.text.contains("close の返事が来なかった"))
+        #expect(await reader.value.closeCode == 1000)
     }
 
     @Test("仮画像は接続中へ配送し、後続接続には復帰または継続中の最新画面を再送する", arguments: [false, true])
@@ -609,10 +608,12 @@ struct WebSocketServerITTests {
         task.resume()
         defer { task.cancel(with: .goingAway, reason: nil) }
         try await waitForClients(server, count: 1)
+        // URLSession は受信を待っている間しか close に返事をしない
+        let pending = Task { try await task.receive() }
 
         await server.stop()
         #expect(await server.clientCount == 0)
-        await #expect(throws: (any Error).self) { try await task.receive() }
+        await #expect(throws: (any Error).self) { try await pending.value }
     }
 
     // Issue #1069: server から helper への最初の指示。受信したテキストを messages に流す
@@ -658,29 +659,5 @@ struct WebSocketServerITTests {
         task.resume()
         defer { task.cancel(with: .goingAway, reason: nil) }
         #expect(try await receiveText(task) == resumed.jsonString())
-    }
-
-    @Test("stop の後は、遅れて届く送信完了の通知があっても、waitUntilSent がすぐ戻る")
-    func waitUntilSentReturnsAfterStop() async throws {
-        let server = WebSocketServer(port: 0)
-        let port = try await server.start()
-        defer { Task { await server.stop() } }
-
-        let task = URLSession.shared.webSocketTask(with: URL(string: "ws://127.0.0.1:\(port)")!)
-        task.resume()
-        defer { task.cancel(with: .goingAway, reason: nil) }
-        try await waitForClients(server, count: 1)
-        // 送った直後に stop する。送信完了の通知は stop の前にも後にも届きうる（どちらに転ぶかは環境しだいなので、前提にしない）
-        await server.send(markerEvent())
-        let beforeStop = Completion()
-        Task { await server.waitUntilSent(); await beforeStop.mark() }
-        await server.stop()
-        #expect(await beforeStop.finishes(within: 5))
-        for _ in 0..<3 {
-            let afterStop = Completion()
-            Task { await server.waitUntilSent(); await afterStop.mark() }
-            #expect(await afterStop.finishes(within: 5))
-            try await Task.sleep(for: .milliseconds(200))
-        }
     }
 }
