@@ -1,4 +1,4 @@
-import type { Option } from "effect";
+import { Option } from "effect";
 import { Update } from "foldkit";
 import type { ArrowDir, ViewKey } from "../../viewing.ts";
 import type { Snapshot } from "../../../../server/src/core/index.ts";
@@ -24,6 +24,7 @@ export const surfaceFolds = <Model, Message>(parent: {
   readonly read: (model: Model) => Option.Option<MapSurface.Model>;
   readonly write: (model: Model, surface: MapSurface.Model) => Model;
   readonly toParentMessage: (message: MapSurfaceMessage) => Message;
+  readonly onViewingMode: (model: Model, mode: MapSurface.Model["camera"]["mode"]) => Update.Return<Model, Message>;
 }) => {
   const fold = { ...parent, foldOutMessage: () => (model: Model) => ({ model }) };
   const foldMapSurface = Update.foldChild({ update: MapSurface.update, ...fold });
@@ -52,6 +53,12 @@ export const surfaceFolds = <Model, Message>(parent: {
     E: plainKey(toggleSide),
   };
   return {
+    withViewingNotice: (before: Model, result: Update.Return<Model, Message>): Update.Return<Model, Message> => {
+      const was = parent.read(before);
+      const now = parent.read(result.model);
+      if (Option.isNone(was) || Option.isNone(now) || was.value.camera.mode === now.value.camera.mode) return result;
+      return Update.combine(before, [() => result, (model: Model) => parent.onViewingMode(model, now.value.camera.mode)]);
+    },
     foldMapSurface,
     foldSnapshot: (model: Model, snapshot: Snapshot) => foldMapSurface(model, MapSurfaceMessage.ChangedSnapshot({ snapshot })),
     foldKeyListToggled: foldMapSurface(MapSurfaceMessage.ToggledKeyList()),

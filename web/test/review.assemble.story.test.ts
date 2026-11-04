@@ -20,8 +20,6 @@ const seekTo = (direction: "Min" | "Max", value: number) => Message.GotSeekSlide
 const wheel = (deltaY: number) => surface(MapSurfaceMessage.WheeledMapSurface({ x: 0, y: 0, deltaX: 0, deltaY, deltaMode: 0, shiftKey: false, ctrlKey: false, metaKey: false, timeStamp: 0 }));
 
 const MANUAL = "動かしています・議題が変わるか Esc で今の議題へ・? でキー一覧";
-const DIFF = "変わったところを見ています・Esc で戻る・? でキー一覧";
-const OVERVIEW = "全体を見ています・F で変わったところへ・Esc で戻る・? でキー一覧";
 
 type Context = typeof plainContext;
 type App = typeof plainApp;
@@ -150,45 +148,14 @@ describe("見る状態の知らせは、どの入口で mode が変わっても�
   const settle = settleNotice<Model, Message>;
   const noticeOf = (m: Model): string | null => Option.getOrNull(shownText(m.sessionLayout.viewingToast));
 
-  it("最初は出ていない。キーで拡大すると『動かしています』、F で『全体を見ています』、時刻を動かすボタンで消える", () => {
+  it("手動の知らせを表示した後、時刻を動かすボタンで自動に戻り知らせが消える", () => {
     story(
       update,
       given(measured(plainContext, 150)),
-      model((m) => expect(noticeOf(m)).toBeNull()),
       message(keyOf("=")),
       settle,
       model((m) => expect(noticeOf(m)).toBe(MANUAL)),
-      message(keyOf("F")),
-      settle,
-      model((m) => expect(noticeOf(m)).toBe(OVERVIEW)),
       message(Message.ClickedPrev()),
-      settle,
-      model((m) => expect(noticeOf(m)).toBeNull()),
-    );
-  });
-
-  it("F を 2 回押すと『変わったところを見ています』に入れ替わり、時刻を動かすボタンで消える。Esc でも消える", () => {
-    story(
-      update,
-      given(measured(plainContext, 150)),
-      message(keyOf("F")),
-      settle,
-      model((m) => expect(noticeOf(m)).toBe(OVERVIEW)),
-      message(keyOf("F")),
-      settle,
-      model((m) => {
-        expect(m.mapSurface.camera.mode).toBe("diff");
-        expect(noticeOf(m)).toBe(DIFF);
-      }),
-      message(Message.ClickedPrev()),
-      settle,
-      model((m) => expect(noticeOf(m)).toBeNull()),
-      message(keyOf("F")),
-      settle,
-      message(keyOf("F")),
-      settle,
-      model((m) => expect(noticeOf(m)).toBe(DIFF)),
-      message(keyOf("Escape")),
       settle,
       model((m) => {
         expect(m.mapSurface.camera.mode).toBe("auto");
@@ -216,19 +183,20 @@ describe("見る状態の知らせは、どの入口で mode が変わっても�
     );
   });
 
-  it("シークバーで時刻を動かしても消える。同じ mode の間は文を入れ替えない", () => {
+  it("シークバーで時刻を動かすと自動に戻り、表示していた知らせが消える", () => {
     story(
       update,
       given(measured(plainContext, 150)),
       message(keyOf("=")),
       settle,
-      message(keyOf("-")),
-      settle,
       model((m) => expect(noticeOf(m)).toBe(MANUAL)),
       message(seekTo("Max", 150)),
       restartedBlink,
       settle,
-      model((m) => expect(noticeOf(m)).toBeNull()),
+      model((m) => {
+        expect(m.mapSurface.camera.mode).toBe("auto");
+        expect(noticeOf(m)).toBeNull();
+      }),
     );
   });
 

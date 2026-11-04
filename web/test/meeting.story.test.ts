@@ -7,6 +7,7 @@ import { RestartBlink } from "../src/app/mapSurface/command.ts";
 import { Message as MapSurfaceMessage } from "../src/app/mapSurface/message.ts";
 import { spokenFrame } from "./fixtures/captions.ts";
 import { Model as MeetingModel } from "../src/app/meeting/main.ts";
+import { shownText } from "../src/app/sessionLayout/toast.ts";
 import {
   connectedMessage,
   disconnectedMessage,
@@ -16,6 +17,7 @@ import {
   HEIGHTS,
   init,
   keyMessage,
+  MANUAL,
   SECOND,
   settleStory,
   SIZE,
@@ -37,6 +39,40 @@ const measured = surfaceMessage(MapSurfaceMessage.MeasuredMapSurface({ ...SIZE, 
 // 続けて流して、最後の update の結果を返す（途中の Command は読み捨てる。Model の組み立て用）
 const run = (messages: ReadonlyArray<MeetingMessage>, from: Model = init(false)): { model: Model; commands?: ReadonlyArray<{ name: string }> } =>
   messages.reduce<{ model: Model; commands?: ReadonlyArray<{ name: string }> }>((acc, next) => update(acc.model, next), { model: from });
+
+describe("会議中の update: 見る mode の知らせ", () => {
+  const noticeOf = (m: Model) => Option.getOrNull(shownText(Option.getOrThrow(m.session).sessionLayout.viewingToast));
+
+  it("セッションのない画面に最初の frame が届くとセッションができ、見る mode の知らせは出ない", () => {
+    story(
+      update,
+      given(init(false)),
+      model((m) => expect(Option.isNone(m.session)).toBe(true)),
+      message(snapshotMessage(FIRST)),
+      settleStory,
+      model((m) => {
+        expect(Option.isSome(m.session)).toBe(true);
+        expect(noticeOf(m)).toBeNull();
+      }),
+    );
+  });
+
+  it("手動の知らせを表示した後、今の議題が変わる反映で自動に戻り知らせが消える", () => {
+    story(
+      update,
+      given(run([snapshotMessage(FIRST), measured]).model),
+      message(keyMessage("=")),
+      settleStory,
+      model((m) => expect(noticeOf(m)).toBe(MANUAL)),
+      message(snapshotMessage(SECOND)),
+      settleStory,
+      model((m) => {
+        expect(Option.getOrThrow(m.session).mapSurface.camera.mode).toBe("auto");
+        expect(noticeOf(m)).toBeNull();
+      }),
+    );
+  });
+});
 
 describe("会議中の update: Model は本物の Schema に通る", () => {
   it("初期の Model と、受信・測定・キーを続けて流した後の Model は、Model の Schema に通る", () => {
