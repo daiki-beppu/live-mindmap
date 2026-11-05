@@ -7,9 +7,9 @@ import { readyManagedDeps } from "./fixtures/readyManagedDeps.ts";
 import { unusedApple } from "./fixtures/appleIntelligence.ts";
 import { defaultClaude } from "../src/modelSelection.ts";
 import { DiffUpdatePaused, type DiffUpdateFrame, DiffUpdater, type Op } from "../src/core/index.ts";
-import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { describe, expect, it, vi } from "@effect/vitest";
 import { NodeHttpClient, NodeServices } from "@effect/platform-node";
 import { HttpClient, type HttpClientRequest } from "effect/http";
@@ -34,6 +34,7 @@ import { fakeTunnel, FAKE_TUNNEL_HOST } from "./fixtures/tunnel.ts";
 import { fakeScreenJpeg } from "./fixtures/screenJpeg.ts";
 import { updaterLayer } from "./fixtures/sessionLayers.ts";
 import { connect } from "./fixtures/wsClient.ts";
+import { runCliEntry } from "./fixtures/cliEntry.ts";
 
 const apps = [{ bundleID: "us.zoom.xos", name: "zoom.us" }];
 
@@ -115,6 +116,62 @@ const resourceWithFakeHelpers = Effect.fnUntraced(function* (attempts: AttemptSc
       { method, headers: { "content-type": "application/json", ...(origin === undefined ? {} : { origin }) }, ...(body === undefined ? {} : { body }) },
     ),
   };
+});
+
+describe("セッションのディスク失敗の HTTP・CLI 応答", () => {
+  const resource = Effect.fnUntraced(function* () {
+    const r = yield* resourceWithFakeHelpers([{}]);
+    const responses: { status: number; body: unknown }[] = [];
+    const observedClient = Layer.effect(HttpClient.HttpClient, Effect.map(HttpClient.HttpClient, (client) =>
+      HttpClient.tap(client, (response) => Effect.gen(function* () {
+        const body = yield* response.json;
+        responses.push({ status: response.status, body });
+      })),
+    )).pipe(Layer.provide(NodeHttpClient.layerUndici));
+    const cliLayer = Layer.mergeAll(
+      NodeServices.layer, unusedApple, forbiddenManagedDeps, observedClient,
+      fakeExportServices(), fakeScreenJpeg().layer,
+      ConfigProvider.layer(ConfigProvider.fromEnvRecord({
+        HOME: join(dirname(r.sessionsDir), "home"), LIVE_MINDMAP_CONFIG: join(dirname(r.sessionsDir), "absent.config.json"),
+        LIVE_MINDMAP_SESSIONS: r.sessionsDir, LIVE_MINDMAP_PORT: String(r.server.port),
+        LIVE_MINDMAP_MODEL: "", LIVE_MINDMAP_JUDGE: "off",
+      })),
+    );
+    return { ...r, responses, cli: (argv: string[]) => runCliEntry(argv, cliLayer) };
+  });
+
+  it.live("stop の書き出し失敗は HTTP 500 の文面を stderr と exit 1 に伝え、同じサーバーの status はセッションなしになる", () => Effect.gen(function* () {
+    const r = yield* resource();
+    const started = yield* r.cli(["start", "--app", "us.zoom.xos", "--no-audio", "--no-screen"]);
+    expect(started.code).toBe(0);
+    const blockedPath = join(started.stdout.trim(), "map.md");
+    yield* Effect.tryPromise(() => mkdir(blockedPath));
+
+    const stopped = yield* r.cli(["stop"]);
+
+    expect(stopped.code).toBe(1);
+    expect(stopped.stdout).toBe("");
+    expect(stopped.stderr).toContain(blockedPath);
+    expect.soft(stopped.stderr).toMatch(/EISDIR|is a directory/i);
+    expect(r.responses.at(-1)).toEqual({ status: 500, body: { error: stopped.stderr.trimEnd() } });
+    const status = yield* r.cli(["status"]);
+    expect(status.code).toBe(0);
+    expect(status.stderr).toBe("");
+    expect(status.stdout).toContain("セッションなし");
+  }));
+
+  it.live("start のフォルダ作成失敗は HTTP 500 のパスと理由を stderr と exit 1 に伝える", () => Effect.gen(function* () {
+    const r = yield* resource();
+    yield* Effect.tryPromise(() => writeFile(r.sessionsDir, "blocker"));
+
+    const started = yield* r.cli(["start", "--app", "us.zoom.xos", "--no-audio", "--no-screen"]);
+
+    expect(started.code).toBe(1);
+    expect(started.stdout).toBe("");
+    expect(started.stderr).toContain(r.sessionsDir);
+    expect(started.stderr).toMatch(/ENOTDIR|EEXIST|not a directory|already\s*exists/i);
+    expect(r.responses.at(-1)).toEqual({ status: 500, body: { error: started.stderr.trimEnd() } });
+  }));
 });
 
 // ws は close に自動応答するため、非応答の接続は生 TCP で再現する。

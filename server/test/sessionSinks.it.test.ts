@@ -1,6 +1,6 @@
 import { TestUpdaterLayer } from "./fixtures/sessionLayers.ts";
 import { defaultClaude } from "../src/modelSelection.ts";
-import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9,6 +9,7 @@ import { Cause, Console, Deferred, Effect, Exit, Fiber, Layer, Scope } from "eff
 import { TestClock } from "effect/testing";
 import { DiffUpdatePaused, DiffUpdater, REVIEW_LOG_ELEMENT_ID, type DiffInput, type Snapshot, type CaptionsFrame, type SupplementInput } from "../src/core/index.ts";
 import { SessionSinks } from "../src/sessionSinks.ts";
+import type { ExportFilesFailed } from "../src/sessionFiles.ts";
 import { vocabularyPoolPath } from "../src/vocabularyPool.ts";
 import { SPEAKING_INTERVAL_MS } from "../src/speakingRelay.ts";
 import { embeddedAudio, fakeAudioMix, FAKE_MIX_BYTES } from "./fixtures/audioMix.ts";
@@ -134,7 +135,7 @@ describe("SessionSinks（実物 Layer）", () => {
     }).pipe(Effect.provide(sinksLayer({ updaterLayer })));
   });
 
-  it.effect("フォルダを作れないと createDir が失敗し、open を呼ばなければ updater も開かない", () => {
+  it.effect("フォルダを作れないと createDir がパスと理由を持つ型付き失敗を返す", () => {
     const { updaterLayer, state } = makeFakeUpdater();
     return Effect.gen(function* () {
       const tmp = yield* withTmpSessionsDir();
@@ -145,6 +146,12 @@ describe("SessionSinks（実物 Layer）", () => {
       const result = yield* Effect.exit(sinks.createDir(join(blocker, "sessions")));
 
       expect(result._tag).toBe("Failure");
+      if (Exit.isFailure(result)) {
+        expect(Cause.hasFails(result.cause)).toBe(true);
+        expect(Cause.hasDies(result.cause)).toBe(false);
+        expect(Cause.squash(result.cause)).toMatchObject({ message: expect.stringContaining(join(blocker, "sessions")) });
+        expect(Cause.squash(result.cause)).toMatchObject({ message: expect.stringMatching(/ENOTDIR|EEXIST|not a directory|already\s*exists/i) });
+      }
       expect(state).toMatchObject({ opened: 0, closed: 0 });
     }).pipe(Effect.provide(sinksLayer({ updaterLayer })));
   });
@@ -410,19 +417,25 @@ describe("SessionSinks（実物 Layer）", () => {
     })));
   });
 
-  it.effect("テキストの 3 形式を書けないときは、失敗の値ではなく defect になる（撮影・HTML の失敗のように諦めない）", () =>
+  it.effect("テキストを書けないときは、警告で成功させずパスと理由を持つ型付き失敗を返す", () =>
     Effect.scoped(Effect.gen(function* () {
       const warnings = collectingConsole();
       const sessionsDir = yield* withTmpSessionsDir();
       const sinks = yield* SessionSinks;
       const dir = yield* sinks.createDir(sessionsDir);
       const sink = yield* sinks.open({ updaterLayer: (yield* TestUpdaterLayer), model: defaultClaude, dir, title: "週次", send: () => Effect.void });
-      rmSync(dir, { recursive: true, force: true }); // 書き先のフォルダが無くなる
-
       const { writeOut } = yield* sink.end({ kind: "入れ切る" });
+      const blockedPath = join(dir, "map.md");
+      mkdirSync(blockedPath);
       const exit = yield* writeOut.pipe(Effect.provideService(Console.Console, warnings.service), Effect.exit);
 
-      expect(Exit.isFailure(exit) && Cause.hasDies(exit.cause) && !Cause.hasFails(exit.cause)).toBe(true);
+      expect(Exit.isFailure(exit)).toBe(true);
+      if (Exit.isFailure(exit)) {
+        expect(Cause.hasFails(exit.cause)).toBe(true);
+        expect(Cause.hasDies(exit.cause)).toBe(false);
+        expect(Cause.squash(exit.cause)).toMatchObject({ message: expect.stringContaining(blockedPath) });
+        expect(Cause.squash(exit.cause)).toMatchObject({ message: expect.stringMatching(/EISDIR|is a directory/i) });
+      }
       expect(warnings.errors).toEqual([]); // 諦めた警告ではない
     })).pipe(Effect.provide(sinksLayer({ updaterLayer: makeFakeUpdater().updaterLayer }))));
 
@@ -873,7 +886,7 @@ describe("SessionSinks（実物 Layer）: 過去のセッションの語彙を�
 
   // セッションを 1 つ流す: 開く → script → 発言を締める → 書き出し（終了の処理）→ 閉じる。同じ sessionsDir で続けて呼ぶと、前のセッションの溜まりを引き継ぐ。
   // exports: false は、終了の処理を通らなかったセッション（書き出しを呼ばずに閉じる）
-  const runSession = Effect.fn("runSession")(function* (sessionsDir: string, script: (context: Context) => Effect.Effect<void>, options: { exports?: boolean; vocab?: ReadonlyArray<string> } = {}) {
+  const runSession = Effect.fn("runSession")(function* (sessionsDir: string, script: (context: Context) => Effect.Effect<void, ExportFilesFailed>, options: { exports?: boolean; vocab?: ReadonlyArray<string> } = {}) {
     // セッションのフォルダ名は開始時刻（ミリ秒）。続けて開いても重ならないよう実時間で少し待つ
     yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 3)));
     return yield* Effect.scoped(Effect.gen(function* () {

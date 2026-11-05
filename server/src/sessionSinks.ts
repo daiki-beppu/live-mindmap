@@ -4,7 +4,7 @@ import { MapCapture } from "./capture.ts";
 import { COMMON_WORDS_PATH, loadCommonWords } from "./commonWords.ts";
 import type { UpdaterUnavailable } from "./updaterUnavailable.ts";
 import type { ExecutableModel } from "./modelSelection.ts";
-import { createSessionDir, openLoggedSession, openLoggedTranscriptSession, writeExportsAndCapture } from "./sessionFiles.ts";
+import { createSessionDir, ExportFilesFailed, openLoggedSession, openLoggedTranscriptSession, writeExportsAndCapture } from "./sessionFiles.ts";
 import { DiffUpdater, DiffUpdateReason, type HelperPartial, type IntakeLogEvent, type SelfPauseLogEvent, type SettledRemark, type SpeakerLogEvent, wordsForKatakana, type Track } from "./core/index.ts";
 import { startPoolSession, updatePoolFromSession } from "./vocabularyPool.ts";
 import { AudioMix } from "./audioMix.ts";
@@ -15,7 +15,7 @@ import { directFeed, makeRemarkFlow, type Ending, type Feed, type Inlet } from "
 import type { Session } from "./core/index.ts";
 import { ReviewBuild } from "./review.ts";
 import { SpeakerNameRejected } from "./sessionFailure.ts";
-import { errorMessage } from "./truthFile.ts";
+import { errorMessage, fileReason } from "./truthFile.ts";
 import type { SendFrame, ViewerFrame } from "./viewers.ts";
 
 type Written = {
@@ -29,7 +29,7 @@ type SinkBase = {
   final: (r: SettledRemark) => Effect.Effect<void>;
   screen: Inlet["screen"];
   screenOff: (off: { start: number; reason: "指定" | "許可なし" }) => Effect.Effect<void>;
-  end: (ending: Ending) => Effect.Effect<{ writeOut: Effect.Effect<Written> }>;
+  end: (ending: Ending) => Effect.Effect<{ writeOut: Effect.Effect<Written, ExportFilesFailed> }>;
   stopRelays: Effect.Effect<void>;
   speaker: (event: SpeakerLogEvent) => Effect.Effect<void>;
   speakersRenumbered: Effect.Effect<void>;
@@ -73,7 +73,7 @@ const TRACKS: Track[] = ["相手", "自分"];
 export const audioFileNames = (attempt: number): string[] => TRACKS.map((track) => (attempt > 1 ? `${track}-${attempt}.m4a` : `${track}.m4a`));
 
 export class SessionSinks extends Context.Service<SessionSinks, {
-  createDir: (sessionsDir: string, at?: DateTime.DateTime) => Effect.Effect<string>;
+  createDir: (sessionsDir: string, at?: DateTime.DateTime) => Effect.Effect<string, ExportFilesFailed>;
   open: (args: OpenSessionSink & { noMap?: false }) => Effect.Effect<LiveSink, never, Scope.Scope>;
   openRecorded: (args: OpenSessionSink & { recorded: RecordedOptions }) => Effect.Effect<RecordedSink, never, Scope.Scope>;
 }>()("live-mindmap/server/SessionSinks") {
@@ -162,13 +162,21 @@ export class SessionSinks extends Context.Service<SessionSinks, {
                   ([snapshot, json]) => writeExportsAndCapture(dir, snapshot, errorMessage, new Map(Object.entries(json.speakerNames ?? {}))),
                 );
                 return { paths, ocrSummary: yield* flow.ocrSummary };
-              }).pipe(Effect.provideContext(exportServices), Effect.orDie) };
+              }).pipe(
+                Effect.provideContext(exportServices),
+                Effect.mapError((error) => error._tag === "ExportFilesFailed"
+                  ? error
+                  : new ExportFilesFailed({ message: `セッションを書き出せませんでした: ${dir}（${errorMessage(error)}）` })),
+              ) };
             }),
           };
           return { sink, flow };
         });
         return SessionSinks.of({
-          createDir: (sessionsDir, at) => createSessionDir(sessionsDir, at).pipe(Effect.provideContext(exportServices), Effect.orDie),
+          createDir: (sessionsDir, at) => createSessionDir(sessionsDir, at).pipe(
+            Effect.provideContext(exportServices),
+            Effect.mapError((error) => new ExportFilesFailed({ message: `セッションのフォルダを作れませんでした: ${sessionsDir}（${fileReason(error)}）` })),
+          ),
           open: Effect.fnUntraced(function* (args) {
             const { sink, flow } = yield* openSink(args, "途中結果から", (_session, inlet) => directFeed(inlet));
             return { ...sink, interrupted: Effect.andThen(flow.drainForRestart, flow.clearSpeaking) };

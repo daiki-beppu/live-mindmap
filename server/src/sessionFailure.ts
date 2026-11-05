@@ -2,6 +2,7 @@ import { Schema } from "effect";
 import type { UpdaterUnavailable } from "./updaterUnavailable.ts";
 import type { StartupDepsMissing } from "./startupDepsMissing.ts";
 import type { ManagedDepsFailed } from "./managedDeps.ts";
+import type { ExportFilesFailed } from "./sessionFiles.ts";
 
 export class SessionBusy extends Schema.TaggedError<SessionBusy>()("SessionBusy", {}) {
   override get message(): string {
@@ -65,4 +66,4 @@ export class HelperExited extends Schema.TaggedError<HelperExited>()("HelperExit
   }
 }
 
-export type SessionFailure = SessionBusy | SessionTransition | NoSession | IntakeNotStopped | NotForRecordedSession | Aborted | RestartGaveUp | HelperExited | UpdaterUnavailable | StartupDepsMissing | ManagedDepsFailed;
+export type SessionFailure = SessionBusy | SessionTransition | NoSession | IntakeNotStopped | NotForRecordedSession | Aborted | RestartGaveUp | HelperExited | UpdaterUnavailable | StartupDepsMissing | ManagedDepsFailed | ExportFilesFailed;
