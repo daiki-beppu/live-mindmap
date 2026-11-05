@@ -52,7 +52,7 @@ describe("見返しの Model: 操作の行の状態", () => {
       Message.ClickedMute(),
       selectRate(AUDIO_RATES, 3),
       Message.ToggledCaptions({ isOpen: false }),
-      Message.ClickedSide(),
+      Message.ToggledSide({ isOpen: false }),
       Message.MovedSeekPointer({ fraction: 0.5 }),
       Message.LeftSeekPointer(),
       Message.PressedSliderPointer(),
@@ -321,8 +321,8 @@ describe("押して離したらフォーカスを外す", () => {
     expect(commandNames(shown!.commands)).toEqual(["ReleaseFocus"]);
   });
 
-  it("右の列のボタン（ClickedSide）を押すと、隠す／出すが替わり、フォーカスを外す。字幕には触らない", () => {
-    const [hidden, shown] = run(plainUpdate, stateAt(plainContext, 100), Message.ClickedSide(), Message.ClickedSide());
+  it("右の列のボタン（ToggledSide）を押すと、隠す／出すが替わり、フォーカスを外す。字幕には触らない", () => {
+    const [hidden, shown] = run(plainUpdate, stateAt(plainContext, 100), Message.ToggledSide({ isOpen: false }), Message.ToggledSide({ isOpen: true }));
     expect(hidden!.model.mapSurface.viewing.sideHidden).toBe(true);
     expect(hidden!.model.captionsHidden).toBe(false);
     expect(commandNames(hidden!.commands)).toEqual(["ReleaseFocus"]);

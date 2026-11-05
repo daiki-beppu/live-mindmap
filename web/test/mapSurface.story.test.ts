@@ -1,3 +1,4 @@
+import { INITIAL_VIEWING } from "../src/viewing.ts";
 import { HashMap, Option, Schema } from "effect";
 import { expectNoOutMessage, expectOutMessage, given, message, model, story } from "foldkit/story";
 import { describe, expect, it } from "vitest";
@@ -225,7 +226,7 @@ describe("mapSurface の update: 二本指スクロールでパン（live）", (
       message(wheel({ deltaX: 40, deltaY: 100, metaKey: true, x: 300, y: 200 })),
       model((m) => {
         expect(m.camera.viewport).toEqual(before.camera.viewport);
-        expect(m.viewing).toEqual({  });
+        expect(m.viewing).toEqual(INITIAL_VIEWING);
         expect(m.camera.mode).toBe("auto");
       }),
     );
@@ -474,7 +475,7 @@ describe("mapSurface の update: still ではパンしない", () => {
       message(movePointer(130, 90)),
       model((m) => {
         expectPan(m, 0, 0);
-        expect(m.viewing).toEqual({  });
+        expect(m.viewing).toEqual(INITIAL_VIEWING);
         expect(m.camera.mode).toBe("auto");
       }),
     );
@@ -787,7 +788,7 @@ describe("mapSurface の update: Ctrl＋ホイール（ピンチ）でズーム�
     const m = measuredLive();
     expect(Option.isNone(m.gestureScale)).toBe(true);
     expect(m.camera.viewport.zoom).not.toBe(1);
-    expect(m.viewing).toEqual({  });
+    expect(m.viewing).toEqual(INITIAL_VIEWING);
     expect(m.camera.mode).toBe("auto");
   });
 
@@ -1138,12 +1139,12 @@ describe("mapSurface の update: 根拠のシートの閉じるボタン（Click
   it("選んでいたノードの選びが外れ、カメラのモードと人の開閉は残る", () => {
     const base = measuredLive();
     const humanFolds = foldingActions({ ...base.snapshot, currentTopic: "root", nodes: base.snapshot.nodes.map((n) => n.id === "A" ? { ...n, talkStatus: "済み" } : n) }, [{ type: "toggle", id: "A" }]).human;
-    const before: MapSurfaceModel = { ...base, camera: { ...base.camera, mode: "manual", topic: "A" }, viewing: { humanFolds, selection: { id: "P", byKey: false } } };
+    const before: MapSurfaceModel = { ...base, camera: { ...base.camera, mode: "manual", topic: "A" }, viewing: { ...INITIAL_VIEWING, humanFolds: Option.fromUndefinedOr(humanFolds), selection: Option.some({ id: "P", byKey: false }) } };
     story(
       update,
       given(before),
       message(Message.ClickedEvidenceClose()),
-      model((m) => { expect(m.viewing).toEqual({ humanFolds });
+      model((m) => { expect(m.viewing).toEqual({ ...INITIAL_VIEWING, humanFolds: Option.fromUndefinedOr(humanFolds) });
       expect(m.camera.mode).toBe("manual");
       expect(m.camera.topic).toBe("A"); }),
     );
@@ -1154,7 +1155,7 @@ describe("mapSurface の update: 根拠のシートの閉じるボタン（Click
       update,
       given(measuredLive()),
       message(Message.ClickedEvidenceClose()),
-      model((m) => expect("selection" in m.viewing).toBe(false)),
+      model((m) => expect(m.viewing.selection).toEqual(Option.none())),
     );
   });
 });

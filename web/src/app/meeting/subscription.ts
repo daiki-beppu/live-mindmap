@@ -10,7 +10,7 @@ const own = Subscription.make<Model, Message>()((entry) => ({
   keys: entry(
     { hasSession: Schema.Boolean, hasSelection: Schema.Boolean },
     {
-      modelToDependencies: (model) => ({ hasSession: Option.isSome(model.session), hasSelection: Option.exists(model.session, (s) => s.mapSurface.viewing.selection !== undefined) }),
+      modelToDependencies: (model) => ({ hasSession: Option.isSome(model.session), hasSelection: Option.exists(model.session, (s) => Option.isSome(s.mapSurface.viewing.selection)) }),
       keepAliveEquivalence: (a, b) => a.hasSession === b.hasSession,
       dependenciesToStream: ({ hasSession }, readDependencies) => (hasSession ? keyPressStream({ screen: "live", hasSelection: () => readDependencies().hasSelection }) : Stream.empty),
     },

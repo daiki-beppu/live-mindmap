@@ -125,7 +125,7 @@ const surfaceOf = (model: Model) => {
       talkStatus: Option.getOrUndefined(context.talkStatus[node.id] ?? Option.none()),
     })),
   };
-  const view = model.mode === "still" ? null : foldView(snapshot, model.viewing.humanFolds, model.viewing.selection?.id ?? null);
+  const view = model.mode === "still" ? null : foldView(snapshot, Option.getOrUndefined(model.viewing.humanFolds), Option.getOrUndefined(model.viewing.selection)?.id ?? null);
   const shown = view?.nodes ?? model.snapshot.nodes;
   const heights = Object.fromEntries(HashMap.toEntries(model.nodeHeights).map(([id, height]) => [id, Math.round(height)]));
   const targets = layout(shown, heights);
@@ -146,7 +146,7 @@ const surfaceOf = (model: Model) => {
     currentTopic: model.snapshot.currentTopic,
     round: model.snapshot.round,
     hasChanges: model.snapshot.lastChanged !== undefined || model.snapshot.changes.some((change) => change.round === model.snapshot.round),
-    sideHidden: model.viewing.sideHidden === true,
+    sideHidden: model.viewing.sideHidden,
     size: model.size,
     targets,
     positions: positionsOf(model.motion, targets),
@@ -210,8 +210,8 @@ const applyViewing = (model: Model, event: ViewingEvent, previous: PreviousSurfa
   const { state, input, preserveIdleTimer } = reduceViewing(model.viewing, event, current.tree);
   const reduced = modifyFields(model, { viewing: () => state, idleStamp: (stamp) => (preserveIdleTimer || keepsIdleTimer(event) || (event.type === "timeMoved" && model.camera.mode === "auto") ? stamp : stamp + 1) });
   if (model.mode === "still") return reduced;
-  const surface = state.humanFolds === model.viewing.humanFolds && state.selection?.id === model.viewing.selection?.id
-    ? { ...current, seen: { ...current.seen, selection: state.selection, sideHidden: state.sideHidden === true } }
+  const surface = state.humanFolds === model.viewing.humanFolds && Option.getOrUndefined(state.selection)?.id === Option.getOrUndefined(model.viewing.selection)?.id
+    ? { ...current, seen: { ...current.seen, selection: state.selection, sideHidden: state.sideHidden } }
     : surfaceOf(reduced);
   const followed = followTarget(previous.model, reduced, previous.surface.seen, surface);
   const seen = seenAfterMotion(followed, surface.seen);
@@ -220,7 +220,7 @@ const applyViewing = (model: Model, event: ViewingEvent, previous: PreviousSurfa
 
 const reflectionOf = (before: PreviousSurface, after: Model, surface: Surface): ViewingEvent | null => {
   if (after.mode === "still" || before.model.snapshot.round === after.snapshot.round) return null;
-  const replaced = relocations({ tree: before.surface.tree, snapshot: before.model.snapshot, selectedId: before.model.viewing.selection?.id ?? null }, { tree: surface.tree, snapshot: after.snapshot });
+  const replaced = relocations({ tree: before.surface.tree, snapshot: before.model.snapshot, selectedId: Option.getOrUndefined(before.model.viewing.selection)?.id ?? null }, { tree: surface.tree, snapshot: after.snapshot });
   return { type: "reflect", replaced };
 };
 
@@ -264,6 +264,7 @@ export const pressViewKey = (model: Model, input: KeyModifiers & { key: ViewKey 
 export const pressArrowKey = (model: Model, input: KeyModifiers & { dir: ArrowDir }): Return => update(model, Message.PressedArrowKey(input));
 export const pressEscapeKey = (model: Model, input: KeyModifiers): Return => update(model, Message.PressedEscapeKey(input));
 export const pressSideKey = (model: Model, input: KeyModifiers): Return => update(model, Message.PressedSideKey(input));
+export const setSideOpen = (model: Model, input: { isOpen: boolean }): Return => update(model, Message.ToggledSide(input));
 export const pressEnterKey = (model: Model, input: KeyModifiers): Return => update(model, Message.PressedEnterKey(input));
 
 export const movedTime = (model: Model): Model => update(model, Message.MovedTime()).model;
@@ -284,9 +285,9 @@ const replaceSnapshot = (model: Model, snapshot: Snapshot): Model => {
   const surface = surfaceOf(refreshed);
   const reflection = reflectionOf(previous, refreshed, surface);
   if (reflection !== null) return applyViewing(refreshed, reflection, previous, surface);
-  const selectedSupplement = model.snapshot.nodes.some((node) => node.id === model.viewing.selection?.id && node.kind === "補足");
+  const selectedSupplement = model.snapshot.nodes.some((node) => node.id === Option.getOrUndefined(model.viewing.selection)?.id && node.kind === "補足");
   const reconciled = refreshed.mode === "still" || !selectedSupplement ? refreshed : modifyFields(refreshed, {
-    viewing: (state) => relocateSelection(state, relocations({ tree: previous.surface.tree, snapshot: model.snapshot, selectedId: state.selection?.id ?? null }, { tree: surface.tree, snapshot })),
+    viewing: (state) => relocateSelection(state, relocations({ tree: previous.surface.tree, snapshot: model.snapshot, selectedId: Option.getOrUndefined(state.selection)?.id ?? null }, { tree: surface.tree, snapshot })),
   });
   const current = surfaceOf(reconciled);
   const followed = followTarget(model, reconciled, previous.surface.seen, current);
@@ -370,7 +371,7 @@ export const update = (model: Model, message: Message): Return =>
     ClickedEdgeDot: ({ nodeId }) => ({ model: applyViewing(model, { type: "edgeDot", id: nodeId }) }),
     ClickedChangeItem: ({ nodeId }) => ({ model: applyViewing(model, { type: "pointChange", id: nodeId }) }),
     ClickedEvidenceClose: () => ({ model: applyViewing(model, { type: "deselect" }) }),
-    ToggledSide: ({ isOpen }) => (isOpen === (model.viewing.sideHidden !== true) ? { model } : { model: applyViewing(model, { type: "side", meta: false, ctrl: false, alt: false }) }),
+    ToggledSide: ({ isOpen }) => (isOpen === !model.viewing.sideHidden ? { model } : { model: applyViewing(model, { type: "side", meta: false, ctrl: false, alt: false }) }),
     WheeledMapSurface: ({ x, y, deltaX, deltaY, deltaMode, shiftKey, ctrlKey, metaKey, timeStamp }) => {
       if (model.mode === "still") return { model };
       if ((metaKey || ctrlKey) && shiftKey) {
@@ -450,7 +451,7 @@ function nodeBody(h: H, node: SnapshotNode, view: FoldView | null, selected: boo
 
 export const view = Submodel.defineView<Model, Message, { readonly notice: () => Html | null }>((model, slots, h): Html => {
   const { view: view_, tree, shown, seen } = surfaceOf(model);
-  const selectedId = view_ === null ? null : (seen.selection?.id ?? null);
+  const selectedId = view_ === null ? null : (Option.getOrUndefined(seen.selection)?.id ?? null);
   const positions = seen.positions;
   const measured = shown.filter((n) => HashMap.has(model.nodeHeights, n.id));
   const viewport = model.camera.viewport;

@@ -846,14 +846,16 @@ describe("字幕と右の列のボタン", () => {
     );
   });
 
-  it("右の列: 名前「右の列」。aria-pressed を持ち、Disclosure の属性（aria-expanded・aria-controls）は付けない", () => {
+  it("右の列: 名前「右の列」。押した状態と Disclosure の開閉・パネルの参照を持つ", () => {
     scene(
       plainApp,
       given(stateAt(plainContext, 100)),
       settle,
       expectScene(labelSel("右の列")).toHaveAttr("aria-pressed", "true"),
-      expectScene(labelSel("右の列")).not.toHaveAttr("aria-expanded"),
-      expectScene(labelSel("右の列")).not.toHaveAttr("aria-controls"),
+      expectScene(labelSel("右の列")).toHaveAttr("aria-expanded", "true"),
+      expectScene(labelSel("右の列")).toHaveId("side-button"),
+      expectScene(labelSel("右の列")).toHaveAttr("type", "button"),
+      expectScene(labelSel("右の列")).toHaveAttr("aria-controls", "side-panel"),
     );
   });
 
@@ -866,10 +868,12 @@ describe("字幕と右の列のボタン", () => {
       tap((sim: Sim) => expect(commandNames(sim.commands)).toEqual(["ReleaseFocus"])),
       settle,
       expectScene(labelSel("右の列")).toHaveAttr("aria-pressed", "false"),
+      expectScene(labelSel("右の列")).toHaveAttr("aria-expanded", "false"),
       expectScene(labelSel("字幕")).toHaveAttr("aria-pressed", "true"),
       click(labelSel("右の列")),
       settle,
       expectScene(labelSel("右の列")).toHaveAttr("aria-pressed", "true"),
+      expectScene(labelSel("右の列")).toHaveAttr("aria-expanded", "true"),
     );
   });
 });

@@ -1,3 +1,4 @@
+import { Option } from "effect";
 import * as Animation from "@foldkit/ui/animation";
 import * as Popover from "@foldkit/ui/popover";
 import * as Toast from "@foldkit/ui/toast";
@@ -164,7 +165,7 @@ export const matchesReference = (html: VNode, reference: MapSurface.Model) => {
     expectClose(position.x, expected[id]!.x);
     expectClose(position.y, expected[id]!.y);
   }
-  const selection = reference.viewing.selection?.id;
+  const selection = Option.getOrUndefined(reference.viewing.selection)?.id;
   return { selected: selectedIds(html), expectedSelected: selection !== undefined && selection in expected ? [selection] : [] };
 };
 const expectClose = (actual: number, expected: number) => expect(actual).toBeCloseTo(expected, 6);

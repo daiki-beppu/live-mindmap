@@ -1,4 +1,5 @@
 import { Disclosure } from "@foldkit/ui";
+import { Option } from "effect";
 import { Submodel } from "foldkit";
 import type { Html, HtmlBuilder } from "foldkit/html";
 import { formatClock } from "../../changes.ts";
@@ -32,8 +33,8 @@ function evidenceBody(h: HtmlBuilder<Message>, { node, remarks }: Evidence): Rea
 }
 
 function evidencePanel(h: HtmlBuilder<Message>, model: Model): Html {
-  const selectedId = model.viewing.selection?.id ?? null;
-  const evidence = selectedId === null ? null : evidenceOf(model.snapshot, selectedId, model.viewing.humanFolds);
+  const selectedId = Option.getOrUndefined(model.viewing.selection)?.id ?? null;
+  const evidence = selectedId === null ? null : evidenceOf(model.snapshot, selectedId, Option.getOrUndefined(model.viewing.humanFolds));
   return h.section(
     [h.Class("evidence"), h.AriaLabelledBy("evidence-heading")],
     [
@@ -115,9 +116,9 @@ export const view = Submodel.defineView<Model, Message>((model, h): Html | null 
   Disclosure.view(
     {
       id: "side",
-      isOpen: model.viewing.sideHidden !== true,
+      isOpen: !model.viewing.sideHidden,
       onToggle: (isOpen) => Message.ToggledSide({ isOpen }),
-      toView: ({ panel }) => (model.viewing.sideHidden === true && model.viewing.selection === undefined ? null : h.div([h.Class(["side", model.viewing.selection === undefined ? "" : "side--selected", model.viewing.sideHidden === true ? "side--hidden" : ""].join(" ")), ...panel], [evidencePanel(h, model), todoList(h, model), changeList(h, model)])),
+      toView: ({ panel }) => (model.viewing.sideHidden && Option.isNone(model.viewing.selection) ? null : h.div([h.Class(["side", Option.isNone(model.viewing.selection) ? "" : "side--selected", model.viewing.sideHidden ? "side--hidden" : ""].join(" ")), ...panel], [evidencePanel(h, model), todoList(h, model), changeList(h, model)])),
     },
     h,
   ),

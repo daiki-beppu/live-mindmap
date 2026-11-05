@@ -57,7 +57,7 @@ const mounted = Mount.resolve(ObserveMapSurface, Message.MeasuredMapSurface({ ..
 const clickedNode = (nodeId: string) => Mount.resolve(ObserveMapSurface, Message.ClickedNodeButton({ nodeId, clientX: 0, clientY: 0 }));
 const nodeButton = (nodeId: string) => expectScene(selector(`[data-node-id="${nodeId}"] button.map-node__button`)).toExist();
 // 議題 A を開いた見る状態（論点・案・課題・TODO がマップに描かれる）
-const opened = (): ViewingState => ({ humanFolds: foldingActions(snap(), [{ type: "toggle", id: "A" }]).human });
+const opened = (): ViewingState => ({ ...INITIAL_VIEWING, humanFolds: Option.fromUndefinedOr(foldingActions(snap(), [{ type: "toggle", id: "A" }]).human) });
 const toggleSide = (isOpen: boolean) => Subscription.emit(Message.ToggledSide({ isOpen }));
 
 const EVIDENCE = selector("section.evidence");
@@ -165,7 +165,7 @@ describe("sidePanel の Scene: 根拠のパネル（選択と連動して今と�
   it("状態を持たない種別（課題）に切り替えると、状態の要素を出さない", () => {
     scene(
       app,
-      given(modelOf(snap(), { ...opened(), selection: { id: "A2", byKey: false } })),
+      given(modelOf(snap(), { ...opened(), selection: Option.some({ id: "A2", byKey: false }) })),
       expectScene(selector("section.evidence p.evidence__text")).toHaveText("<b>2 回</b>"),
       nodeButton("A3"),
       clickedNode("A3"),
@@ -191,7 +191,7 @@ describe("sidePanel の Scene: 根拠のパネル（選択と連動して今と�
   it("選択に連動する: A1 から A2 へ選び直すと、同じ画面の上で中身が切り替わり、前の発言は残らない", () => {
     scene(
       app,
-      given(modelOf(snap(), { ...opened(), selection: { id: "A1", byKey: false } })),
+      given(modelOf(snap(), { ...opened(), selection: Option.some({ id: "A1", byKey: false }) })),
       expectScene(selector("section.evidence p.evidence__text")).toHaveText("面接は何回か"),
       tap((s) => expect(findAll("li.evidence__remark")(evidenceOf(s.html))).toHaveLength(2)),
       nodeButton("A2"),
@@ -205,7 +205,7 @@ describe("sidePanel の Scene: 根拠のパネル（選択と連動して今と�
   it("選択に連動する: A2 から A4（発言なし）へ選び直すと、前の発言は残らない", () => {
     scene(
       app,
-      given(modelOf(snap(), { ...opened(), selection: { id: "A2", byKey: false } })),
+      given(modelOf(snap(), { ...opened(), selection: Option.some({ id: "A2", byKey: false }) })),
       expectScene(selector("section.evidence p.evidence__text")).toHaveText("<b>2 回</b>"),
       tap((s) => expect(findAll("li.evidence__remark")(evidenceOf(s.html))).toHaveLength(1)),
       nodeButton("A4"),
@@ -221,7 +221,7 @@ describe("sidePanel の Scene: 根拠のパネル（選択と連動して今と�
   it("選んだ状態で始まる Model（viewing.selection）でも、その選択の根拠が出る", () => {
     scene(
       app,
-      given(modelOf(snap(), { selection: { id: "A1", byKey: false } })),
+      given(modelOf(snap(), { ...INITIAL_VIEWING, selection: Option.some({ id: "A1", byKey: false }) })),
       mounted,
       expectScene(selector("section.evidence p.evidence__text")).toHaveText("面接は何回か"),
       tap((s) => expect(textOf(evidenceOf(s.html), ".evidence__time")).toEqual(["01:05〜01:11", "02:05〜02:10"])),
@@ -232,7 +232,7 @@ describe("sidePanel の Scene: 根拠のパネル（選択と連動して今と�
     const without = snap().nodes.filter((n) => n.id !== "A2");
     scene(
       app,
-      given(modelOf(snap(), { selection: { id: "A2", byKey: false } })),
+      given(modelOf(snap(), { ...INITIAL_VIEWING, selection: Option.some({ id: "A2", byKey: false }) })),
       mounted,
       expectScene(selector("section.evidence p.evidence__text")).toHaveText("<b>2 回</b>"),
       Subscription.emit(Message.ChangedSnapshot({ snapshot: { ...snap(), nodes: without } })),
@@ -271,7 +271,7 @@ describe("sidePanel の Scene: 根拠のパネル（選択と連動して今と�
     const bundled: Snapshot = { nodes: bundledNodes, round: 3, changes: [], remarks: REMARKS, currentTopic: "B", now: 100 };
     scene(
       app,
-      given(modelOf(bundled, { selection: { id: "run:A", byKey: false } })),
+      given(modelOf(bundled, { ...INITIAL_VIEWING, selection: Option.some({ id: "run:A", byKey: false }) })),
       mounted,
       expectScene(selector("section.evidence p.evidence__empty")).toHaveText(EMPTY_NO_REMARKS),
       expectScene(selector("section.evidence .evidence__kind")).toHaveText("議題"),
@@ -372,7 +372,7 @@ describe("sidePanel の Scene: 変わったことの項目を押すと、その�
   it("別のノードを選んでいても、項目を押すとそのノードへ移る（前に選んだノードは選ばれた見た目でなくなる）", () => {
     scene(
       app,
-      given(modelOf(snap(one("B", "議題", "報告")), { selection: { id: "A1", byKey: false } })),
+      given(modelOf(snap(one("B", "議題", "報告")), { ...INITIAL_VIEWING, selection: Option.some({ id: "A1", byKey: false }) })),
       mounted,
       expectScene(selector("section.evidence p.evidence__text")).toHaveText("面接は何回か"),
       click(CHANGE_BUTTON),
@@ -596,7 +596,7 @@ describe("sidePanel の Scene: 右の列の出す・隠す（Disclosure の pane
   it("隠している間に選んでも、出し直すと選んだノードの根拠が出る（隠す前の選択を持ったまま隠している状態から始める）", () => {
     scene(
       app,
-      given(modelOf(snap(), { ...opened(), selection: { id: "A1", byKey: false }, sideHidden: true })),
+      given(modelOf(snap(), { ...opened(), selection: Option.some({ id: "A1", byKey: false }), sideHidden: true })),
       tap((s) => expect(classOf(sideOf(s.html)).split(/\s+/).filter(Boolean)).toEqual(["side", "side--selected", "side--hidden"])),
       nodeButton("A2"),
       clickedNode("A2"),
@@ -609,7 +609,7 @@ describe("sidePanel の Scene: 右の列の出す・隠す（Disclosure の pane
   it("隠した状態の viewing（sideHidden）で始まる Model では、最初から .side を描かない。出すと現れる", () => {
     scene(
       app,
-      given(modelOf(snap(), { sideHidden: true })),
+      given(modelOf(snap(), { ...INITIAL_VIEWING, sideHidden: true })),
       mounted,
       expectScene(selector(".side")).toBeAbsent(),
       expectScene(EVIDENCE).toBeAbsent(),
@@ -693,7 +693,7 @@ describe("sidePanel の Scene: 狭い幅のシートの目印と閉じるボタ�
   it("閉じるボタンを押すと選びが外れ、目印も閉じるボタンも消える", () => {
     scene(
       app,
-      given(modelOf(snap(), { ...opened(), selection: { id: "A1", byKey: false } })),
+      given(modelOf(snap(), { ...opened(), selection: Option.some({ id: "A1", byKey: false }) })),
       mounted,
       expectScene(selector("button.side__close")).toExist(),
       click(selector("button.side__close")),

@@ -106,7 +106,7 @@ export const makeUpdate = (context: Context) => {
     },
     toParentMessage: (message) => Message.GotSessionLayoutMessage({ message }),
   });
-  const { foldMapSurface, foldSnapshot, withViewingNotice, foldEscapeKey, foldKeyListToggled, toggleSide: toggledSide, keyHandlers: surfaceKeyHandlers } = surfaceFolds<Model, Message>({
+  const { foldMapSurface, foldSnapshot, withViewingNotice, foldEscapeKey, foldKeyListToggled, foldSideOpen, keyHandlers: surfaceKeyHandlers } = surfaceFolds<Model, Message>({
     read: (model) => Option.some(surfaceOf(context, model)),
     write: (model, surface) => storeSurface(model, surface),
     toParentMessage: (message) => Message.GotMapSurfaceMessage({ message }),
@@ -253,7 +253,7 @@ export const makeUpdate = (context: Context) => {
       GotTooltipMessage: ({ tooltipId, message }) => foldTooltip(model, tooltipId, message),
       ClickedMute: () => changedSettings(model, { type: "toggleMute" }, [ReleaseFocus()]),
       ToggledCaptions: ({ isOpen }) => released(modifyFields(model, { captionsHidden: () => !isOpen })),
-      ClickedSide: () => Update.combine(model, [toggledSide, released]),
+      ToggledSide: ({ isOpen }) => Update.combine(model, [(model) => foldSideOpen(model, { isOpen }), released]),
       MovedSeekPointer: ({ fraction }) => ({ model: modifyFields(model, { maybeSeekPointer: () => Option.some(fraction) }) }),
       LeftSeekPointer: () => ({ model: modifyFields(model, { maybeSeekPointer: () => Option.none() }) }),
       PressedSliderPointer: () => ({ model: modifyFields(model, { isPressingSlider: () => true }) }),

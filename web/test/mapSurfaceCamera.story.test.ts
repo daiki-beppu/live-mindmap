@@ -1,3 +1,4 @@
+import { INITIAL_VIEWING } from "../src/viewing.ts";
 import { HashMap, Option, Schema } from "effect";
 import { Command, given, message, model, story } from "foldkit/story";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -95,7 +96,7 @@ const dimsOf = (m: MapSurfaceModel): Record<string, { height: number }> => Objec
 const sizeOf = (m: MapSurfaceModel) => Option.getOrThrow(m.size);
 const viewOf = (m: MapSurfaceModel) => {
   if (m.mode === "still") return null;
-  return foldView(m.snapshot, m.viewing.humanFolds, m.viewing.selection?.id ?? null);
+  return foldView(m.snapshot, Option.getOrUndefined(m.viewing.humanFolds), Option.getOrUndefined(m.viewing.selection)?.id ?? null);
 };
 const shownOf = (m: MapSurfaceModel): SnapshotNode[] => viewOf(m)?.nodes ?? m.snapshot.nodes;
 const targetsOf = (m: MapSurfaceModel) => layout(shownOf(m), heightsOf(m));
@@ -558,7 +559,7 @@ describe("更新後の畳み結果を共有する", () => {
     expect(displayedPositions(start)["A1"]).toBeUndefined();
     const after = update(start, Message.ClickedChangeItem({ nodeId: "A1" })).model;
     expect(displayedPositions(after)["A1"]).toBeDefined();
-    expect(after.viewing.selection).toEqual({ id: "A1", byKey: false });
+    expect(after.viewing.selection).toEqual(Option.some({ id: "A1", byKey: false }));
     expectViewport(after.camera.viewport, nodeFocusViewport(nodeRect("A1", targetsOf(after), dimsOf(after)), start.camera.viewport.zoom, SIZE));
   });
 });
@@ -632,9 +633,9 @@ describe("反映で寄せる: 反映（round の変化）を見る状態へ渡�
       update,
       given(settle(tree())),
       message(clickNode("B2")),
-      model((m) => expect(m.viewing.selection).toEqual({ id: "B2", byKey: false })),
+      model((m) => expect(m.viewing.selection).toEqual(Option.some({ id: "B2", byKey: false }))),
       message(changed(withoutB2)),
-      model((m) => expect(m.viewing.selection).toEqual({ id: "B", byKey: false })),
+      model((m) => expect(m.viewing.selection).toEqual(Option.some({ id: "B", byKey: false }))),
     );
   });
 
@@ -650,7 +651,7 @@ describe("反映で寄せる: 反映（round の変化）を見る状態へ渡�
       message(scroll),
       message(changed(withoutB2)),
       model((m) => {
-        expect(m.viewing.selection).toEqual({ id: "B", byKey: false });
+        expect(m.viewing.selection).toEqual(Option.some({ id: "B", byKey: false }));
         expect(m.camera.mode).toBe("manual");
       }),
     );
@@ -669,7 +670,7 @@ describe("反映で寄せる: 反映（round の変化）を見る状態へ渡�
       message(scroll),
       message(changed(withoutB2)),
       model((m) => {
-        expect(m.viewing.selection).toEqual({ id: "B", byKey: false });
+        expect(m.viewing.selection).toEqual(Option.some({ id: "B", byKey: false }));
         expect(m.camera.mode).toBe("auto");
         expectViewport(m.camera.viewport, focusExpected(m));
         expectDifferent(m.camera.viewport, start.camera.viewport);
@@ -1189,7 +1190,7 @@ describe("開閉で位置を保つ: 開閉したノードを同じ画面座標�
       given(start),
       message(clickFoldDot("run:A")),
       model((m) => {
-        expect(m.viewing.selection).toEqual({ id: "A", byKey: false });
+        expect(m.viewing.selection).toEqual(Option.some({ id: "A", byKey: false }));
         expect(displayedPositions(m)["run:A"]).toBeUndefined();
         expect(Option.isSome(m.motion)).toBe(true);
         expectPointAt(m, point);
@@ -1306,7 +1307,7 @@ describe("列を出してずらす: E で保留を立て、画面の幅が変わ
   const hiddenColumn = (mode: "auto" | "manual" = "manual", sideHidden = true): MapSurfaceModel => {
     const initial = settle(tree());
     const base = mode === "manual" ? run(initial, scroll) : initial;
-    return { ...withViewport(base, { x: 100, y: 0, zoom: 1 }), viewing: sideHidden ? { sideHidden: true } : {} };
+    return { ...withViewport(base, { x: 100, y: 0, zoom: 1 }), viewing: { ...INITIAL_VIEWING, sideHidden } };
   };
   const side = () => Message.PressedSideKey({ ...mods });
   const focusRects = (m: MapSurfaceModel): Rect[] => {
@@ -1323,7 +1324,7 @@ describe("列を出してずらす: E で保留を立て、画面の幅が変わ
       given(start),
       message(side()),
       model((m) => {
-        expect(m.viewing.sideHidden).toBeUndefined();
+        expect(m.viewing.sideHidden).toBe(false);
         expect(m.camera.viewport).toEqual(start.camera.viewport);
       }),
       message(measure(NARROW, {})),
@@ -1498,7 +1499,7 @@ describe("キーの指示: その場で適用する（seq を介さない）", (
   it("矢印: 選択を移し、移り先が画面の外なら最小限ずらして入れる（revealNode）", () => {
     const offscreen = withViewport(update(start, clickNode("A")).model, { x: 200, y: 0, zoom: 1 });
     const m = update(offscreen, Message.PressedArrowKey({ dir: "right", ...mods })).model;
-    expect(m.viewing.selection).toEqual({ id: "A1", byKey: true });
+    expect(m.viewing.selection).toEqual(Option.some({ id: "A1", byKey: true }));
     expect(m.camera.mode).toBe("manual");
     const expected = revealViewport(zoomAroundCenter(offscreen.camera.viewport, clampUserZoom(offscreen.camera.viewport.zoom), size), nodeRect("A1", targetsOf(start), dimsOf(start)), size);
     expectViewport(m.camera.viewport, expected);
@@ -1642,7 +1643,7 @@ describe("見返しで触らずに 10 秒たつと自動に戻る", () => {
     expect(selected.idleStamp).toBe(before.idleStamp);
     for (const nodeId of ["gone", "B"]) {
       const after = update(before, Message.ClickedChangeItem({ nodeId })).model;
-      expect(after.viewing.selection).toEqual({ id: nodeId, byKey: false });
+      expect(after.viewing.selection).toEqual(Option.some({ id: nodeId, byKey: false }));
       expect(after.camera.mode).toBe("manual");
       if (nodeId === "gone") {
         expect(after.camera.viewport).toEqual(before.camera.viewport);

@@ -23,7 +23,7 @@ const snap = (nodes: SnapshotNode[], extra: Partial<Snapshot> = {}): Snapshot =>
 const single = (): Snapshot =>
   snap([node("root", null, "会議"), node("A", "root", "議題", { talkStatus: "済み" }), node("A1", "A", "論点", { pointStatus: "未決" }), node("B", "root", "議題")], { currentTopic: "B", now: 100 });
 const HEIGHTS = { root: 40, A: 50, A1: 60, B: 70 };
-const shownView = (m: MapSurfaceModel) => foldView(m.snapshot, m.viewing.humanFolds, m.viewing.selection?.id ?? null);
+const shownView = (m: MapSurfaceModel) => foldView(m.snapshot, Option.getOrUndefined(m.viewing.humanFolds), Option.getOrUndefined(m.viewing.selection)?.id ?? null);
 
 const measuredModel = (snapshot: Snapshot, viewing: ViewingState = INITIAL_VIEWING, camera: Pick<MapSurfaceModel["camera"], "mode" | "topic"> = { mode: "auto", topic: undefined }): MapSurfaceModel => ({
   ...init(snapshot, "live", false),
@@ -34,13 +34,13 @@ const measuredModel = (snapshot: Snapshot, viewing: ViewingState = INITIAL_VIEWI
 });
 // 更新後の見る状態で見せるノードを、実寸の高さで並べた目標の位置から、ノード id の箱を測って寄せた位置（倍率は今のまま）
 const focusedOn = (m: MapSurfaceModel, id: string, zoom: number): Viewport => {
-  const shown = foldView(m.snapshot, m.viewing.humanFolds, m.viewing.selection?.id ?? null).nodes;
+  const shown = foldView(m.snapshot, Option.getOrUndefined(m.viewing.humanFolds), Option.getOrUndefined(m.viewing.selection)?.id ?? null).nodes;
   const dims = Object.fromEntries(Object.entries(HEIGHTS).map(([k, height]) => [k, { height }]));
   return nodeFocusViewport(nodeRect(id, layout(shown, HEIGHTS), dims), zoom, Option.getOrThrow(m.size));
 };
 // 自動のカメラが今の議題へ寄せた位置（話し中の議題 B）
 const focusBoxes = (m: MapSurfaceModel): { rects: Rect[]; center: Rect } => {
-  const view = foldView(m.snapshot, m.viewing.humanFolds, m.viewing.selection?.id ?? null);
+  const view = foldView(m.snapshot, Option.getOrUndefined(m.viewing.humanFolds), Option.getOrUndefined(m.viewing.selection)?.id ?? null);
   const focus = cameraFocus(m.snapshot)!;
   const target = layout(view.nodes, HEIGHTS);
   const dims = Object.fromEntries(Object.entries(HEIGHTS).map(([k, height]) => [k, { height }]));
@@ -62,7 +62,7 @@ const toggleSide = (isOpen: boolean) => message(Message.ToggledSide({ isOpen }))
 
 // pointChange は実際の表示を渡し、select と side は同じ reducer を使う。
 const reduced = (state: ViewingState, event: ViewingEvent, snapshot: Snapshot) => {
-  const fold = foldView(snapshot, state.humanFolds, state.selection?.id ?? null);
+  const fold = foldView(snapshot, Option.getOrUndefined(state.humanFolds), Option.getOrUndefined(state.selection)?.id ?? null);
   const tree: VisibleTree = { ids: fold.nodes.map((n) => n.id), targets: {}, parents: Object.fromEntries(fold.nodes.map((n) => [n.id, n.parent])), fold, currentTopic: snapshot.currentTopic };
   return reduceViewing(state, event, tree);
 };
@@ -77,7 +77,7 @@ describe("mapSurface の update: 変わったことの項目を押す（reduceVi
       clickChange("A"),
       model((m) => {
         expect(m.viewing).toEqual(reduced(INITIAL_VIEWING, { type: "pointChange", id: "A" }, snapshot).state);
-        expect(m.viewing).toMatchObject({ selection: { id: "A", byKey: false } });
+        expect(m.viewing).toMatchObject({ selection: Option.some({ id: "A", byKey: false }) });
         expect(m.camera.mode).toBe("manual");
         expect(m.camera.topic).toBe("B");
         expect(shownView(m).openness["A"]).toEqual({ state: "open", byHuman: true });
@@ -90,7 +90,7 @@ describe("mapSurface の update: 変わったことの項目を押す（reduceVi
 
   it("人が畳んだ議題 A の中の A1 の項目を押すと、A の人の畳みが外れ、A1 を選び、ビューポートが A1 へ寄る。A1 自身は畳む条件に当たらないので開いた集合には足さない", () => {
     const snapshot = single();
-    const folded: ViewingState = { humanFolds: foldingActions(single(), [{ type: "toggle", id: "A" }, { type: "toggle", id: "A" }]).human };
+    const folded: ViewingState = { ...INITIAL_VIEWING, humanFolds: Option.fromUndefinedOr(foldingActions(single(), [{ type: "toggle", id: "A" }, { type: "toggle", id: "A" }]).human) };
     const start = measuredModel(snapshot, folded);
     story(
       update,
@@ -98,7 +98,7 @@ describe("mapSurface の update: 変わったことの項目を押す（reduceVi
       clickChange("A1"),
       model((m) => {
         expect(m.viewing).toEqual(reduced(folded, { type: "pointChange", id: "A1" }, snapshot).state);
-        expect(m.viewing.selection).toEqual({ id: "A1", byKey: false });
+        expect(m.viewing.selection).toEqual(Option.some({ id: "A1", byKey: false }));
         expect(m.camera.mode).toBe("manual");
         expect(shownView(m).nodes.map((n) => n.id)).toContain("A1");
         expect(shownView(m).openness["A"]).toEqual({ state: "open", byHuman: false });
@@ -110,14 +110,14 @@ describe("mapSurface の update: 変わったことの項目を押す（reduceVi
 
   it("押す前の人の開閉は残る（関係のない祖先の畳みも外れない）", () => {
     const snapshot = single();
-    const before: ViewingState = { humanFolds: foldingActions({ ...snapshot, currentTopic: "A1" }, [{ type: "toggle", id: "B" }]).human };
+    const before: ViewingState = { ...INITIAL_VIEWING, humanFolds: Option.fromUndefinedOr(foldingActions({ ...snapshot, currentTopic: "A1" }, [{ type: "toggle", id: "B" }]).human) };
     story(
       update,
       given(measuredModel(snapshot, before, { mode: "manual", topic: "B" })),
       clickChange("A1"),
       model((m) => {
         expect(m.viewing).toEqual(reduced(before, { type: "pointChange", id: "A1" }, snapshot).state);
-        expect(foldView({ ...snapshot, currentTopic: "A1" }, m.viewing.humanFolds, null).openness["B"]?.state).toBe("folded");
+        expect(foldView({ ...snapshot, currentTopic: "A1" }, Option.getOrUndefined(m.viewing.humanFolds), null).openness["B"]?.state).toBe("folded");
         expect(shownView(m).openness["A"]).toEqual({ state: "open", byHuman: false });
       }),
     );
@@ -132,7 +132,7 @@ describe("mapSurface の update: 変わったことの項目を押す（reduceVi
       model((m) => {
         const expected = reduced(INITIAL_VIEWING, { type: "select", id: "gone" }, snapshot);
         expect(m.viewing).toEqual(expected.state);
-        expect(m.viewing).toEqual({ selection: { id: "gone", byKey: false } });
+        expect(m.viewing).toEqual({ ...INITIAL_VIEWING, selection: Option.some({ id: "gone", byKey: false }) });
         expect(m.camera.mode).toBe("auto");
         // mode が auto のままなので、自動のカメラが今の議題へ寄せる（消えたノードへは寄らない）
         expectViewport(m.camera.viewport, autoFocused(m));
@@ -142,14 +142,14 @@ describe("mapSurface の update: 変わったことの項目を押す（reduceVi
 
   it("別のノードを選んでいても、押したノードへ移る（選択は押したノードに替わる）", () => {
     const snapshot = single();
-    const before: ViewingState = { selection: { id: "B", byKey: true } };
+    const before: ViewingState = { ...INITIAL_VIEWING, selection: Option.some({ id: "B", byKey: true }) };
     const start = measuredModel(snapshot, before, { mode: "manual", topic: "B" });
     story(
       update,
       given(start),
       clickChange("A1"),
       model((m) => {
-        expect(m.viewing.selection).toEqual({ id: "A1", byKey: false });
+        expect(m.viewing.selection).toEqual(Option.some({ id: "A1", byKey: false }));
         expectViewport(m.camera.viewport, focusedOn(m, "A1", start.camera.viewport.zoom));
       }),
     );
@@ -169,14 +169,14 @@ describe("mapSurface の update: 変わったことの項目を押す（reduceVi
       }),
       clickChange("B"),
       model((m) => {
-        expect(m.viewing.selection).toEqual({ id: "B", byKey: false });
+        expect(m.viewing.selection).toEqual(Option.some({ id: "B", byKey: false }));
         atB = m.camera.viewport;
         expectViewport(m.camera.viewport, focusedOn(m, "B", atA!.zoom));
         expect(differs(m.camera.viewport, atA!)).toBe(true);
       }),
       clickChange("gone"),
       model((m) => {
-        expect(m.viewing.selection).toEqual({ id: "gone", byKey: false });
+        expect(m.viewing.selection).toEqual(Option.some({ id: "gone", byKey: false }));
         // 手動のまま（select は mode を変えない）なので、消えたノードへは寄らず、B へ寄せた位置のまま
         expect(m.camera.mode).toBe("manual");
         expectViewport(m.camera.viewport, atB!);
@@ -229,7 +229,7 @@ describe("mapSurface の update: 他の出来事（select）では、自動の�
 describe("mapSurface の update: 右の列の出す・隠す（reduceViewing の side）", () => {
   it("隠す（ToggledSide の isOpen=false）と viewing.sideHidden が true になり、ビューポートは動かず、幅が変わったときのずらしが保留になる。選択など他の状態は残る", () => {
     const snapshot = single();
-    const before: ViewingState = { selection: { id: "A", byKey: false }, humanFolds: foldingActions(single(), [{ type: "toggle", id: "A" }]).human };
+    const before: ViewingState = { ...INITIAL_VIEWING, selection: Option.some({ id: "A", byKey: false }), humanFolds: Option.fromUndefinedOr(foldingActions(single(), [{ type: "toggle", id: "A" }]).human) };
     const start = measuredModel(snapshot, before, { mode: "manual", topic: "B" });
     story(
       update,
@@ -246,15 +246,15 @@ describe("mapSurface の update: 右の列の出す・隠す（reduceViewing の
     );
   });
 
-  it("出す（isOpen=true）と sideHidden の欄が無くなる（false ではなく欄ごと消える。INITIAL_VIEWING に戻る）", () => {
+  it("出す（isOpen=true）と sideHidden が false になり、INITIAL_VIEWING に戻る", () => {
     const snapshot = single();
     story(
       update,
-      given(measuredModel(snapshot, { sideHidden: true })),
+      given(measuredModel(snapshot, { ...INITIAL_VIEWING, sideHidden: true })),
       toggleSide(true),
       model((m) => {
         expect(m.viewing).toEqual(INITIAL_VIEWING);
-        expect("sideHidden" in m.viewing).toBe(false);
+        expect(m.viewing.sideHidden).toBe(false);
         expect(m.camera.pendingShift).toBe(true);
       }),
     );
@@ -272,7 +272,7 @@ describe("mapSurface の update: 右の列の出す・隠す（reduceViewing の
         expect(m).toEqual(shown);
       }),
     );
-    const hidden = measuredModel(snapshot, { sideHidden: true });
+    const hidden = measuredModel(snapshot, { ...INITIAL_VIEWING, sideHidden: true });
     story(
       update,
       given(hidden),
@@ -286,7 +286,7 @@ describe("mapSurface の update: 右の列の出す・隠す（reduceViewing の
 
   it("隠す → 出すを続けると、同じ Model の上で元の見る状態に戻る（出し入れの前後で選択は保たれる）", () => {
     const snapshot = single();
-    const before: ViewingState = { selection: { id: "A1", byKey: false } };
+    const before: ViewingState = { ...INITIAL_VIEWING, selection: Option.some({ id: "A1", byKey: false }) };
     story(
       update,
       given(measuredModel(snapshot, before, { mode: "manual", topic: "B" })),
@@ -299,7 +299,7 @@ describe("mapSurface の update: 右の列の出す・隠す（reduceViewing の
 
   it("出した後に画面の幅が狭まった測定が来ると、ビューポートが今の議題の切れる分だけずれる（出した時点では動かない）", () => {
     const snapshot = single();
-    const hidden: MapSurfaceModel = { ...measuredModel(snapshot, { sideHidden: true }), camera: { ...initialCamera(), viewport: { x: 100, y: 0, zoom: 1 } } };
+    const hidden: MapSurfaceModel = { ...measuredModel(snapshot, { ...INITIAL_VIEWING, sideHidden: true }), camera: { ...initialCamera(), viewport: { x: 100, y: 0, zoom: 1 } } };
     const narrow = { width: 300, height: 600 };
     const expected = shiftIntoView(hidden.camera.viewport, focusBoxes(hidden).rects, narrow);
     // 前提: ずらしの量が 0 でない
@@ -322,14 +322,14 @@ describe("mapSurface の update: 右の列の出す・隠す（reduceViewing の
 
   it("隠している間も、項目を押せば選べて、ビューポートが押したノードへ寄る（sideHidden は選択の結果に影響せず、保たれる）", () => {
     const snapshot = single();
-    const start = measuredModel(snapshot, { sideHidden: true });
+    const start = measuredModel(snapshot, { ...INITIAL_VIEWING, sideHidden: true });
     story(
       update,
       given(start),
       clickChange("A"),
       model((m) => {
         expect(m.viewing.sideHidden).toBe(true);
-        expect(m.viewing.selection).toEqual({ id: "A", byKey: false });
+        expect(m.viewing.selection).toEqual(Option.some({ id: "A", byKey: false }));
         expectViewport(m.camera.viewport, focusedOn(m, "A", start.camera.viewport.zoom));
         expect(differs(m.camera.viewport, start.camera.viewport)).toBe(true);
       }),

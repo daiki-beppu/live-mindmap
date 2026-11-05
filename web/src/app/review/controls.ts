@@ -42,9 +42,9 @@ const withTooltip = (h: H, model: Model, key: TooltipKey, placement: Placement, 
     toParentMessage: (message) => Message.GotTooltipMessage({ tooltipId: key, message }),
   });
 
-const barButton = (h: H, model: Model, key: TooltipKey, placement: Placement, label: string, message: Message, icon: Html, text: string, extra: Parameters<H["button"]>[0] = []): Html =>
+const barButton = (h: H, model: Model, key: TooltipKey, placement: Placement, label: string, message: Message, icon: Html, text: string): Html =>
   withTooltip(h, model, key, placement, ({ trigger, panel }) =>
-    h.button([...trigger, h.Class("review-bar__button"), h.AriaLabel(label), h.OnClick(message), ...extra], [icon, tip(h, panel, text)]),
+    h.button([...trigger, h.Class("review-bar__button"), h.AriaLabel(label), h.OnClick(message)], [icon, tip(h, panel, text)]),
   );
 
 const seekBar = (context: Context, model: Model, h: H): Html => {
@@ -162,6 +162,30 @@ const captionsButton = (model: Model, h: H): Html => {
   );
 };
 
+const sideButton = (model: Model, h: H): Html => {
+  const isOpen = !model.mapSurface.viewing.sideHidden;
+  return withTooltip(h, model, "side", "top-end", ({ trigger, panel }) =>
+    h.span(
+      [h.Class("review-bar__anchor"), h.Id(Tooltip.triggerId(tooltipId("side")))],
+      [
+        Disclosure.view(
+          {
+            id: "side",
+            isOpen,
+            onToggle: (next) => Message.ToggledSide({ isOpen: next }),
+            toView: ({ button }) =>
+              h.button(
+                [...trigger, ...button, h.Class("review-bar__button"), h.AriaLabel("右の列"), h.AriaPressed(String(isOpen))],
+                [SideIcon(h, !isOpen), tip(h, panel, "右の列（E）")],
+              ),
+          },
+          h,
+        ),
+      ],
+    ),
+  );
+};
+
 // ボタンは Menu の button。ツールチップの束の後に Menu 自身の id を戻す（Menu の吹き出し・メニューの位置が、この id でボタンを探すため）。
 // 吹き出し（OnMount を持つ）は h.submodel の viewInputs に入れられないので、Menu の隣に置く。ツールチップの位置の基準は、両方を包む要素に付けた束の id。
 const rateControl = (context: Context, model: Model, h: H): Html => {
@@ -225,7 +249,7 @@ export const controlsView = (context: Context, model: Model, topicName: string, 
             [
               captionsButton(model, h),
               ...(rates.length > 1 ? [rateControl(context, model, h)] : []),
-              barButton(h, model, "side", "top-end", "右の列", Message.ClickedSide(), SideIcon(h, model.mapSurface.viewing.sideHidden === true), "右の列（E）", [h.AriaPressed(String(model.mapSurface.viewing.sideHidden !== true))]),
+              sideButton(model, h),
             ],
           ),
         ],
