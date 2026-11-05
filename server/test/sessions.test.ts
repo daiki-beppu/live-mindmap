@@ -10,6 +10,7 @@ import { TestClock } from "effect/testing";
 import { DiffUpdater, TAP_NOTICE_TEXT, type HelperPartial, type SettledRemark, type Track } from "../src/core/index.ts";
 import { Helpers, HelperCreationDateFailure } from "../src/helpers.ts";
 import { HelperExited, NoSession, SessionBusy } from "../src/sessionFailure.ts";
+import { ExportFilesFailed } from "../src/sessionFiles.ts";
 import { SessionSinks, type OpenSessionSink, type LiveSink, type RecordedSink } from "../src/sessionSinks.ts";
 import { Sessions, SessionsDir, type SessionStart, type RecordedStart } from "../src/sessions.ts";
 import { Viewers } from "../src/viewers.ts";
@@ -96,7 +97,7 @@ function makeFakeSessionSinks(options: { exportsFails?: boolean } = {}): Effect.
           end: Effect.fnUntraced(function* (ending: Ending) {
             ends.push(ending.kind);
             if (ending.kind === "捨てる") yield* ending.quiesce;
-            return { writeOut: options.exportsFails ? Effect.die(new Error("書き出しに失敗")) : Effect.sync(() => {
+            return { writeOut: options.exportsFails ? Effect.fail(new ExportFilesFailed({ message: `${args.dir}/map.md: EISDIR` })) : Effect.sync(() => {
               order.push("writeOut");
               return {
                 paths: [`${args.dir}/map.md`, `${args.dir}/map.json`, `${args.dir}/map.drawnix`, `${args.dir}/map.png`],
@@ -112,7 +113,7 @@ function makeFakeSessionSinks(options: { exportsFails?: boolean } = {}): Effect.
     const openRecorded: SessionSinks["Service"]["openRecorded"] = (args) =>
       Effect.map(openBase(args), (sink): RecordedSink => ({ ...sink, drainForRestart: Effect.succeed({}) }));
     let dirCount = 0;
-    const createDir = (_sessionsDir: string) => Effect.suspend(() => (control.createDirFails ? Effect.die(new Error("フォルダを作れません")) : Effect.succeed(`/tmp/live-mindmap-fake/${++dirCount}`)));
+    const createDir = (sessionsDir: string) => Effect.suspend(() => (control.createDirFails ? Effect.fail(new ExportFilesFailed({ message: `${sessionsDir}: ENOTDIR` })) : Effect.succeed(`/tmp/live-mindmap-fake/${++dirCount}`)));
     return { sinks: SessionSinks.of({ open, openRecorded, createDir }), opened, finals, partials, words, screens, screenOffs, sequence, relayStats, ends, appended, speakers, speakerCalls, vocabAdded, order, control };
   });
 }
@@ -2878,6 +2879,10 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
         const exit = yield* Effect.exit(sessions.stop);
 
         expect(Exit.isFailure(exit)).toBe(true);
+        if (Exit.isFailure(exit)) {
+          expect(Cause.hasFails(exit.cause)).toBe(true);
+          expect(Cause.hasDies(exit.cause)).toBe(false);
+        }
         expect(fakeSinks.opened).toMatchObject({ count: 1, closed: 1 });
         expect(fakeSinks.relayStats.stopped).toBe(1);
         expect((yield* sessions.status).status).toBe("none");

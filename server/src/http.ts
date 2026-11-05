@@ -61,6 +61,7 @@ const STATUS: StatusTable<HandledFailure> = {
   UpdaterUnavailable: 503,
   StartupDepsMissing: 503,
   ManagedDepsFailed: 500,
+  ExportFilesFailed: 500,
   ShareOpenFailed: 500,
   ShareRefusedLocalMode: 409,
   ShareScopeEmpty: 400,

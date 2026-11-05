@@ -18,7 +18,7 @@ import {
   type Session,
   type Snapshot,
 } from "./core/index.ts";
-import { errorMessage, formatIssues, oneLine } from "./truthFile.ts";
+import { errorMessage, fileReason, formatIssues, oneLine } from "./truthFile.ts";
 import type { ExecutableModel } from "./modelSelection.ts";
 import type { SendFrame } from "./viewers.ts";
 
@@ -180,7 +180,7 @@ export const writeReviews = Effect.fnUntraced(function* (dir: string) {
 });
 
 export const writeExportsAndCapture = Effect.fnUntraced(function* (dir: string, snapshot: Snapshot, formatReason: (e: unknown) => string, names: ReadonlyMap<string, string>) {
-  const paths = yield* writeExportFiles(dir, snapshot, names).pipe(Effect.mapError((e) => new ExportFilesFailed({ message: formatReason(e) })));
+  const paths = yield* writeExportFiles(dir, snapshot, names).pipe(Effect.mapError((e) => new ExportFilesFailed({ message: `マップを書き出せませんでした: ${dir}（${fileReason(e)}）` })));
   const orWarn = <A, E, R>(effect: Effect.Effect<A, E, R>, warning: (reason: string) => string) =>
     Effect.catchCauseIf(
       effect,
