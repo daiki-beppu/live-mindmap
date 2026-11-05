@@ -1,4 +1,3 @@
-import { Result } from "effect";
 import { diffMaps } from "./changes.ts";
 import { applyOps, cloneNode, type AppliedOps, type MeetingMap } from "./map.ts";
 import { hasContent, type Remark } from "./remark.ts";
@@ -40,27 +39,27 @@ export function recordRound(history: History, before: MeetingMap, applied: Pick<
   };
 }
 
-export function reflectDiff(before: ReflectionState, event: typeof DiffEvent.Type): Result.Result<{ readonly state: ReflectionState; readonly reflectedAt: number } & Pick<AppliedOps, "dropped" | "refs">, string> {
+export function reflectDiff(before: ReflectionState, event: typeof DiffEvent.Type): { readonly state: ReflectionState; readonly reflectedAt: number } & Pick<AppliedOps, "dropped" | "refs"> {
   const fresh: Remark[] = [];
   for (const id of event.input.fresh) {
     const remark = before.ledger.byId.get(id);
-    if (!remark) return Result.fail(`ログに発言がありません: ${id}`);
+    if (!remark) throw new Error(`ログに発言がありません: ${id}`);
     fresh.push(remark);
   }
   const count = event.error !== undefined ? fresh.length : event.processedRemarks ?? fresh.length;
-  if (count > fresh.length) return Result.fail("diff の反映数が入力の発言数を超えています");
+  if (count > fresh.length) throw new Error("diff の反映数が入力の発言数を超えています");
   const consumed = fresh.slice(0, count);
   const known = new Set([...before.ledger.known, ...consumed.map((r) => r.id)]);
   const processed = [...before.ledger.processed, ...consumed.filter((r) => hasContent(r.text))];
   const stamp = stampOf(before.history, consumed);
   const applied = applyOps(before.map, event.ops, known, stamp, before.ledger.byId, before.criteria);
   const history = event.error === undefined ? recordRound(before.history, before.map, applied, stamp) : before.history;
-  return Result.succeed({
+  return {
     reflectedAt: stamp.at,
     state: { ...before, map: applied.map, history, ledger: { byId: before.ledger.byId, known, processed } },
     dropped: applied.dropped,
     refs: applied.refs,
-  });
+  };
 }
 
 function supplementAddError(before: ReflectionState, parent: string): string | undefined {
@@ -92,15 +91,15 @@ function supplementEvidence(map: MeetingMap, op: Exclude<SupplementOperation, { 
   return [...new Set([...map.nodes[op.node]!.evidence, ...op.evidence])];
 }
 
-export function reflectSupplement(before: ReflectionState, event: typeof SupplementEvent.Type): Result.Result<{
+export function reflectSupplement(before: ReflectionState, event: typeof SupplementEvent.Type): {
   readonly state: ReflectionState;
   readonly dropped: readonly { readonly op: SupplementOperation; readonly reason: string }[];
-}, string> {
+} {
   const op = event.op;
-  if (event.error !== undefined || op === null) return Result.succeed({ state: before, dropped: [] });
-  if (op.op !== "delete" && event.category === "用語" && event.term === undefined) return Result.fail("用語の補足には説明した語が必要");
+  if (event.error !== undefined || op === null) return { state: before, dropped: [] };
+  if (op.op !== "delete" && event.category === "用語" && event.term === undefined) throw new Error("用語の補足には説明した語が必要");
   const reason = supplementError(before, event, op);
-  if (reason !== undefined) return Result.succeed({ state: before, dropped: [{ op, reason }] });
+  if (reason !== undefined) return { state: before, dropped: [{ op, reason }] };
   const nodes = Object.fromEntries(Object.entries(before.map.nodes).map(([id, node]) => [id, cloneNode(node)]));
   const map: MeetingMap = { nodes, order: [...before.map.order], nextId: before.map.nextId };
   const explainedTerms = new Map(before.explainedTerms);
@@ -115,5 +114,5 @@ export function reflectSupplement(before: ReflectionState, event: typeof Supplem
     if (op.op === "add") map.order.push(id);
     if (event.term !== undefined) explainedTerms.set(event.term, id);
   }
-  return Result.succeed({ state: { ...before, map, explainedTerms }, dropped: [] });
+  return { state: { ...before, map, explainedTerms }, dropped: [] };
 }

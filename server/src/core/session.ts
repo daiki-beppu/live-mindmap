@@ -186,7 +186,10 @@ const restoreSupplement = Effect.fnUntraced(function* (replay: Replay, ledger: L
   const invalid = (reason: string) => new InvalidLogEvent({ index, reason });
   const row = yield* Schema.decodeUnknownEffect(SupplementEvent)(event).pipe(Effect.mapError((error) => invalid(error.message)));
   const map = yield* Effect.fromNullishOr(replay.map).pipe(Effect.mapError(() => invalid("ログの supplement より前に start がありません")));
-  const { state } = yield* Effect.fromResult(reflectSupplement({ map, explainedTerms: replay.explainedTerms, criteria: replay.criteria, history: replay.history, ledger }, row)).pipe(Effect.mapError(invalid));
+  const { state } = yield* Effect.try({
+    try: () => reflectSupplement({ map, explainedTerms: replay.explainedTerms, criteria: replay.criteria, history: replay.history, ledger }, row),
+    catch: (error) => invalid(error instanceof Error ? error.message : String(error)),
+  });
   return { ...replay, map: state.map, explainedTerms: state.explainedTerms };
 });
 
@@ -231,9 +234,15 @@ export const restoreState = Effect.fnUntraced(function* (events: Iterable<unknow
     } else if (type === DiffEvent.fields.type.literal) {
       const e = yield* decodeDiff(event).pipe(failed);
       const map = yield* Effect.fromNullishOr(replay.map).pipe(Effect.mapError(() => invalid("ログの diff より前に start がありません")));
-      const { state, reflectedAt } = yield* Effect.fromResult(reflectDiff({ map, explainedTerms: replay.explainedTerms, criteria: replay.criteria, history: replay.history, ledger }, e)).pipe(Effect.mapError(invalid));
+      const { state, reflectedAt } = yield* Effect.try({
+        try: () => reflectDiff({ map, explainedTerms: replay.explainedTerms, criteria: replay.criteria, history: replay.history, ledger }, e),
+        catch: (error) => invalid(error instanceof Error ? error.message : String(error)),
+      });
       const cutoff = Math.max(...e.input.fresh.map((id) => ledger.byId.get(id)!.end));
-      const queue = yield* Effect.fromResult(ScreenQueue.consume(replay.queue, e, cutoff)).pipe(Effect.mapError(invalid));
+      const queue = yield* Effect.try({
+        try: () => ScreenQueue.consume(replay.queue, e, cutoff),
+        catch: (error) => invalid(error instanceof Error ? error.message : String(error)),
+      });
       ledger.known = state.ledger.known;
       ledger.processed = state.ledger.processed;
       replay = { ...replay, explainedTerms: state.explainedTerms, queue, map: state.map, history: state.history, diffUpdate: { status: "running" } };
@@ -367,9 +376,8 @@ const openSession = Effect.fnUntraced(function* (initial: SessionState, screens:
       const event = { ...pending.row, reflectedAt };
       const applied = reflectSupplement({ map: s.map, explainedTerms: s.explainedTerms, criteria: s.criteria, history: s,
         ledger: { byId: new Map(s.remarks.map((r) => [r.id, r])), known: s.known, processed: s.processed } }, event);
-      if (Result.isFailure(applied)) return [{ error: applied.failure } as const, s] as const;
-      if (applied.success.dropped.length > 0) return [{ error: applied.success.dropped.map((d) => d.reason).join(" / ") } as const, s] as const;
-      return [{ event } as const, { ...s, map: applied.success.state.map, explainedTerms: applied.success.state.explainedTerms }] as const;
+      if (applied.dropped.length > 0) return [{ error: applied.dropped.map((d) => d.reason).join(" / ") } as const, s] as const;
+      return [{ event } as const, { ...s, map: applied.state.map, explainedTerms: applied.state.explainedTerms }] as const;
     });
     if ("error" in result) {
       yield* Effect.fail(new SupplementInvalid({ message: result.error })).pipe(Effect.ignore({ log: "Warn", message: "この回の補足の反映を諦めます" }));
@@ -538,8 +546,8 @@ const openSession = Effect.fnUntraced(function* (initial: SessionState, screens:
             let dropped: Dropped[] = [];
             yield* Ref.update(ref, (s) => {
               const byId = new Map(s.remarks.map((r) => [r.id, r]));
-              const applied = Result.getOrThrowWith(reflectDiff({ map: s.map, explainedTerms: s.explainedTerms, criteria: s.criteria, history: s, ledger: { byId, known: s.known, processed: s.processed } }, event), (reason) => new Error(reason));
-              const screenQueue = Result.getOrThrowWith(ScreenQueue.consume(s.screenQueue, event, cutoff), (reason) => new Error(reason));
+              const applied = reflectDiff({ map: s.map, explainedTerms: s.explainedTerms, criteria: s.criteria, history: s, ledger: { byId, known: s.known, processed: s.processed } }, event);
+              const screenQueue = ScreenQueue.consume(s.screenQueue, event, cutoff);
               dropped = applied.dropped;
               return { ...s, ...applied.state.history, screenQueue, map: applied.state.map, discussion: observeDiscussion(s.discussion, applied.state.map, byId, applied.reflectedAt), known: applied.state.ledger.known, processed: applied.state.ledger.processed,
                 diffUpdate: s.diffUpdate.status === "paused" ? { status: "running" as const } : s.diffUpdate, nextRetryAt: undefined, reflecting: [], previousResponse: undefined };
@@ -554,8 +562,8 @@ const openSession = Effect.fnUntraced(function* (initial: SessionState, screens:
             const byId = new Map(s.remarks.map((r) => [r.id, r]));
             const ops = attributePeople(outcome.ops, byId);
             const event: typeof DiffEvent.Type = { type: "diff", input, ops, dropped: [], ...presentFields(outcome, ["processedRemarks", "usage", "judge", "call"]) };
-            const applied = Result.getOrThrowWith(reflectDiff({ map: s.map, explainedTerms: s.explainedTerms, criteria: s.criteria, history: s, ledger: { byId, known: s.known, processed: s.processed } }, event), (reason) => new Error(reason));
-            const screenQueue = Result.getOrThrowWith(ScreenQueue.consume(s.screenQueue, event, cutoff), (reason) => new Error(reason));
+            const applied = reflectDiff({ map: s.map, explainedTerms: s.explainedTerms, criteria: s.criteria, history: s, ledger: { byId, known: s.known, processed: s.processed } }, event);
+            const screenQueue = ScreenQueue.consume(s.screenQueue, event, cutoff);
             const accepted = acceptInferredNames(outcome.names, applied.state.ledger.known, byId);
             return [{ event, dropped: applied.dropped, accepted, before: s.map, reflectedAt: applied.reflectedAt }, {
               ...s, ...applied.state.history, screenQueue, diffUpdate: s.diffUpdate.status === "paused" ? { status: "running" as const } : s.diffUpdate, nextRetryAt: undefined, map: applied.state.map, reflecting: [], previousResponse: previousResponseOf(applied),

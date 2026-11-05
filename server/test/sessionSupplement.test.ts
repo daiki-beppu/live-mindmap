@@ -247,6 +247,19 @@ describe("セッションの補足", () => {
     expect((yield* h.session.snapshot).nodes.filter((n) => n.kind === "補足")).toHaveLength(2);
   }));
 
+  it.effect("用語のない補足を反映せず、差分更新と次の補足を続ける", () => Effect.gen(function* () {
+    const h = yield* setup();
+    yield* h.step(topic("最初"));
+    yield* h.reply(0, { ...add("n1", "SLA"), term: undefined });
+    yield* h.step(topic("次"));
+    expect((yield* h.session.snapshot).nodes.filter((n) => n.kind === "補足")).toEqual([]);
+    expect(lines(h.events)).toEqual([]);
+    expect(yield* h.session.diffUpdate).toEqual({ status: "running" });
+    yield* h.reply(1, add("n2", "SLO"));
+    yield* h.step([]);
+    expect((yield* h.session.snapshot).nodes.filter((n) => n.kind === "補足").map((n) => n.text)).toEqual(["SLOの意味"]);
+  }));
+
   it.effect("補足失敗後も差分更新と次の補足を続ける", () => Effect.gen(function* () {
     const h = yield* setup();
     yield* h.step(topic("最初"));

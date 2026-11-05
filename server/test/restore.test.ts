@@ -3,7 +3,6 @@ import { Deferred, Effect, Layer } from "effect";
 import { TestClock } from "effect/testing";
 import { DIFF_UPDATE_RETRY_MS, DiffUpdatePaused, InvalidLogEvent, makeSession, restoreSession, restoreState, type DiffInput, type DiffOutput, type LogEvent, type Op, type Remark, type ScreenChange, type Session } from "../src/core/index.ts";
 import { reflectSupplement, type ReflectionState } from "../src/core/reflection.ts";
-import { Result } from "effect";
 import { playBatches } from "./fixtures/batches.ts";
 import { remark, restore, scripted, type Step } from "./fixtures/restore.ts";
 import { collectLog, forbiddenUpdater, logLayer, settleUntil, silentLog, updaterLayer, type UpdateFailure } from "./fixtures/sessionLayers.ts";
@@ -73,7 +72,7 @@ describe("ログからの復元", () => {
       { type: "supplement", op: { op: "add", parent: otherParent.id, text: "別の説明", evidence: [...otherParent.evidence], origin: "会議の外" }, category: "用語", term: "別の語", ms: 1, reflectedAt: 102 },
     ];
     const start: ReflectionState = { map: before.map, explainedTerms: before.explainedTerms, history: before, ledger: { byId: new Map(before.remarks.map((r) => [r.id, r])), known: before.known, processed: before.processed } };
-    const folded = rows.reduce((s, event) => Result.getOrThrow(reflectSupplement(s, event)).state, start);
+    const folded = rows.reduce((s, event) => reflectSupplement(s, event).state, start);
     const restored = yield* restoreState(viaJsonl([...events, ...rows]));
     expect(restored.map).toEqual(folded.map);
     expect(restored.explainedTerms).toEqual(folded.explainedTerms);
@@ -83,10 +82,10 @@ describe("ログからの復元", () => {
     const otherId = `n${before.map.nextId + 2}`;
     const next: ReflectionState = { map: restored.map, explainedTerms: restored.explainedTerms, history: restored, ledger: { byId: new Map(restored.remarks.map((r) => [r.id, r])), known: restored.known, processed: restored.processed } };
     const own: Extract<LogEvent, { type: "supplement" }> = { type: "supplement", op: { op: "update", node: ownId, text: "本人の言い直し", evidence: [...parent.evidence], origin: "会議の中" }, category: "用語", term: "次の語", ms: 1, reflectedAt: 103 };
-    const accepted = Result.getOrThrow(reflectSupplement(next, own));
+    const accepted = reflectSupplement(next, own);
     expect(accepted.dropped).toEqual([]);
     expect(accepted.state.map.nodes[ownId]!.text).toBe("本人の言い直し");
-    const blocked = Result.getOrThrow(reflectSupplement(next, { ...own, term: "最初の語", op: { op: "update", node: otherId, text: "拒否する言い直し", evidence: [...otherParent.evidence], origin: "会議の外" } }));
+    const blocked = reflectSupplement(next, { ...own, term: "最初の語", op: { op: "update", node: otherId, text: "拒否する言い直し", evidence: [...otherParent.evidence], origin: "会議の外" } });
     expect(blocked.dropped).toHaveLength(1);
     expect(blocked.state.map.nodes[otherId]!.text).toBe(snapshot.nodes.find((n) => n.id === otherId)!.text);
   }));
@@ -613,7 +612,7 @@ describe("壊れたログは InvalidLogEvent で失敗する", () => {
     Effect.gen(function* () {
       const diff = { type: "diff", input: { recent: [], fresh: ["r-missing"], nodeCount: 0 }, ops: [], dropped: [] };
       const error = yield* flip([start, { type: "remark", remark: r1 }, diff]);
-      expect(error).toMatchObject({ _tag: "InvalidLogEvent", index: 2 });
+      expect(error).toMatchObject({ _tag: "InvalidLogEvent", index: 2, reason: "ログに発言がありません: r-missing" });
     }));
 
   const broken: [string, unknown[], number][] = [
@@ -926,7 +925,8 @@ describe("共有画面の復元（復元はファイル名だけを戻し、画�
         { type: "diff", input: { recent: [], fresh: ["r1"], nodeCount: 0, screenCount: 2 }, ops: [], dropped: [] },
       ];
       const error = yield* Effect.flip(restore(events));
-      expect(error).toMatchObject({ _tag: "InvalidLogEvent", index: 3 });
+      expect(error).toMatchObject({ _tag: "InvalidLogEvent", index: 3,
+        reason: "diff の screenCount 2 が、ここまでの screen の行の数 1 より大きい" });
     }));
 
   it.effect("画像を読めなくても復元はでき、続きの呼び出しは差分更新を呼ばずに失敗として diff の行に残る", () =>
