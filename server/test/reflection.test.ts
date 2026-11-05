@@ -48,7 +48,7 @@ const supplementEvent = (extra: Partial<typeof SupplementEvent.Type> = {}): type
   type: "supplement", category: "用語", term: "SLA", ms: 12, reflectedAt: 5,
   op: { op: "add", parent: "n2", text: "サービス水準の合意", evidence: ["r0"], origin: "会議の外" }, ...extra,
 });
-const supplemented = (before: ReflectionState, event = supplementEvent()) => Result.getOrThrow(reflectSupplement(before, event));
+const supplemented = (before: ReflectionState, event = supplementEvent()) => reflectSupplement(before, event);
 
 function twoSupplements(): ReflectionState {
   const base = supplementState();
@@ -88,7 +88,7 @@ describe("supplement の反映", () => {
     const before = twoSupplements();
     const after = operation === "補足削除"
       ? supplemented(before, supplementEvent({ op: { op: "delete", node: "n3" } })).state
-      : Result.getOrThrow(reflectDiff(before, diff(["r1"], { ops: operation === "親削除" ? [{ op: "delete", node: "n2" }] : operation === "親統合" ? [{ op: "combine", from: "n2", into: "n1" }] : [] }))).state;
+      : reflectDiff(before, diff(["r1"], { ops: operation === "親削除" ? [{ op: "delete", node: "n2" }] : operation === "親統合" ? [{ op: "combine", from: "n2", into: "n1" }] : [] })).state;
     const own = supplementEvent({ term: "SLO", op: { op: "update", node: "n4", text: "目標の言い直し", evidence: ["r0"], origin: "会議の外" } });
     expect(supplemented(after, own).dropped).toEqual([]);
     const saved = structuredClone(after);
@@ -100,7 +100,7 @@ describe("supplement の反映", () => {
   });
 
   it.each([{ evidence: ["r0"] }, { evidence: ["r1"] }, { evidence: ["r0", "r1", "r1"] }])("言い直しは本文を置換し、既存根拠に有効な根拠 $evidence を重複なく足す", ({ evidence }) => {
-    const base = Result.getOrThrow(reflectDiff(supplementState(), diff(["r1"], { ops: [{ op: "update", node: "n2", evidence: ["r1"] }] }))).state;
+    const base = reflectDiff(supplementState(), diff(["r1"], { ops: [{ op: "update", node: "n2", evidence: ["r1"] }] })).state;
     const before = supplemented(base).state;
     const saved = structuredClone(before);
     const got = supplemented(before, supplementEvent({ op: { op: "update", node: "n3", text: "合意したサービス水準", evidence, origin: "会議の中" } }));
@@ -141,7 +141,7 @@ describe("supplement の反映", () => {
     expect([...first.state.explainedTerms.keys()]).toEqual(["SLA"]);
     expect(first.state.history).toEqual(before.history);
     expect(first.state.ledger).toEqual(before.ledger);
-    const next = Result.getOrThrow(reflectDiff(first.state, diff(["r1"], { ops: [topic] })));
+    const next = reflectDiff(first.state, diff(["r1"], { ops: [topic] }));
     expect(next.state.map.nodes.n4).toMatchObject({ kind: "議題", text: "採用" });
     expect(next.state.map.nodes.n3).toEqual(first.state.map.nodes.n3);
     expect([...next.state.explainedTerms.keys()]).toEqual(["SLA"]);
@@ -192,7 +192,7 @@ describe("supplement の反映", () => {
     const before = supplementState();
     before.map.nodes.n1 = { id: "n1", parent: "root", kind: "課題", text: "予算", evidence: ["r0"] };
     before.map.nodes.n2!.parent = "root";
-    const removed = Result.getOrThrow(reflectDiff(before, diff(["r1"], { ops: [op === "delete" ? { op, node: "n2" } : { op, from: "n2", into: "n1" }] }))).state;
+    const removed = reflectDiff(before, diff(["r1"], { ops: [op === "delete" ? { op, node: "n2" } : { op, from: "n2", into: "n1" }] })).state;
     const got = supplemented(removed);
     expect(got.dropped).toHaveLength(1);
     expect(got.state.map).toEqual(removed.map);
@@ -214,7 +214,7 @@ describe("supplement の反映", () => {
     before.map.nodes.n1 = { id: "n1", parent: "root", kind: "課題", text: "予算", evidence: ["r0"] };
     before.map.nodes.n2!.parent = "root";
     const first = supplemented(before).state;
-    const removed = Result.getOrThrow(reflectDiff(first, diff(["r1"], { ops: [op === "delete" ? { op, node: "n2" } : { op, from: "n2", into: "n1" }] }))).state;
+    const removed = reflectDiff(first, diff(["r1"], { ops: [op === "delete" ? { op, node: "n2" } : { op, from: "n2", into: "n1" }] })).state;
     expect(removed.map.nodes.n3).toBeUndefined();
     const got = supplemented(removed, supplementEvent({ op: { op: "add", parent: "n1", text: "同じ語", evidence: ["r0"], origin: "会議の外" } }));
     expect(got.dropped).toHaveLength(1);
@@ -225,7 +225,7 @@ describe("supplement の反映", () => {
   it("説明した語が欠けた用語の回は失敗し、入力を変えず、次の正しい回を反映できる", () => {
     const before = supplementState();
     const saved = structuredClone(before);
-    expect(Result.isFailure(reflectSupplement(before, supplementEvent({ term: undefined })))).toBe(true);
+    expect(() => reflectSupplement(before, supplementEvent({ term: undefined }))).toThrow("用語の補足には説明した語が必要");
     expect(before).toEqual(saved);
     expect(supplemented(before).state.map.nodes.n3).toMatchObject({ kind: "補足" });
   });
@@ -267,7 +267,7 @@ describe("supplement の反映", () => {
 describe("diff の反映", () => {
   it("通常の差分で補足を削除しても、その会議では同じ語を説明し直せない", () => {
     const before = twoSupplements();
-    const removed = Result.getOrThrow(reflectDiff(before, diff(["r1"], { ops: [{ op: "delete", node: "n3" }] }))).state;
+    const removed = reflectDiff(before, diff(["r1"], { ops: [{ op: "delete", node: "n3" }] })).state;
     expect(removed.map.nodes.n3).toBeUndefined();
     expect(removed.map.nodes.n4).toEqual(before.map.nodes.n4);
     expect([...removed.explainedTerms.keys()]).toEqual(["SLA", "SLO"]);
@@ -281,11 +281,11 @@ describe("diff の反映", () => {
     const criteria = ["採用のしやすさ"];
     const before = { ...state([remark("r1", 20, "試験導入を提案します")]), criteria };
     const op = { op: "add", ref: "plan", parent: "n1", kind: "案", text: "試験導入", evidence: ["r1"], criteria } satisfies Op;
-    const first = Result.getOrThrow(reflectDiff(before, diff(["r1"], { ops: [op], ...(error === undefined ? {} : { error }) })));
+    const first = reflectDiff(before, diff(["r1"], { ops: [op], ...(error === undefined ? {} : { error }) }));
     expect(first.state.map.nodes.n2).toHaveProperty("criteria", criteria);
     expect(first.state).toHaveProperty("criteria", criteria);
     const update = { op: "update", node: "n2", evidence: ["r1"], criteria: ["価格"] } satisfies Op;
-    const second = Result.getOrThrow(reflectDiff(first.state, diff(["r1"], { ops: [update] })));
+    const second = reflectDiff(first.state, diff(["r1"], { ops: [update] }));
     expect(second.state.map.nodes.n2!.criteria ?? []).toEqual([]);
   });
 
@@ -301,7 +301,7 @@ describe("diff の反映", () => {
     });
     const savedEvent = structuredClone(event);
 
-    const got = Result.getOrThrow(reflectDiff(before, event));
+    const got = reflectDiff(before, event);
 
     expect(got.state.ledger.known).toEqual(new Set(["r0", "r1", "r2"]));
     expect(got.state.ledger.processed).toEqual([before.ledger.byId.get("r0"), r1, r2]);
@@ -326,7 +326,7 @@ describe("diff の反映", () => {
     const before = state([r1, r2, filler]);
     const saved = structuredClone(before);
 
-    const got = Result.getOrThrow(reflectDiff(before, diff(["r1", "r2", "r3"], { error: "timeout", processedRemarks: 1, ops: [topic] })));
+    const got = reflectDiff(before, diff(["r1", "r2", "r3"], { error: "timeout", processedRemarks: 1, ops: [topic] }));
 
     expect(got.state.ledger.known).toEqual(new Set(["r0", "r1", "r2", "r3"]));
     expect(got.state.ledger.processed).toEqual([before.ledger.byId.get("r0"), r1, r2]);
@@ -342,7 +342,7 @@ describe("diff の反映", () => {
     const r2 = remark("r2", 90, "まだ反映しない発言");
     const before = state([r1, r2]);
 
-    const got = Result.getOrThrow(reflectDiff(before, diff(["r1", "r2"], { processedRemarks: 1, ops: [topic] })));
+    const got = reflectDiff(before, diff(["r1", "r2"], { processedRemarks: 1, ops: [topic] }));
 
     expect(got.state.ledger.known).toEqual(new Set(["r0", "r1"]));
     expect(got.state.ledger.processed).toEqual([before.ledger.byId.get("r0"), r1]);
@@ -359,12 +359,8 @@ describe("diff の反映", () => {
     const before = state([remark("r1", 20, "採用を話します")]);
     const saved = structuredClone(before);
 
-    const got = reflectDiff(before, diff(["r1"], { processedRemarks: 2, ops: [topic] }));
-
-    expect(Result.isFailure(got)).toBe(true);
-    if (!Result.isFailure(got)) throw new Error("不正な反映数が成功した");
-    expect(typeof got.failure).toBe("string");
-    expect(got.failure.length).toBeGreaterThan(0);
+    expect(() => reflectDiff(before, diff(["r1"], { processedRemarks: 2, ops: [topic] })))
+      .toThrow("diff の反映数が入力の発言数を超えています");
     expect(before).toEqual(saved);
   });
 
@@ -375,11 +371,8 @@ describe("diff の反映", () => {
     const before = state([remark("r1", 20, "採用を話します")]);
     const saved = structuredClone(before);
 
-    const got = reflectDiff(before, diff(fresh, { processedRemarks: 1, ops: [topic] }));
-
-    expect(Result.isFailure(got)).toBe(true);
-    if (!Result.isFailure(got)) throw new Error("未知の発言 ID が成功した");
-    expect(got.failure).toContain("r-missing");
+    expect(() => reflectDiff(before, diff(fresh, { processedRemarks: 1, ops: [topic] })))
+      .toThrow("ログに発言がありません: r-missing");
     expect(before).toEqual(saved);
   });
 
@@ -388,14 +381,14 @@ describe("diff の反映", () => {
     const spoken = remark("r2", 20, "採用を話します");
     const filler2 = remark("r3", 40, "えー");
     const before = state([filler1, spoken, filler2]);
-    const first = Result.getOrThrow(reflectDiff(before, diff(["r1"])));
+    const first = reflectDiff(before, diff(["r1"]));
     expect(first.state.ledger.known).toEqual(new Set(["r0", "r1"]));
     expect(first.state.ledger.processed).toEqual(before.ledger.processed);
     expect(first.state.history).toEqual({ ...before.history, round: 3, lastChanged: undefined });
 
-    const got = Result.getOrThrow(reflectDiff(first.state, diff(["r2", "r3"], {
+    const got = reflectDiff(first.state, diff(["r2", "r3"], {
       ops: [{ ...topic, evidence: ["r2"] }],
-    })));
+    }));
 
     expect(got.state.ledger.known).toEqual(new Set(["r0", "r1", "r2", "r3"]));
     expect(got.state.ledger.processed).toEqual([...before.ledger.processed, spoken]);
@@ -411,7 +404,7 @@ describe("diff の反映", () => {
     const before = state([remark("r1", 20, "採用を話します")]);
     const collision: Op = { ...topic, ref: "n1", text: "衝突した議題" };
 
-    const got = Result.getOrThrow(reflectDiff(before, diff(["r1"], { ops: [collision, topic] })));
+    const got = reflectDiff(before, diff(["r1"], { ops: [collision, topic] }));
 
     expect(got.dropped).toEqual([{ op: collision, reason: "仮 ID が既存の ID と重なる" }]);
     expect(got.state.map.nodes.n1).toEqual(before.map.nodes.n1);
@@ -422,12 +415,12 @@ describe("diff の反映", () => {
 
   it("帰属済みの proposer・assigneeSpeaker を再推定しない", () => {
     const before = state([remark("r1", 20, "私が担当します")]);
-    const got = Result.getOrThrow(reflectDiff(before, {
+    const got = reflectDiff(before, {
       ...diff(["r1"], { ops: [
         { op: "add", ref: "plan", parent: "n1", kind: "案", text: "採用案", evidence: ["r1"], proposer: "記録された提案者" },
         { op: "add", ref: "todo", parent: "n1", kind: "TODO", text: "準備する", evidence: ["r1"], assigneeSpeaker: "記録された担当者" },
       ] }),
-    }));
+    });
 
     expect(got.state.map.nodes.n2).toMatchObject({ proposer: "記録された提案者", touchedAt: 20 });
     expect(got.state.map.nodes.n3).toMatchObject({ assigneeSpeaker: "記録された担当者", touchedAt: 20 });
@@ -437,10 +430,10 @@ describe("diff の反映", () => {
   it("共有画面の件数・時刻を反映の検査や stamp に使わない", () => {
     const before = state([remark("r1", 20, "採用を話します")]);
 
-    const got = Result.getOrThrow(reflectDiff(before, {
+    const got = reflectDiff(before, {
       ...diff(["r1"], { ops: [topic] }),
       input: { recent: [], fresh: ["r1"], nodeCount: 1, screenCount: 100, screens: [{ start: 999, image: "screen.jpg" }] },
-    }));
+    });
 
     expect(got.state.map.nodes.n2).toMatchObject({ text: "採用", touchedAt: 20 });
     expect(got.state.history.changes.at(-1)).toMatchObject({ round: 3, at: 20 });

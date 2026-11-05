@@ -1,4 +1,3 @@
-import { Result } from "effect";
 import { describe, expect, it } from "vitest";
 import * as ScreenQueue from "../src/core/screenQueue.ts";
 import type { DiffEvent } from "../src/core/session.ts";
@@ -13,7 +12,7 @@ const diff = (selection: ReturnType<typeof ScreenQueue.select>, fresh = true): t
   type: "diff", input: { recent: [], fresh: fresh ? ["r1"] : [], nodeCount: 0, ...selection }, ops: [], dropped: [],
 });
 const consume = (queue: Queue, cutoff: number): Queue =>
-  Result.getOrThrow(ScreenQueue.consume(queue, diff(ScreenQueue.select(queue, cutoff)), cutoff));
+  ScreenQueue.consume(queue, diff(ScreenQueue.select(queue, cutoff)), cutoff);
 
 describe("共有画面のキュー", () => {
   it("一度も受信していなければ screens と screenCount のキーを返さない", () => {
@@ -63,7 +62,7 @@ describe("共有画面のキュー", () => {
       const first = receive(ScreenQueue.make(), [shot(0)]);
       const event = diff(ScreenQueue.select(first, 30));
       const during = ScreenQueue.receive(first, late, false);
-      const next = Result.getOrThrow(ScreenQueue.consume(during, event, 30));
+      const next = ScreenQueue.consume(during, event, 30);
       expect(ScreenQueue.select(next, 30)).toEqual({ screens: [late], screenCount: 2 });
     });
   }
@@ -72,25 +71,26 @@ describe("共有画面のキュー", () => {
     const first = receive(ScreenQueue.make(), [shot(0)]);
     const event = { ...diff(ScreenQueue.select(first, 30)), error: "UpdateFailed: 失敗" };
     const during = receive(first, [shot(20), gone(21)]);
-    const next = Result.getOrThrow(ScreenQueue.consume(during, event, 30));
+    const next = ScreenQueue.consume(during, event, 30);
     expect(ScreenQueue.select(next, 30)).toEqual({ screens: [shot(20), gone(21)], screenCount: 3 });
   });
 
-  it("受信数より大きいscreenCountはResultの失敗を返す", () => {
+  it("受信数より大きいscreenCountは例外を投げ、キューを変えない", () => {
     const queue = receive(ScreenQueue.make(), [gone(0)]);
-    expect(Result.isFailure(ScreenQueue.consume(queue, diff({ screenCount: 2 }), 10))).toBe(true);
+    expect(() => ScreenQueue.consume(queue, diff({ screenCount: 2 }), 10))
+      .toThrow("diff の screenCount 2 が、ここまでの screen の行の数 1 より大きい");
     expect(ScreenQueue.select(queue, 10)).toEqual({ screens: [gone(0)], screenCount: 1 });
   });
 
   it("freshのないdiffは未消費の画面を取り除かない", () => {
     const queue = receive(ScreenQueue.make(), [shot(0)]);
-    const next = Result.getOrThrow(ScreenQueue.consume(queue, diff({ screenCount: 1 }, false), 10));
+    const next = ScreenQueue.consume(queue, diff({ screenCount: 1 }, false), 10);
     expect(ScreenQueue.select(next, 10)).toEqual({ screens: [shot(0)], screenCount: 1 });
   });
 
   it("消費は再選択せずログに添えた画像を10秒の起点にする", () => {
     const queue = receive(ScreenQueue.make(), [shot(0), shot(5)]);
-    const next = Result.getOrThrow(ScreenQueue.consume(queue, diff({ screens: [shot(5)], screenCount: 2 }), 6));
+    const next = ScreenQueue.consume(queue, diff({ screens: [shot(5)], screenCount: 2 }), 6);
     const received = ScreenQueue.receive(next, shot(12), false);
     expect(ScreenQueue.select(received, 13)).toEqual({ screenCount: 3 });
   });

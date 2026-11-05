@@ -44,7 +44,7 @@ it.effect("logMetrics: processedRemarks が fresh の件数を超える成功行
 
   const error = yield* Effect.flip(logMetrics(events));
 
-  expect(error).toMatchObject({ _tag: "InvalidLogEvent" });
+  expect(error).toMatchObject({ _tag: "InvalidLogEvent", index: 2, reason: "diff の反映数が入力の発言数を超えています" });
 }));
 
 it.effect("invConservation: 再適用でも未消費の発言を根拠にした操作は指標へ含めない", () => Effect.gen(function* () {
