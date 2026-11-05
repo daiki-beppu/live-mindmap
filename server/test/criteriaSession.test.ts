@@ -57,19 +57,19 @@ describe("判断軸のセッション保存と復元", () => {
     expect(calls[0]).toHaveProperty("criteria", criteria);
   }));
 
-  it("見返し用ログから時点ごとの関係づけを再構成する", () => {
+  it.effect("見返し用ログから時点ごとの関係づけを再構成する", () => Effect.gen(function* () {
     const rows = events();
-    const before = reviewSnapshot(mapOnlyReviewEvents(rows));
+    const before = reviewSnapshot((yield* mapOnlyReviewEvents(rows)));
     expect(before).toHaveProperty("criteria", criteria);
     expect(before.nodes.find((n) => n.id === "n3")).toHaveProperty("criteria", [criteria[0]]);
     rows.push(
       { type: "remark", remark: { ...remark, id: "r2", start: 3, end: 4 } },
       { type: "diff", input: { recent: ["r1"], fresh: ["r2"], nodeCount: 3 }, ops: [{ op: "update", node: "n3", evidence: ["r2"], criteria: [criteria[1]!] }], dropped: [] },
     );
-    const after = reviewSnapshot(mapOnlyReviewEvents(rows));
+    const after = reviewSnapshot((yield* mapOnlyReviewEvents(rows)));
     expect(after.nodes.find((n) => n.id === "n3")).toHaveProperty("criteria", [criteria[1]]);
     expect(before.nodes.find((n) => n.id === "n3")).toHaveProperty("criteria", [criteria[0]]);
-  });
+  }));
 });
 
 describe("判断軸の書き出し", () => {

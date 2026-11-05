@@ -1,5 +1,6 @@
 import { click, expect as expectScene, findAll, given, scene, selector, Subscription, tap, textContent } from "foldkit/scene";
 import { describe, expect, it } from "vitest";
+import { Effect } from "effect";
 import { mapOnlyReviewEvents } from "../../server/src/core/index.ts";
 import { makeContext } from "../src/app/review/context.ts";
 import { Message as MapSurfaceMessage } from "../src/app/mapSurface/message.ts";
@@ -202,12 +203,12 @@ describe("見返しの Scene: 字幕はライブと同じ吹き出しで、最�
     );
   });
 
-  it("マップだけの版（本文が空）では、どの時刻でも字幕を描かない", () => {
-    const mapOnlyContext = makeContext(mapOnlyReviewEvents(speakerEvents));
+  it("マップだけの版（本文が空）では、どの時刻でも字幕を描かない", () => Effect.runPromise(Effect.gen(function* () {
+    const mapOnlyContext = makeContext((yield* mapOnlyReviewEvents(speakerEvents)));
     for (const t of [3, 4, 6]) {
       scene(appOf(mapOnlyContext), given(stateAt(mapOnlyContext, t)), settle, expectScene(selector(".captions")).toBeAbsent());
     }
-  });
+  })));
 });
 
 describe.each([

@@ -15,6 +15,7 @@ import {
   type Snapshot,
   type SpeakerNameTable,
 } from "../src/core/index.ts";
+import { prepareReviewEvents } from "../src/core/review.ts";
 import { KIND_COLORS } from "../src/core/drawnix.ts";
 import { playBatches } from "./fixtures/batches.ts";
 import { restore } from "./fixtures/restore.ts";
@@ -89,54 +90,54 @@ describe("補足の書き出し", () => {
     for (const parent of raw.root.children) for (const supplement of parent.children) expect(supplement).not.toHaveProperty("category");
   }));
 
-  it("map.html の埋め込みは追加・更新の補足を種別と出どころ付きで持ち、最後のマップに復元できる", () => {
+  it.effect("map.html の埋め込みは追加・更新の補足を種別と出どころ付きで持ち、最後のマップに復元できる", () => Effect.gen(function* () {
     const log = supplementLog("SLO", ["r2"]);
-    const rows = JSON.parse(embeddedText(embedReviewLog(TEMPLATE, log)));
+    const rows = JSON.parse(embeddedText(embedReviewLog(TEMPLATE, yield* prepareReviewEvents(log))));
     expect(rows.filter((row: { type: string }) => row.type === "supplement").map((row: { op: unknown }) => row.op)).toMatchObject([
       { op: "add", kind: "補足", origin: "会議の外" },
       { op: "add", kind: "補足", origin: "会議の外" },
       { op: "update", kind: "補足", origin: "会議の中" },
     ]);
     expect(reviewSnapshot(rows)).toEqual(reviewSnapshot(log));
-  });
+  }));
 
-  it.each(categories)("map.html は補足行の区分「%s」を出さず、元ログを保持する", (category) => {
+  it.effect.each(categories)("map.html は補足行の区分「%s」を出さず、元ログを保持する", (category) => Effect.gen(function* () {
     const log = supplementLog("SLO", ["r2"]).map((row) => row.type === "supplement" ? { ...row, category } : row);
     const before = JSON.stringify(log);
-    const rows = JSON.parse(embeddedText(embedReviewLog(TEMPLATE, log)));
+    const rows = JSON.parse(embeddedText(embedReviewLog(TEMPLATE, yield* prepareReviewEvents(log))));
     const supplements = rows.filter((row: { type: string }) => row.type === "supplement");
     expect(supplements).toHaveLength(3);
     for (const row of supplements) expect(categories).not.toContain(row.category);
     expect(reviewSnapshot(rows)).toEqual(reviewSnapshot(log));
     expect(JSON.stringify(log)).toBe(before);
-  });
+  }));
 
-  it("map.html は分類と同じ文字や引用・フェンスのある補足本文をそのまま復元する", () => {
+  it.effect("map.html は分類と同じ文字や引用・フェンスのある補足本文をそのまま復元する", () => Effect.gen(function* () {
     const text = '背景を説明する\n> {"category":"用語"}\n`{"category":"用語"}`\n```json\n{"category":"用語"}\n```\n~~~json\n{"category":"用語"}\n~~~\n```json\n{"category":"用語"}';
     const log = supplementLog("SLO", ["r2"]).map((row) => row.type === "supplement" && row.op !== null && row.op.op !== "delete" ? { ...row, op: { ...row.op, text } } : row);
-    const rows = JSON.parse(embeddedText(embedReviewLog(TEMPLATE, log)));
+    const rows = JSON.parse(embeddedText(embedReviewLog(TEMPLATE, yield* prepareReviewEvents(log))));
     const supplements = reviewSnapshot(rows).nodes.filter((n) => n.kind === "補足");
     expect(supplements).toHaveLength(2);
     expect(supplements.map((n) => n.text)).toEqual([text, text]);
-  });
+  }));
 
-  it("補足行のない map.html は埋め込みの出来事と復元結果を変えない", () => {
+  it.effect("補足行のない map.html は埋め込みの出来事と復元結果を変えない", () => Effect.gen(function* () {
     const log = supplementLog("SLO", ["r2"]).filter((row) => row.type !== "supplement");
-    const rows = JSON.parse(embeddedText(embedReviewLog(TEMPLATE, log)));
+    const rows = JSON.parse(embeddedText(embedReviewLog(TEMPLATE, yield* prepareReviewEvents(log))));
     expect(rows).toEqual(log);
     expect(reviewSnapshot(rows)).toEqual(reviewSnapshot(log));
-  });
+  }));
 
-  it("map.html は補足の削除と操作なしの行を復元でき、本文や出どころを捏造しない", () => {
+  it.effect("map.html は補足の削除と操作なしの行を復元でき、本文や出どころを捏造しない", () => Effect.gen(function* () {
     const log = [
       ...supplementLog("SLO", ["r2"]),
       { type: "supplement", op: { op: "delete", node: "n3" }, category: null, ms: 1, reflectedAt: 31 },
       { type: "supplement", op: null, category: null, ms: 1, reflectedAt: 32 },
     ];
-    const rows = JSON.parse(embeddedText(embedReviewLog(TEMPLATE, log)));
+    const rows = JSON.parse(embeddedText(embedReviewLog(TEMPLATE, yield* prepareReviewEvents(log))));
     expect(rows.slice(-2).map((row: { op: unknown }) => row.op)).toEqual([{ op: "delete", node: "n3" }, null]);
     expect(reviewSnapshot(rows).nodes.filter((n) => n.kind === "補足")).toMatchObject([{ id: "n4", origin: "会議の中" }]);
-  });
+  }));
 
   it.effect("map.drawnix は補足の data に種別と両方の出どころを持ち、添える先と表示文を保つ", () => Effect.gen(function* () {
     const session = yield* restore(supplementLog("SLO", ["r2"]));

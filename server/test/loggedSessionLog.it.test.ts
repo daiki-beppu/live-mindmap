@@ -137,7 +137,7 @@ for (const scenario of [
     expect(snapshots[2]!.nodes.map((n) => n.text)).toEqual(expect.arrayContaining(["運用水準", "サービス水準の合意"]));
     const events: unknown[] = readFileSync(join(dir, LOG_FILE), "utf8").trim().split("\n").map((line) => JSON.parse(line));
     expect.soft(events).toContainEqual(expect.objectContaining({ type: "supplement", reflectedAt: scenario.at }));
-    for (const rows of [events, mapOnlyReviewEvents(events)]) {
+    for (const rows of [events, (yield* mapOnlyReviewEvents(events))]) {
       const timeline = buildReviewTimeline(rows);
       const before = snapshotAt(timeline, scenario.at - 0.001);
       expect(before.nodes.map((n) => n.text)).not.toContain("運用水準");
