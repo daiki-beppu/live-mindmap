@@ -370,7 +370,7 @@ const recordPlayback = Effect.fn("recordPlayback")(function* (
       });
   yield* playback(replaying, input.remarks, { ...(input.realtime ? { sleep: (ms: number) => Effect.sleep(ms) } : {}), screens: input.screens });
   const json = yield* session.exportJson;
-  const paths = yield* writeExportsAndCapture(dir, yield* session.snapshot, describe, new Map(Object.entries(json.speakerNames ?? {}))).pipe(
+  const { paths } = yield* writeExportsAndCapture(dir, yield* session.snapshot, describe, new Map(Object.entries(json.speakerNames ?? {}))).pipe(
     Effect.mapError((e) => new CommandFailed({ message: e.message })),
   );
   return { dir, paths };
@@ -689,7 +689,8 @@ const stop = Command.make(
   {},
   Effect.fn("stop")(function* () {
     const port = yield* portConfig;
-    const { paths, ocrSummary, kind } = yield* requestServer(port, ServerRoutes.sessionStop);
+    const { paths, ocrSummary, kind, warnings } = yield* requestServer(port, ServerRoutes.sessionStop);
+    yield* writeWarnings((warnings ?? []).map(oneLine));
     if (kind === "live" && ocrSummary.failed > 0) yield* Console.error(formatOcrSummary(ocrSummary));
     yield* write(paths.map((path) => `${path}\n`).join(""));
   }),

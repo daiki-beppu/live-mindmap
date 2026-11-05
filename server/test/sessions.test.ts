@@ -59,7 +59,7 @@ type FakeSinksHandle = {
 
 // 偽の SessionSinks。ID の採番だけ本物の規則（セッションにつき 1 回のクロージャ、r1 から）を真似る。
 // 覆い（settle.ts）の規則は真似ない（その規則は remarkSettling.test.ts・settle.test.ts が別に固定している）
-function makeFakeSessionSinks(options: { exportsFails?: boolean } = {}): Effect.Effect<FakeSinksHandle, never, Scope.Scope> {
+function makeFakeSessionSinks(options: { exportsFails?: boolean; warnings?: readonly string[] } = {}): Effect.Effect<FakeSinksHandle, never, Scope.Scope> {
   return Effect.gen(function* () {
     const opened = { count: 0, closed: 0 };
     const finals: { id: string; track: Track; text: string }[] = [];
@@ -102,6 +102,7 @@ function makeFakeSessionSinks(options: { exportsFails?: boolean } = {}): Effect.
               return {
                 paths: [`${args.dir}/map.md`, `${args.dir}/map.json`, `${args.dir}/map.drawnix`, `${args.dir}/map.png`],
                 ocrSummary: { images: savedScreens.filter((s) => s.image !== null).length, failed: savedScreens.filter((s) => s.image !== null && s.ocrFailed === true).length },
+                warnings: options.warnings ?? [],
               };
             }) };
           }),
@@ -131,6 +132,15 @@ const bootSessions = (helpersLayer: Layer.Layer<Helpers>, sinksLayer: Layer.Laye
   });
 
 describe("現在のセッションの状態による操作の許可", () => {
+  it.effect("録画の stop は書き出しの警告を応答へ渡す", () => Effect.gen(function* () {
+    const warnings = ["map.png を書き出せませんでした: 撮影に失敗"];
+    const helper = yield* makeFakeHelpers([{}]);
+    const fake = yield* makeFakeSessionSinks({ warnings });
+    const { sessions } = yield* bootSessions(Layer.succeed(Helpers, helper.helpers), Layer.succeed(SessionSinks, fake.sinks));
+    yield* sessions.startRecorded({ file: "/meeting.m4a", title: undefined, vocab: [], realtime: false, plan: { kind: "single", model: defaultClaude } });
+    expect(yield* sessions.stop).toMatchObject({ kind: "recorded", warnings });
+  }));
+
   it.effect.each([
     { local: true, criteria: ["採用のしやすさ"], notices: 1 },
     { local: false, criteria: ["採用のしやすさ"], notices: 0 },

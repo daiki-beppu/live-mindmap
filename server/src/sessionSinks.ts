@@ -20,6 +20,7 @@ import type { SendFrame, ViewerFrame } from "./viewers.ts";
 
 type Written = {
   paths: string[];
+  warnings: ReadonlyArray<string>;
   ocrSummary: typeof import("./core/recordedProgress.ts").OcrSummary.Type;
 };
 
@@ -157,11 +158,11 @@ export class SessionSinks extends Context.Service<SessionSinks, {
                 yield* session.flush;
                 yield* vocabulary.settled;
                 yield* updatePoolFromSession(dir, dirname(dir));
-                const paths = args.noMap === true ? [] : yield* Effect.flatMap(
+                const written = args.noMap === true ? { paths: [], warnings: [] } : yield* Effect.flatMap(
                   Effect.all([session.snapshot, session.exportJson]),
                   ([snapshot, json]) => writeExportsAndCapture(dir, snapshot, errorMessage, new Map(Object.entries(json.speakerNames ?? {}))),
                 );
-                return { paths, ocrSummary: yield* flow.ocrSummary };
+                return { ...written, ocrSummary: yield* flow.ocrSummary };
               }).pipe(
                 Effect.provideContext(exportServices),
                 Effect.mapError((error) => error._tag === "ExportFilesFailed"

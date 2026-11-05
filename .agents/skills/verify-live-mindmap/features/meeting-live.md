@@ -30,7 +30,7 @@ Preconditions:
   - 字幕の `担当を分け`（自分の行。名前の欄は空で、snapshot には出ない）と、`相手 B` か `相手` の名前の欄つきの `検索の改善を先にやりた`
   `bash $S/browser.sh "$RUN" screenshot --filename shots/live-02-running.png`。
 - **状態.** `bash $S/cli.sh "$RUN" status`。1 行目が `動いている`、2 行目が `セッションのフォルダ: <start が出したフォルダ>`。
-- **終える.** `bash $S/cli.sh "$RUN" stop`。終了コード 0、標準出力に `map.md`・`map.json`・`map.drawnix`・`map.html`・`map-audio.html` のパス。標準エラーは空。`map.png` は作らず、その警告 `map.png を書き出せませんでした` は CLI ではなく `$RUN/serve.log` に出る。
+- **終える.** `bash $S/cli.sh "$RUN" stop`。終了コード 0、標準出力に `map.md`・`map.json`・`map.drawnix`・`map.html`・`map-audio.html` のパス。`map.png` は作らず、標準エラーに `map.png を書き出せませんでした: ` で始まる理由つきの警告が1行出る。同じ警告は `$RUN/serve.log` にも残る。
 - **書き出しの中身.** `grep -c '## アウトライン' "$D/map.md"`（1）、`grep -c '"root"' "$D/map.json"`（1 以上）、`grep -c '"speaker": "相手 A"' "$D/map.json"`（1 以上）、`grep -c '"type": "drawnix"' "$D/map.drawnix"`（1 以上）。`map.md` のアウトラインは 3 件で、`stop` で確定した `検索の改善を先にやりた（00:09）` があり、自分の途中結果の `担当を分け` は無い。
 - **戻った状態.** `bash $S/cli.sh "$RUN" status` の 1 行目が `セッションなし`。
 
