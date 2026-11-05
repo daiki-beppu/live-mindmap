@@ -39,7 +39,7 @@ bash $S/doctor.sh "$RUN"
 
 ## 3. 操作する
 
-- **画面:** `bash $S/browser.sh "$RUN" <playwright-cli のコマンド>`。セッション名 `verify-<ポート>` の headless の Chromium を使います。最初に `open "http://127.0.0.1:$P/"`、以降は `snapshot`・`click <ref>`・`press <key>`・`eval <式>`・`screenshot --filename shots/<名前>.png`。要素は `snapshot` の role と名前（例 `button "字幕"`、`slider "時刻"`）で探し、その `ref` を渡します。座標や並び順には頼りません。
+- **画面:** `bash $S/browser.sh "$RUN" <playwright-cli のコマンド>`。セッション名 `verify-<ポート>` の headless の Chromium を使います。最初に `open "http://127.0.0.1:$P/"`、以降は `snapshot`・`click <ref>`・`press <key>`・`eval <式>`・`screenshot --filename shots/<名前>.png`。要素は `snapshot` の role と名前（例 `button "字幕"`、`slider "時刻"`）で探し、その `ref`（`e13` や、遷移の後の `f1e58` の形）を渡します。座標や並び順には頼りません。
 - **CLI:** `bash $S/cli.sh "$RUN" <サブコマンド> [引数...]`。この run の server のポートとセッションのフォルダを環境変数で渡し、設定ファイルと既定のモデルは読ませません。会議アプリは台本にある `us.zoom.xos` だけです（`start --app us.zoom.xos`）。
 - **セッションのフォルダ:** `cat "$RUN/sessions-dir"`。書き出しや `log.jsonl` はここにできます。画面からは `http://127.0.0.1:$P/session-files/<セッション名>/<ファイル>` で開けます（`.html` 以外は text/plain）。この配信は確かめ用に `serve.ts` が足したもので、本体の server にはありません。playwright-cli は `file:` の URL を開かないので、`map.html` はこの経路で開きます。
 
@@ -53,7 +53,8 @@ run のフォルダ `e2e/.e2e/verify/<時刻>-<ポート>/`（gitignore 済み�
 |---|---|
 | CLI の標準出力・標準エラー・終了コード | `cli/<連番>-<サブコマンド>.{out,err,code}`（`cli.sh` が書く） |
 | 画面の写し | `shots/`（`screenshot --filename shots/...` で自分で撮る） |
-| 画面の構造（ARIA の snapshot）とコンソール | `.playwright-cli/page-*.yml`・`console-*.log`（`browser.sh` の `snapshot` が書く） |
+| 画面の構造（ARIA の snapshot） | `shots/`（`snapshot --filename shots/<名前>.yml` で自分で残す。素の `snapshot` は標準出力に返すだけで、ファイルを書きません） |
+| 操作の直後の画面の構造とコンソール | `.playwright-cli/page-*.yml`・`console-*.log`（`open`・`goto`・`click` などのたびに playwright-cli が書く） |
 | セッションのフォルダ（`log.jsonl`・`map.md`・`map.json`・`map.drawnix`・`map.html`・`map-audio.html`・録音の代わりの小さなファイル） | `sessions/`（`stop.sh` が止める前に写す） |
 | server と web のログ | `serve.log` |
 

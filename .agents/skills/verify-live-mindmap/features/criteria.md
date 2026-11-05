@@ -23,12 +23,12 @@ Preconditions:
 - **軸のファイル.** `printf '利用者への影響\n\n工数\n' > "$RUN/criteria.txt"`（空行を 1 つ挟む）。
 - **始める.** `bash $S/browser.sh "$RUN" open "http://127.0.0.1:$P/"` の後、`D=$(bash $S/cli.sh "$RUN" start --app us.zoom.xos --criteria "$RUN/criteria.txt" | tail -1)`。終了コード 0。`$D/log.jsonl` の 1 行目（`"type":"start"`）に `"criteria":["利用者への影響","工数"]`。
 - **帯.** `sleep 3; bash $S/browser.sh "$RUN" snapshot`。`generic "判断軸（優先順）"` の下の list に `利用者への影響`・`工数` の順の listitem 2 つ。
-- **関係づけ.** さらに `sleep 12`（`start` から約 15 秒）して snapshot。`button "導入方針"`・`button "? 導入の進め方"` と、名前が `段階的に導入する — 相手 A` で始まり `利用者への影響` か `工数` で終わる button。軸名がまだ無ければ 5 秒おいてもう一度 snapshot します。`bash $S/browser.sh "$RUN" screenshot --filename shots/criteria-related.png`。
+- **関係づけ.** さらに `sleep 12`（`start` から約 15 秒）して snapshot。`button "導入方針"`・`button "? 導入の進め方"` と、名前が `段階的に導入する — 相手 A` で始まり `利用者への影響` で終わる button。軸名がまだ無ければ 5 秒おいてもう一度 snapshot します。`bash $S/browser.sh "$RUN" screenshot --filename shots/criteria-related.png`。
 - **書き出し.** `bash $S/cli.sh "$RUN" stop` の後、`grep -n '判断軸' "$D/map.md"` に `## 判断軸（優先順）` と `（判断軸：工数）` を含む案の行。`grep -c '"criteria"' "$D/map.json"`（1 以上）。
-- **見返し.** `SD=$(cat "$RUN/sessions-dir"); mkdir -p "$SD/crit"; cp "$D/log.jsonl" "$SD/crit/"; bash $S/cli.sh "$RUN" review "$SD/crit"`。`goto "http://127.0.0.1:$P/session-files/crit/map.html"` の snapshot に、帯 `判断軸（優先順）` と、名前が `工数` で終わる `段階的に導入する` の button、「変わったこと」の `追加 案 段階的に導入する` と `更新 案 段階的に導入する`。
+- **見返し.** `SD=$(cat "$RUN/sessions-dir"); mkdir -p "$SD/crit"; cp "$D/log.jsonl" "$SD/crit/"; bash $S/cli.sh "$RUN" review "$SD/crit"`。`goto "http://127.0.0.1:$P/session-files/crit/map.html"` の snapshot に、帯 `判断軸（優先順）` と、名前が `工数` で終わる `段階的に導入する` の button、「変わったこと」の `button "00:04 追加 案 段階的に導入する"` と `button "00:07 更新 案 段階的に導入する"`・`button "00:11 更新 案 段階的に導入する"`。
 
 ## Gotchas
 
-- 判断軸を渡すと偽の updater は別の振る舞いになります。最初の反映で `議題 導入方針` → `論点 導入の進め方` → `案 段階的に導入する` を足し、以降は 1 回に 1 件だけ読んで案の軸を `利用者への影響` → `工数` → 解除の順に付け替えます。反映ごとに 6 秒待つので、ノードは `start` から 6 秒ほど後、案の軸名は 13 秒ほど後に出ます。README の「10 秒で出なければ不合格」はこの機能には当てはめません。
-- 4 件の run では確定は 2 件で、残りは `stop` の確定で読まれます。`stop` 後の案の軸が `工数` になるのはそのためです。解除まで見るなら件数を増やします。
+- 判断軸を渡すと偽の updater は別の振る舞いになります。どの反映も 1 回に 1 件だけ読み、最初の反映で `議題 導入方針` → `論点 導入の進め方` → `案 段階的に導入する` を足し、以降は案の軸を `利用者への影響` → `工数` → 解除の順に付け替えます。反映ごとに 6 秒待つので、ノードは `start` から 6 秒ほど後、案の軸名は 13 秒ほど後に出ます。README の「10 秒で出なければ不合格」はこの機能には当てはめません。
+- 4 件の run で `stop` の前に読まれるのは確定の 2 件だけで、案の軸は `利用者への影響` です。`stop` で相手の途中結果 1 件が確定して読まれ（自分の途中結果は捨てられます）、案の軸は `工数` になります。解除まで見るなら件数を増やします。
 - 案の名前の `— 相手 A` は提案者です。軸名はその後ろに付きます。

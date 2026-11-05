@@ -18,15 +18,15 @@
 ## 証拠と、確かめられなかったときの報告
 
 - 証拠には、機能の ID（下の Sub-features）と、通った入り口を添えます。
-- 画面の証拠は snapshot（`.playwright-cli/page-*.yml`）と `shots/` の写しの両方。CLI の証拠は `cli/` の out・err・code。
+- 画面の証拠は snapshot（`snapshot --filename shots/<名前>.yml`）と `shots/` の写しの両方。CLI の証拠は `cli/` の out・err・code。
 - 前提が満たせず通れなかった入り口は、試したコマンドと満たせなかった前提を書いて報告します。別の入り口で通ったことを、その入り口を確かめたとは書きません。
 - 手順が通らないときは、手順を弱めずに失敗として報告し、理由を機能のファイルの Gotchas に足します。
 
 ## 機能
 
 - [会議中の流れ](./meeting-live.md): `start` → 字幕の吹き出し → ノード → `stop` → 書き出し。
-- [ノードの根拠と変わったこと](./node-evidence.md): ノードを選ぶと根拠の発言が出る。右の列の「変わったこと」。
-- [見返し](./review.md): `review` で作った `map.html` の時刻のスライダー・再生の速さ・字幕と右の列の出し入れ。
+- [ノードの根拠と変わったこと](./node-evidence.md): ノードや「変わったこと」の項目を選ぶと根拠の発言が出る。右の列の「変わったこと」と、空の「TODO」。
+- [見返し](./review.md): `review` で作った `map.html` の時刻のスライダー・再生と止める・反映ごとの移動・再生の速さ・字幕と右の列の出し入れ・キー操作。
 - [取り込みの状態とマップの取り出し](./cli-session-state.md): `status`・`export`・`restore`。
 - [判断軸](./criteria.md): `start --criteria` の帯・案に添える軸名・書き出しと見返しに残る軸。
 - [堂々巡りの知らせ](./discussion-notice.md): 決まらない論点が続くと、判断軸の整理を勧める知らせが出る。
