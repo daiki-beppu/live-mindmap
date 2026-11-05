@@ -2,7 +2,7 @@ import { describe, expect, it } from "@effect/vitest";
 import { Deferred, Effect, Layer } from "effect";
 import { TestClock } from "effect/testing";
 import { exportFiles, makeSession, nextDiscussionNotice, playback, restoreSession, restoreState, type LogEvent, type Op, type Remark, type Session } from "../src/core/index.ts";
-import { embedReviewLog, mapOnlyReviewEvents, reviewSnapshot } from "../src/core/review.ts";
+import { embedReviewLog, mapOnlyReviewEvents, prepareReviewEvents, reviewSnapshot } from "../src/core/review.ts";
 import { embeddedText, TEMPLATE } from "./fixtures/review.ts";
 import { collectLog, updaterLayer } from "./fixtures/sessionLayers.ts";
 
@@ -237,9 +237,9 @@ describe("堂々巡りの通知をセッションから記録する", () => {
     yield* advance(session, 700, plans("n1", 3, 700));
     expect(notices(events)).toHaveLength(1);
     const withoutNotice = events.filter((event) => !notices([event]).length);
-    expect(JSON.parse(embeddedText(embedReviewLog(TEMPLATE, events)))).toEqual(withoutNotice);
-    expect(reviewSnapshot(mapOnlyReviewEvents(events))).toEqual(reviewSnapshot(mapOnlyReviewEvents(withoutNotice)));
-    expect(mapOnlyReviewEvents(events)).toEqual(mapOnlyReviewEvents(withoutNotice));
+    expect(JSON.parse(embeddedText(embedReviewLog(TEMPLATE, yield* prepareReviewEvents(events))))).toEqual(withoutNotice);
+    expect(reviewSnapshot((yield* mapOnlyReviewEvents(events)))).toEqual(reviewSnapshot((yield* mapOnlyReviewEvents(withoutNotice))));
+    expect((yield* mapOnlyReviewEvents(events))).toEqual((yield* mapOnlyReviewEvents(withoutNotice)));
     const restored = yield* restoreSession(withoutNotice).pipe(Effect.provide(Layer.merge(collectLog([]), updaterLayer(() => Effect.succeed({ ops: [] })))));
     expect(yield* session.snapshot).toEqual(yield* restored.snapshot);
     expect(exportFiles(yield* session.exportJson)).toEqual(exportFiles(yield* restored.exportJson));

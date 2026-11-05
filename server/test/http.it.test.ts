@@ -420,6 +420,11 @@ describe("HTTP の失敗応答（要件8〜11）", () => {
     const paused = { status: "paused", reason: "ChatGPT の利用上限" } as const;
     yield* wait(first.frames, paused);
     expect(frames(first.frames).map((f) => f.state)).toEqual([{ status: "running" }, paused]);
+    // paused の通知だけでは後続の push 完了を保証しない。push 後に送られる確定字幕を待つ。
+    yield* Effect.tryPromise(() => vi.waitFor(() => expect(first.frames).toContainEqual({
+      type: "captions",
+      bubbles: expect.arrayContaining([expect.objectContaining({ text: "次の発言", settledLength: "次の発言".length })]),
+    })));
     yield* Scope.close(firstScope, Exit.void);
     const reconnected = yield* connect(r.server.port, "/ws", undefined);
     yield* wait(reconnected.frames, paused);

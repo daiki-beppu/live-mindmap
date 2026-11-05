@@ -198,70 +198,66 @@ const secretLog = (): unknown[] => [
 ];
 
 describe("mapOnlyReviewEvents（発言・共有画面の文字を抜いた出来事）", () => {
-  it("発言の本文・補正前の本文・語、共有画面の OCR の行と語彙の語が、埋め込んだ HTML のどこにも含まれない", () => {
-    const html = embedReviewLog(TEMPLATE, mapOnlyReviewEvents(secretLog()));
+  it.effect("発言の本文・補正前の本文・語、共有画面の OCR の行と語彙の語が、埋め込んだ HTML のどこにも含まれない", () => Effect.gen(function* () {
+    const html = embedReviewLog(TEMPLATE, (yield* mapOnlyReviewEvents(secretLog())));
 
     for (const secret of [SECRET_TEXT, SECRET_RAW, SECRET_SURFACE, SECRET_LINE, SECRET_VOCAB]) expect(html).not.toContain(secret);
-  });
+  }));
 
-  it("発言の行は残し、text は空文字、id・track・start・end だけを持つ。raw・words・wordTimes は持たない", () => {
-    const rows = mapOnlyReviewEvents(secretLog()) as { type: string }[];
+  it.effect("発言の行は残し、text は空文字、id・track・start・end だけを持つ。raw・words・wordTimes は持たない", () => Effect.gen(function* () {
+    const rows = (yield* mapOnlyReviewEvents(secretLog())) as { type: string }[];
 
     expect(rows.filter((e) => e.type === "remark")).toEqual([{ type: "remark", remark: { id: "r1", track: "相手", start: 0, end: 5, text: "" } }]);
-  });
+  }));
 
-  it("発言の duplicate・speaker と、行の noContent は残る", () => {
+  it.effect("発言の duplicate・speaker と、行の noContent は残る", () => Effect.gen(function* () {
     const log = [
       { type: "start", title: "定例" },
       { type: "remark", remark: { id: "r1", track: "相手", start: 0, end: 5, text: SECRET_TEXT, duplicate: true, speaker: "相手 A" } },
       { ...remarkRow("r2", "自分", 5, 6, "あ"), noContent: true },
     ];
 
-    expect(mapOnlyReviewEvents(log)).toEqual([
+    expect((yield* mapOnlyReviewEvents(log))).toEqual([
       { type: "start", title: "定例" },
       { type: "remark", remark: { id: "r1", track: "相手", start: 0, end: 5, text: "", duplicate: true, speaker: "相手 A" } },
       { type: "remark", remark: { id: "r2", track: "自分", start: 5, end: 6, text: "" }, noContent: true },
     ]);
-  });
+  }));
 
-  it("共有画面の行は残し、start と image だけを持つ（lines は持たない）", () => {
-    const rows = mapOnlyReviewEvents(secretLog()) as { type: string }[];
+  it.effect("共有画面の行は残し、start と image だけを持つ（lines は持たない）", () => Effect.gen(function* () {
+    const rows = (yield* mapOnlyReviewEvents(secretLog())) as { type: string }[];
 
     expect(rows.filter((e) => e.type === "screen")).toEqual([{ type: "screen", start: 3, image: "s1.jpg" }]);
-  });
+  }));
 
-  it("会議名（start の題名）と、マップのノードの文字は残る", () => {
-    const html = embedReviewLog(TEMPLATE, mapOnlyReviewEvents(secretLog()));
+  it.effect("会議名（start の題名）と、マップのノードの文字は残る", () => Effect.gen(function* () {
+    const html = embedReviewLog(TEMPLATE, (yield* mapOnlyReviewEvents(secretLog())));
 
     expect(html).toContain("定例");
     expect(html).toContain("採用");
-  });
+  }));
 
-  it("復元が読む diff・画面の見送り・一時停止・再開の行はそのまま残り、読まない type の行は残さない", () => {
+  it.effect("復元が読む diff・画面の見送り・一時停止・再開の行はそのまま残り、読まない type の行は残さない", () => Effect.gen(function* () {
     const keep = [
       { type: "screen-input-skipped", reason: "差分更新には渡さない（モデルが画像を読まない）" },
       { type: "diff-update-paused", reason: "p" },
       { type: "diff-update-resumed" },
     ];
     const log = [{ type: "start", title: "定例" }, ...keep, { type: "intake", note: "秘密のメモ" }];
-    const out = mapOnlyReviewEvents(log);
+    const out = (yield* mapOnlyReviewEvents(log));
 
     expect(out).toEqual([{ type: "start", title: "定例" }, ...keep]);
     expect(JSON.stringify(out)).not.toContain("秘密のメモ");
-  });
+  }));
 
-  it("元の出来事を書き換えない", () => {
+  it.effect("元の出来事を書き換えない", () => Effect.gen(function* () {
     const log = secretLog();
     const before = JSON.stringify(log);
-    mapOnlyReviewEvents(log);
+    (yield* mapOnlyReviewEvents(log));
 
     expect(JSON.stringify(log)).toBe(before);
-  });
+  }));
 
-  it("壊れた発言の行・共有画面の行では、そのまま通さず throw する", () => {
-    expect(() => mapOnlyReviewEvents([{ type: "start", title: "t" }, { type: "remark" }])).toThrow();
-    expect(() => mapOnlyReviewEvents([{ type: "start", title: "t" }, { type: "screen", start: "x", image: null, lines: [SECRET_LINE] }])).toThrow();
-  });
 
   describe("時刻を動かしたときのマップの組み上がり（接頭部ごとに reviewSnapshot が元のログと同じ）", () => {
     // 成功・error つきの diff、screenCount つきの diff と screen 行、重複の印、未反映の発言、反映をまたぐ根拠を含む
@@ -286,22 +282,22 @@ describe("mapOnlyReviewEvents（発言・共有画面の文字を抜いた出来
       return { ...s, remarks: s.remarks.map(({ text: _text, ...rest }) => rest) };
     };
 
-    it("すべての接頭部（start だけのものから全体まで）で、nodes・changes・round・currentTopic・now・根拠の発言の id・start・end が同じ", () => {
+    it.effect("すべての接頭部（start だけのものから全体まで）で、nodes・changes・round・currentTopic・now・根拠の発言の id・start・end が同じ", () => Effect.gen(function* () {
       const events = log();
       for (let n = 1; n <= events.length; n++) {
         const prefix = events.slice(0, n);
-        expect(comparable(mapOnlyReviewEvents(prefix)), `先頭 ${n} 行`).toEqual(comparable(prefix));
+        expect(comparable((yield* mapOnlyReviewEvents(prefix))), `先頭 ${n} 行`).toEqual(comparable(prefix));
       }
-    });
+    }));
 
-    it("全体では、マップが空でなく、変わったことがあり、反映が 2 回数えられている（比べる対象が空ではない）", () => {
-      const s = reviewSnapshot(mapOnlyReviewEvents(log()));
+    it.effect("全体では、マップが空でなく、変わったことがあり、反映が 2 回数えられている（比べる対象が空ではない）", () => Effect.gen(function* () {
+      const s = reviewSnapshot((yield* mapOnlyReviewEvents(log())));
       expect(s.nodes.map((n) => n.text)).toEqual(["定例", "採用", "予算", "面接"]);
       expect(s.changes.length).toBeGreaterThan(0);
       expect(s.round).toBeGreaterThan(1);
-    });
+    }));
 
-    it("screenCount つきの diff は、screen の行が残るので復元できる（screen の行を落とすと復元に失敗する）", () => {
+    it.effect("screenCount つきの diff は、screen の行が残るので復元できる（screen の行を落とすと復元に失敗する）", () => Effect.gen(function* () {
       const rows = [
         { type: "start", title: "定例" },
         { type: "screen", start: 3, image: "s1.jpg", lines: [SECRET_LINE] },
@@ -309,13 +305,13 @@ describe("mapOnlyReviewEvents（発言・共有画面の文字を抜いた出来
         diffRow(["r1"], [addOp("t1", "採用", ["r1"])], { input: { screenCount: 1 } }),
       ];
 
-      expect(reviewSnapshot(mapOnlyReviewEvents(rows)).nodes).toEqual(reviewSnapshot(rows).nodes);
-    });
+      expect(reviewSnapshot((yield* mapOnlyReviewEvents(rows))).nodes).toEqual(reviewSnapshot(rows).nodes);
+    }));
 
-    it("diff が参照する発言の行は残るので復元できる（発言の行を落とすと「ログに発言がありません」で失敗する）", () => {
+    it.effect("diff が参照する発言の行は残るので復元できる（発言の行を落とすと「ログに発言がありません」で失敗する）", () => Effect.gen(function* () {
       const rows = [{ type: "start", title: "定例" }, remarkRow("r1", "相手", 0, 5, SECRET_TEXT), diffRow(["r1"], [addOp("t1", "採用", ["r1"])])];
 
-      expect(() => reviewSnapshot(mapOnlyReviewEvents(rows))).not.toThrow();
-    });
+      expect(reviewSnapshot((yield* mapOnlyReviewEvents(rows))).nodes).toEqual(reviewSnapshot(rows).nodes);
+    }));
   });
 });

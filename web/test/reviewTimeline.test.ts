@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { Effect } from "effect";
 import { mapOnlyReviewEvents, reviewSnapshot } from "../../server/src/core/index.ts";
 import { buildReviewTimeline, captionBubblesAt, chapterNameAt, formatHms, reviewChapters, reviewMarks, snapshotAt, topicNameOf } from "../src/reviewTimeline.ts";
 import { supplementLog } from "../../server/test/fixtures/supplement.ts";
@@ -87,29 +88,29 @@ describe("buildReviewTimeline（反映の一覧・会議の長さ）", () => {
 });
 
 describe("snapshotAt（時刻 t のスナップショット）", () => {
-  it.each([false, true])("見返しでも言い直しの許可・拒否と根拠の保持を共通反映から受け取る（本文なし=%s）", (mapOnly) => {
+  it.each([false, true])("見返しでも言い直しの許可・拒否と根拠の保持を共通反映から受け取る（本文なし=%s）", (mapOnly) => Effect.runPromise(Effect.gen(function* () {
     const log = supplementLog("SLO", ["r2"]);
-    const timeline = buildReviewTimeline(mapOnly ? mapOnlyReviewEvents(log) : log);
+    const timeline = buildReviewTimeline(mapOnly ? (yield* mapOnlyReviewEvents(log)) : log);
     expect(snapshotAt(timeline, 25).nodes.find((n) => n.id === "n4")).toMatchObject({ text: "サービス水準の目標", evidence: ["r1"] });
     const after = snapshotAt(timeline, 30);
     expect(after.nodes.find((n) => n.id === "n4")).toMatchObject({ text: "月間稼働率による目標", evidence: ["r1", "r2"] });
     expect(after.remarks.map((r) => r.text)).toEqual(mapOnly ? ["", ""] : ["サービス水準を決めます", "月間の稼働率を使います"]);
     const rejectedLog = supplementLog("SLA", ["r2"]);
-    const rejectedTimeline = buildReviewTimeline(mapOnly ? mapOnlyReviewEvents(rejectedLog) : rejectedLog);
+    const rejectedTimeline = buildReviewTimeline(mapOnly ? (yield* mapOnlyReviewEvents(rejectedLog)) : rejectedLog);
     expect(snapshotAt(rejectedTimeline, 30).nodes.find((n) => n.id === "n4")).toMatchObject({ text: "サービス水準の目標", evidence: ["r1"] });
     expect(snapshotAt(timeline, 25).nodes.find((n) => n.id === "n4")).toMatchObject({ evidence: ["r1"] });
-  });
+  })));
 
-  it.each([false, true])("同じ時間軸で補足の前後を往復し、過去へ先出しせずキャッシュを区別する（本文なし=%s）", (mapOnly) => {
+  it.each([false, true])("同じ時間軸で補足の前後を往復し、過去へ先出しせずキャッシュを区別する（本文なし=%s）", (mapOnly) => Effect.runPromise(Effect.gen(function* () {
     const row = { type: "supplement", op: { op: "add", parent: "n1", text: "用語の説明", evidence: ["r1"], origin: "会議の外" }, category: "用語", term: "用語", ms: 2, reflectedAt: 15 };
     const log = [...events.slice(0, 4), row, ...events.slice(4)];
-    const timeline = buildReviewTimeline(mapOnly ? mapOnlyReviewEvents(log) : log);
+    const timeline = buildReviewTimeline(mapOnly ? (yield* mapOnlyReviewEvents(log)) : log);
     expect(snapshotAt(timeline, 10).nodes.filter((n) => n.kind === "補足")).toEqual([]);
     expect(snapshotAt(timeline, 15).nodes.find((n) => n.kind === "補足")).toMatchObject({ parent: "n1", text: "用語の説明", origin: "会議の外" });
     expect(snapshotAt(timeline, 10).nodes.filter((n) => n.kind === "補足")).toEqual([]);
     expect(snapshotAt(timeline, 30).nodes.find((n) => n.kind === "補足")).toMatchObject({ text: "用語の説明" });
     expect(snapshotAt(timeline, 30).round).toBe(2);
-  });
+  })));
 
   const tl = buildReviewTimeline(events);
 
@@ -520,17 +521,17 @@ describe("マップだけの版の出来事（字幕が出ない）", () => {
     for (const t of remarkEnds) expect(captionBubblesAt(tl, t), `t=${t}`).not.toEqual([]);
   });
 
-  it("マップだけの出来事では、すべての発言の end と end + 1 の時刻で、字幕が出ない", () => {
-    const tl = buildReviewTimeline(mapOnlyReviewEvents(events));
+  it("マップだけの出来事では、すべての発言の end と end + 1 の時刻で、字幕が出ない", () => Effect.runPromise(Effect.gen(function* () {
+    const tl = buildReviewTimeline((yield* mapOnlyReviewEvents(events)));
     for (const t of remarkEnds) {
       expect(captionBubblesAt(tl, t), `t=${t}`).toEqual([]);
       expect(captionBubblesAt(tl, t + 1), `t=${t + 1}`).toEqual([]);
     }
-  });
+  })));
 
-  it("マップだけの出来事でも、反映の時刻・会議の長さ・各時刻のマップは元と同じ", () => {
+  it("マップだけの出来事でも、反映の時刻・会議の長さ・各時刻のマップは元と同じ", () => Effect.runPromise(Effect.gen(function* () {
     const original = buildReviewTimeline(events);
-    const mapOnly = buildReviewTimeline(mapOnlyReviewEvents(events));
+    const mapOnly = buildReviewTimeline((yield* mapOnlyReviewEvents(events)));
 
     expect(mapOnly.reflectionTimes).toEqual(original.reflectionTimes);
     expect(mapOnly.duration).toBe(original.duration);
@@ -542,5 +543,5 @@ describe("マップだけの版の出来事（字幕が出ない）", () => {
       expect(b.round, `t=${t}`).toBe(a.round);
       expect(b.now, `t=${t}`).toBe(a.now);
     }
-  });
+  })));
 });

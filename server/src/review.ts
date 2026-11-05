@@ -3,7 +3,7 @@ import { Context, Effect, FileSystem, Layer, Result, Schema } from "effect";
 import { build } from "vite";
 import { viteSingleFile } from "vite-plugin-singlefile";
 import { AudioMix } from "./audioMix.ts";
-import { embedReviewAudio, embedReviewLicenses, embedReviewLog, mapOnlyReviewEvents } from "./core/index.ts";
+import { embedReviewAudio, embedReviewLicenses, embedReviewLog, mapOnlyReviewEvents, prepareReviewEvents, type InvalidLogEvent } from "./core/index.ts";
 
 const WEB_ROOT = join(import.meta.dirname, "../../web");
 // 見返しの操作の行が写した video.js のアイコンの出どころとライセンス（Apache-2.0）。Vite の build.license はパッケージ単位で、写したファイルは載らないので、ここで足す
@@ -12,6 +12,7 @@ const ICONS_NOTICE_PATH = join(WEB_ROOT, "src/app/review/icons.NOTICE.md");
 export class ReviewPageFailed extends Schema.TaggedError<ReviewPageFailed>()("ReviewPageFailed", { message: Schema.String }) {}
 
 const failed = (e: unknown) => new ReviewPageFailed({ message: e instanceof Error ? e.message : String(e) });
+const invalidLog = (error: InvalidLogEvent) => new ReviewPageFailed({ message: `出来事 ${error.index} 行目を読めません: ${error.reason}` });
 
 export type ReviewVariant =
   | { readonly file: string; readonly audio: false; readonly mapOnly?: true }
@@ -40,7 +41,7 @@ const buildReviewTemplate = Effect.fnUntraced(function* (fs: FileSystem.FileSyst
   const html = yield* fs.readFileString(join(out, "index.html")).pipe(Effect.mapError(failed));
   const bundledLicenses = yield* fs.readFileString(join(out, ".vite/license.md")).pipe(Effect.mapError(failed));
   const iconsNotice = yield* fs.readFileString(ICONS_NOTICE_PATH).pipe(Effect.mapError(failed));
-  return yield* Effect.try({ try: () => embedReviewLicenses(html, `${bundledLicenses.trimEnd()}\n\n${iconsNotice.trim()}\n`), catch: failed });
+  return embedReviewLicenses(html, `${bundledLicenses.trimEnd()}\n\n${iconsNotice.trim()}\n`);
 }, Effect.scoped, Effect.uninterruptible);
 
 export class ReviewBuild extends Context.Service<ReviewBuild, {
@@ -71,21 +72,23 @@ const mixedAudio = Effect.fnUntraced(function* (dir: string, track?: "自分") {
 export const renderReviewPages = Effect.fnUntraced(function* (sessionDir: string, events: readonly unknown[], variants: readonly ReviewVariant[]) {
   const { build } = yield* ReviewBuild;
   const template = yield* build;
+  const prepared = yield* prepareReviewEvents(events).pipe(Effect.mapError(invalidLog));
   const pages: { file: string; html: string }[] = [];
   const skipped: SkippedReviewVariant[] = [];
   for (const variant of variants) {
     if (!variant.audio) {
-      const html = yield* Effect.try({ try: () => embedReviewLog(template, variant.mapOnly ? mapOnlyReviewEvents(events) : events), catch: failed });
+      const rows = variant.mapOnly ? yield* mapOnlyReviewEvents(prepared).pipe(Effect.mapError(invalidLog)) : prepared;
+      const html = embedReviewLog(template, rows);
       pages.push({ file: variant.file, html });
       continue;
     }
-    const html = yield* Effect.try({ try: () => embedReviewLog(template, events), catch: failed });
+    const html = embedReviewLog(template, prepared);
     const audio = yield* Effect.result(mixedAudio(sessionDir, variant.track));
     if (Result.isFailure(audio)) {
       skipped.push({ file: variant.file, reason: audio.failure });
       continue;
     }
-    const withAudio = yield* Effect.try({ try: () => embedReviewAudio(html, audio.success), catch: failed });
+    const withAudio = embedReviewAudio(html, audio.success);
     pages.push({ file: variant.file, html: withAudio });
   }
   return { pages, skipped };

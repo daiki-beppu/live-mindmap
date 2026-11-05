@@ -1,5 +1,5 @@
 // CLI をプロセスとして起動して、プロセスでしか見えないもの（終了コード・stdout と stderr の実バイト・1 行にまとまること）だけを確かめる。
-// help の文面・失敗の文面の中身・優先順は cliEntry.it.test.ts（runCli の軽い IT）が持つ。ここに残すのは代表 4 件
+// help の文面・失敗の文面の中身・優先順は cliEntry.it.test.ts（runCli の軽い IT）が持つ。
 import { execFile } from "node:child_process";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -78,6 +78,24 @@ describe("CLI のプロセス入口", () => {
     const result = yield* runProcess(["export"], sessionsDir);
 
     expect(result).toEqual({ code: 1, stdout: "", stderr: `セッションがありません: ${sessionsDir}\n` });
+  }).pipe(Effect.scoped));
+
+  it.live.each([
+    { name: "JSON の構文", tail: "\n{broken\n", explanation: "3 行目が JSON として読めません" },
+    { name: "補足の項目", tail: `${JSON.stringify({ type: "supplement", op: 42 })}\n`, explanation: "出来事 1 行目を読めません" },
+  ])("review は $name が壊れたログで、読めない行を stderr に出して exit 1", ({ tail, explanation }) => Effect.gen(function* () {
+    const sessionsDir = yield* temporaryDirectory;
+    const run = join(sessionsDir, "run");
+    yield* Effect.tryPromise(async () => {
+      await mkdir(run);
+      await writeFile(join(run, "log.jsonl"), `${JSON.stringify({ type: "start", title: "定例" })}\n${tail}`);
+    });
+
+    const result = yield* runProcess(["review", run], sessionsDir);
+
+    expect(result.code, result.stderr).toBe(1);
+    expect(result.stdout).toBe("");
+    expect(result.stderr).toContain(explanation);
   }).pipe(Effect.scoped));
 
   it.live("pnpm cli 経由でも export の JSON を stdout に出して exit 0", () => Effect.gen(function* () {
