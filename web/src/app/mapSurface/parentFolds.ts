@@ -32,6 +32,7 @@ export const surfaceFolds = <Model, Message>(parent: {
   const foldArrowKey = Update.foldChild({ update: MapSurface.pressArrowKey, ...fold });
   const foldEnterKey = Update.foldChild({ update: MapSurface.pressEnterKey, ...fold });
   const foldSideKey = Update.foldChild({ update: MapSurface.pressSideKey, ...fold });
+  const foldSideOpen = Update.foldChild({ update: MapSurface.setSideOpen, ...fold });
   const viewKey = (key: ViewKey): KeyHandler<Model, Message> => (model, modifiers) => foldViewKey(model, { key, ...modifiers });
   const arrowKey = (dir: ArrowDir): KeyHandler<Model, Message> => (model, modifiers) => foldArrowKey(model, { dir, ...modifiers });
   const toggleSide = (model: Model) => foldSideKey(model, NO_MODIFIERS);
@@ -63,7 +64,7 @@ export const surfaceFolds = <Model, Message>(parent: {
     foldSnapshot: (model: Model, snapshot: Snapshot) => foldMapSurface(model, MapSurfaceMessage.ChangedSnapshot({ snapshot })),
     foldKeyListToggled: foldMapSurface(MapSurfaceMessage.ToggledKeyList()),
     foldEscapeKey: Update.foldChild({ update: MapSurface.pressEscapeKey, ...fold }),
-    toggleSide,
+    foldSideOpen,
     keyHandlers,
   };
 };

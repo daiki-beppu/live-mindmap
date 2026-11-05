@@ -39,7 +39,7 @@ const observeViewing = <Model, Message>(config: {
     press: (key: KeyId) => send(config.key(key)),
     clickChange: (nodeId: string) => send(config.surfaceMessage(SurfaceMessage.ClickedChangeItem({ nodeId }))),
     notice: () => Option.getOrNull(shownText(config.toastOf(current))),
-    selection: () => config.surfaceOf(current).viewing.selection?.id,
+    selection: () => Option.getOrUndefined(config.surfaceOf(current).viewing.selection)?.id,
   };
 };
 

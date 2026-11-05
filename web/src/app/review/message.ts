@@ -30,7 +30,7 @@ export const Message = defineMessageUnion({
   PressedKey: pressedKeyFields,
   ClickedMute: {},
   ToggledCaptions: { isOpen: Schema.Boolean },
-  ClickedSide: {},
+  ToggledSide: { isOpen: Schema.Boolean },
   MovedSeekPointer: { fraction: Schema.Finite },
   LeftSeekPointer: {},
   PressedSliderPointer: {},

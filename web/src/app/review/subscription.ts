@@ -39,7 +39,7 @@ export const makeSubscriptions = (context: Context) => {
     keys: entry(
       { hasSelection: Schema.Boolean },
       {
-        modelToDependencies: (model) => ({ hasSelection: model.mapSurface.viewing.selection !== undefined }),
+        modelToDependencies: (model) => ({ hasSelection: Option.isSome(model.mapSurface.viewing.selection) }),
         keepAliveEquivalence: () => true,
         dependenciesToStream: (_, readDependencies) => keyPressStream({ screen: reviewScreenOf(context), hasSelection: () => readDependencies().hasSelection }),
       },

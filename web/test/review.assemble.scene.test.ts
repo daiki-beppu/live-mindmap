@@ -7,7 +7,7 @@ import { Message as MapSurfaceMessage } from "../src/app/mapSurface/message.ts";
 import { Message } from "../src/app/review/message.ts";
 
 import { captionBubblesAt } from "../src/reviewTimeline.ts";
-import { snapshotOf } from "../src/app/review/main.ts";
+import { init, snapshotOf } from "../src/app/review/main.ts";
 import { appOf, audioApp, audioContext, hasClass, plainApp, plainContext, settle, stateAt, tagOf, type Sim } from "./reviewHarness.ts";
 import { attrOf, elementsOf, one, type VNode } from "./sceneTree.ts";
 
@@ -300,6 +300,12 @@ describe("見返しの Scene: 右の列は表示面の見る状態に従い、E 
       plainApp,
       given(stateAt(plainContext, 105)),
       settle,
+      tap((sim) => {
+        const button = one(sim.html, 'button[aria-label="右の列"]');
+        const panel = one(sim.html, ".side");
+        expect(attrOf(button, "aria-controls")).toBe(attrOf(panel, "id"));
+        expect(attrOf(panel, "id")).toBe("side-panel");
+      }),
       click(labelSel("右の列")),
       settle,
       expectScene(selector(".side")).toBeAbsent(),
@@ -307,6 +313,29 @@ describe("見返しの Scene: 右の列は表示面の見る状態に従い、E 
       click(labelSel("右の列")),
       settle,
       expectScene(selector(".side")).toExist(),
+    );
+  });
+
+  it("狭い幅で開くと右の列を隠し、E で出した後は計測や時刻の移動でも表示を保つ", () => {
+    scene(
+      plainApp,
+      given(init(plainContext, { startsNarrow: true })),
+      settle,
+      expectScene(selector(".side")).toBeAbsent(),
+      expectScene(labelSel("右の列")).toHaveAttr("aria-pressed", "false"),
+      press("E"),
+      settle,
+      expectScene(selector(".side")).toExist(),
+      expectScene(labelSel("右の列")).toHaveAttr("aria-pressed", "true"),
+      Subscription.emit(Message.GotMapSurfaceMessage({ message: MapSurfaceMessage.MeasuredMapSurface({ width: 390, height: 844, nodeHeights: {} }) })),
+      settle,
+      press("Home"),
+      settle,
+      expectScene(selector(".side")).toExist(),
+      expectScene(labelSel("右の列")).toHaveAttr("aria-pressed", "true"),
+      click(labelSel("右の列")),
+      settle,
+      expectScene(selector(".side")).toBeAbsent(),
     );
   });
 

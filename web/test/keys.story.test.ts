@@ -113,7 +113,7 @@ describe("Esc: 速さのメニュー → キーの一覧 → 見る状態 の優
   const menuOpened = Message.GotRateMenuMessage({ message: Menu.Message.Opened({ maybeActiveItemIndex: Option.none() }) });
   const selectedOpen = (update: Update, context: Context) => {
     const selected = withSelection(update, update(measured(context, update), keyOf("=")).model);
-    expect(selected.mapSurface.viewing.selection).toBeDefined();
+    expect(Option.isSome(selected.mapSurface.viewing.selection)).toBe(true);
     const listed = update(selected, keyOf("?")).model;
     return update(listed, menuOpened).model;
   };
@@ -125,7 +125,7 @@ describe("Esc: 速さのメニュー → キーの一覧 → 見る状態 の優
     const after = plainUpdate(both, keyOf("Escape")).model;
     expect(after.rateMenu.isOpen).toBe(false);
     expect(after.keyList.isOpen).toBe(true);
-    expect(after.mapSurface.viewing.selection).toBeDefined();
+    expect(Option.isSome(after.mapSurface.viewing.selection)).toBe(true);
     expect(after.mapSurface).toEqual(both.mapSurface);
   });
 
@@ -135,10 +135,10 @@ describe("Esc: 速さのメニュー → キーの一覧 → 見る状態 の優
     const second = plainUpdate(first, keyOf("Escape")).model;
     expect(second.rateMenu.isOpen).toBe(false);
     expect(second.keyList.isOpen).toBe(false);
-    expect(second.mapSurface.viewing.selection).toBeDefined();
+    expect(Option.isSome(second.mapSurface.viewing.selection)).toBe(true);
     expect(second.mapSurface).toEqual({ ...first.mapSurface, idleStamp: first.mapSurface.idleStamp + 1 });
     const third = plainUpdate(second, keyOf("Escape")).model;
-    expect(third.mapSurface.viewing.selection).toBeUndefined();
+    expect(third.mapSurface.viewing.selection).toEqual(Option.none());
     expect(third.keyList.isOpen).toBe(false);
   });
 
@@ -148,7 +148,7 @@ describe("Esc: 速さのメニュー → キーの一覧 → 見る状態 の優
     expect(menuOnly.rateMenu.isOpen).toBe(true);
     const after = plainUpdate(menuOnly, keyOf("Escape")).model;
     expect(after.rateMenu.isOpen).toBe(false);
-    expect(after.mapSurface.viewing.selection).toBeDefined();
+    expect(Option.isSome(after.mapSurface.viewing.selection)).toBe(true);
     expect(after.keyList.isOpen).toBe(false);
     expect(after.mapSurface).toEqual(menuOnly.mapSurface);
   });
@@ -159,7 +159,7 @@ describe("Esc: 速さのメニュー → キーの一覧 → 見る状態 の優
     const actual = plainUpdate(selected, keyOf("Escape"));
     expect(actual.model).toEqual(expected.model);
     expect(commandNames(actual.commands)).toEqual(commandNames(expected.commands));
-    expect(actual.model.mapSurface.viewing.selection).toBeUndefined();
+    expect(actual.model.mapSurface.viewing.selection).toEqual(Option.none());
   });
 });
 
@@ -196,7 +196,7 @@ describe("倍率・位置・ノードを選ぶキーは、表示面の Pressed*K
     const localUpdate = updateOf(local);
     const idOf = (text: string) => snapshotAt(local.timeline, 40).nodes.find((n) => n.text === text)!.id;
     const shown = (model: ReturnType<typeof stateAt>) => {
-      return foldView(snapshotAt(local.timeline, 40), model.mapSurface.viewing.humanFolds, model.mapSurface.viewing.selection?.id ?? null).nodes.map((n) => n.id);
+      return foldView(snapshotAt(local.timeline, 40), Option.getOrUndefined(model.mapSurface.viewing.humanFolds), Option.getOrUndefined(model.mapSurface.viewing.selection)?.id ?? null).nodes.map((n) => n.id);
     };
     const base = localUpdate(stateAt(local, 40), surface(MapSurfaceMessage.MeasuredMapSurface({ width: 800, height: 600, nodeHeights: {} }))).model;
     const selected = localUpdate(base, surface(MapSurfaceMessage.ClickedNodeButton({ nodeId: idOf("T1"), clientX: 0, clientY: 0 }))).model;
@@ -231,10 +231,10 @@ describe("倍率・位置・ノードを選ぶキーは、表示面の Pressed*K
 describe("E・C: ボタンと同じ Model の変化（フォーカスを外す Command は付けない）", () => {
   const start = measured(plainContext, plainUpdate);
 
-  it("E で右の列を隠し、もう一度の E で戻す。ClickedSide と同じ Model", () => {
+  it("E で右の列を隠し、もう一度の E で戻す。右の列のボタンと同じ Model", () => {
     const hidden = plainUpdate(start, keyOf("E"));
     expect(hidden.model.mapSurface.viewing.sideHidden).toBe(true);
-    expect(hidden.model).toEqual(plainUpdate(start, Message.ClickedSide()).model);
+    expect(hidden.model).toEqual(plainUpdate(start, Message.ToggledSide({ isOpen: false })).model);
     expect(commandNames(hidden.commands)).toEqual([]);
     expect(plainUpdate(hidden.model, keyOf("E")).model.mapSurface.viewing.sideHidden).not.toBe(true);
   });

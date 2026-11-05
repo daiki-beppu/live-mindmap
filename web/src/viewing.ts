@@ -1,12 +1,12 @@
-import { Schema } from "effect";
+import { Option, Schema } from "effect";
 import type { CameraInput } from "./camera.ts";
 import { HumanFolds, refold, type FoldView } from "./folding.ts";
 import type { Position } from "./layout.ts";
 
 const overlayFields = {
-  sideHidden: Schema.optionalKey(Schema.mutableKey(Schema.Literal(true))),
-  selection: Schema.optionalKey(Schema.mutableKey(Schema.Struct({ id: Schema.String, byKey: Schema.Boolean }))),
-  humanFolds: Schema.optionalKey(Schema.mutableKey(HumanFolds)),
+  sideHidden: Schema.Boolean,
+  selection: Schema.Option(Schema.Struct({ id: Schema.String, byKey: Schema.Boolean })),
+  humanFolds: Schema.Option(HumanFolds),
 };
 export const ViewingState = Schema.Struct(overlayFields);
 export type ViewingState = typeof ViewingState.Type;
@@ -38,17 +38,11 @@ export type VisibleTree = {
   currentTopic: string | undefined;
 };
 
-export const INITIAL_VIEWING: ViewingState = {};
+export const INITIAL_VIEWING: ViewingState = { sideHidden: false, selection: Option.none(), humanFolds: Option.none() };
 const UNRELATED: CameraInput = { type: "unrelated" };
 
-function without(state: ViewingState, key: keyof ViewingState): ViewingState {
-  const { [key]: _removed, ...rest } = state;
-  return rest;
-}
-
 function withHumanFolds(state: ViewingState, human: HumanFolds | undefined): ViewingState {
-  const rest = without(state, "humanFolds");
-  return human === undefined ? rest : { ...rest, humanFolds: human };
+  return { ...state, humanFolds: Option.fromUndefinedOr(human) };
 }
 
 type Modifiers = { meta: boolean; ctrl: boolean; alt: boolean };
@@ -119,19 +113,19 @@ type Reduced = { state: ViewingState; input: CameraInput; preserveIdleTimer?: tr
 
 function reduceOverlay(state: ViewingState, event: Extract<ViewingEvent, { type: "side" }>): Reduced {
   if (modified(event)) return { state, input: UNRELATED };
-  return { state: state.sideHidden ? without(state, "sideHidden") : { ...state, sideHidden: true }, input: { type: "toggledSide" } };
+  return { state: { ...state, sideHidden: !state.sideHidden }, input: { type: "toggledSide" } };
 }
 
 function reduceArrow(state: ViewingState, event: Extract<ViewingEvent, { type: "arrow" }>, tree: VisibleTree): Reduced {
   if (modified(event)) return { state, input: UNRELATED };
-  const id = nextSelection(tree, state.selection?.id, event.dir);
+  const id = nextSelection(tree, Option.getOrUndefined(state.selection)?.id, event.dir);
   if (id === undefined) return { state, input: UNRELATED };
-  return { state: { ...state, selection: { id, byKey: true } }, input: { type: "selectedByKey", id } };
+  return { state: { ...state, selection: Option.some({ id, byKey: true }) }, input: { type: "selectedByKey", id } };
 }
 
 function foldTargetOf(state: ViewingState, event: Extract<ViewingEvent, { type: "enter" | "foldDot" }>): string | undefined {
   if (event.type === "foldDot") return event.id;
-  return modified(event) ? undefined : state.selection?.id;
+  return modified(event) ? undefined : Option.getOrUndefined(state.selection)?.id;
 }
 
 function reduceFoldToggle(state: ViewingState, event: Extract<ViewingEvent, { type: "enter" | "foldDot" }>, tree: VisibleTree): Reduced {
@@ -141,26 +135,28 @@ function reduceFoldToggle(state: ViewingState, event: Extract<ViewingEvent, { ty
   if (result === null) return { state, input: UNRELATED };
   const next = withHumanFolds(state, result.human);
   return {
-    state: result.select === undefined ? next : { ...next, selection: { id: result.select, byKey: state.selection?.byKey ?? false } },
+    state: result.select === undefined ? next : { ...next, selection: Option.some({ id: result.select, byKey: Option.exists(state.selection, (selection) => selection.byKey) }) },
     input: { type: "toggledFold", id },
   };
 }
 
 function reducePointChange(state: ViewingState, event: Extract<ViewingEvent, { type: "pointChange" }>, tree: VisibleTree): Reduced {
   const result = tree.fold === null ? null : refold(tree.fold, { type: "point", id: event.id });
-  if (result === null) return { state: { ...state, selection: { id: event.id, byKey: false } }, input: UNRELATED, preserveIdleTimer: true };
-  return { state: { ...withHumanFolds(state, result.human), selection: { id: result.select!, byKey: false } }, input: { type: "pointedNode", id: event.id } };
+  if (result === null) return { state: { ...state, selection: Option.some({ id: event.id, byKey: false }) }, input: UNRELATED, preserveIdleTimer: true };
+  return { state: { ...withHumanFolds(state, result.human), selection: Option.some({ id: result.select!, byKey: false }) }, input: { type: "pointedNode", id: event.id } };
 }
 
 function reduceFitSubtree(state: ViewingState, event: Extract<ViewingEvent, { type: "key" }>, tree: VisibleTree): Reduced {
-  const id = state.selection?.id;
+  const id = Option.getOrUndefined(state.selection)?.id;
   if (modified(event) || id === undefined || !tree.ids.includes(id)) return { state, input: UNRELATED };
   return { state, input: { type: "selectedSubtree", id } };
 }
 
 export function relocateSelection(state: ViewingState, replaced: Readonly<Record<string, string>>): ViewingState {
-  const to = state.selection ? replaced[state.selection.id] : undefined;
-  return state.selection && to !== undefined ? { ...state, selection: { ...state.selection, id: to } } : state;
+  return { ...state, selection: Option.map(state.selection, (selection) => {
+    const to = replaced[selection.id];
+    return to === undefined ? selection : { ...selection, id: to };
+  }) };
 }
 
 function reduceKey(state: ViewingState, event: Extract<ViewingEvent, { type: "key" }>, tree: VisibleTree): Reduced {
@@ -172,14 +168,14 @@ function reduceKey(state: ViewingState, event: Extract<ViewingEvent, { type: "ke
 export function reduceViewing(state: ViewingState, event: ViewingEvent, tree: VisibleTree): Reduced {
   switch (event.type) {
     case "side": return reduceOverlay(state, event);
-    case "select": return { state: { ...state, selection: { id: event.id, byKey: false } }, input: UNRELATED };
-    case "deselect": return { state: without(state, "selection"), input: UNRELATED };
+    case "select": return { state: { ...state, selection: Option.some({ id: event.id, byKey: false }) }, input: UNRELATED };
+    case "deselect": return { state: { ...state, selection: Option.none() }, input: UNRELATED };
     case "arrow": return reduceArrow(state, event, tree);
     case "enter":
     case "foldDot": return reduceFoldToggle(state, event, tree);
     case "pointChange": return reducePointChange(state, event, tree);
     case "key": return reduceKey(state, event, tree);
-    case "escape": return modified(event) ? { state, input: UNRELATED } : { state: without(without(state, "selection"), "humanFolds"), input: { type: "escaped" } };
+    case "escape": return modified(event) ? { state, input: UNRELATED } : { state: { ...state, selection: Option.none(), humanFolds: Option.none() }, input: { type: "escaped" } };
     case "reflect": {
       const result = tree.fold === null ? null : refold(tree.fold, { type: "reflect" });
       return { state: relocateSelection(result === null ? state : withHumanFolds(state, result.human), event.replaced), input: { type: "reflected" } };

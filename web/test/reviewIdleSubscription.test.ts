@@ -1,4 +1,4 @@
-import { Effect, Fiber, Stream } from "effect";
+import { Effect, Fiber, Option, Stream } from "effect";
 import { TestClock } from "effect/testing";
 import { describe, expect, it } from "vitest";
 import { makeContext } from "../src/app/review/context.ts";
@@ -87,7 +87,7 @@ describe("見返しの 10 秒のタイマー: キーの一覧の開閉での計�
   it("一覧が開いた状態の Escape で閉じると依存が変わり、選択は残る", () => {
     const selected = update(manual(), surface(MapSurfaceMessage.ClickedNodeButton({ nodeId: "t1", clientX: 0, clientY: 0 }))).model;
     const opened = update(selected, key("?")).model;
-    expect(opened.mapSurface.viewing.selection).toBeDefined();
+    expect(Option.isSome(opened.mapSurface.viewing.selection)).toBe(true);
     const closed = update(opened, key("Escape")).model;
     expect(closed.keyList.isOpen).toBe(false);
     expect(closed.mapSurface.viewing.selection).toEqual(opened.mapSurface.viewing.selection);

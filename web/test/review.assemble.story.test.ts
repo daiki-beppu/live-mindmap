@@ -91,18 +91,17 @@ describe.each([
 describe("右の列の出し入れは、表示面の見る状態（viewing.sideHidden）が 1 か所で持つ", () => {
   const { update } = plainApp;
 
-  it("E で隠し、もう一度の E で戻す。見返しの Model に別の欄を持たない", () => {
+  it("E で隠し、もう一度の E で戻す", () => {
     const start = measured(plainContext, 100);
     const hidden = update(start, keyOf("E")).model;
     expect(hidden.mapSurface.viewing.sideHidden).toBe(true);
-    expect("sideHidden" in hidden).toBe(false);
-    expect(update(hidden, keyOf("E")).model.mapSurface.viewing.sideHidden).not.toBe(true);
+    expect(update(hidden, keyOf("E")).model.mapSurface.viewing.sideHidden).toBe(false);
   });
 
-  it("右の列のボタン（ClickedSide）は E と同じ見る状態の変化にして、フォーカスを外す", () => {
+  it("右の列のボタン（ToggledSide）は E と同じ見る状態の変化にして、フォーカスを外す", () => {
     const start = measured(plainContext, 100);
     const byKey = update(start, keyOf("E"));
-    const byButton = update(start, Message.ClickedSide());
+    const byButton = update(start, Message.ToggledSide({ isOpen: false }));
     expect(byButton.model).toEqual(byKey.model);
     expect(commandNames(byButton.commands)).toEqual(["ReleaseFocus"]);
     expect(commandNames(byKey.commands)).toEqual([]);
@@ -111,19 +110,19 @@ describe("右の列の出し入れは、表示面の見る状態（viewing.sideH
   it("⌘・Ctrl・Option と一緒の E では隠さない", () => {
     const start = measured(plainContext, 100);
     for (const mods of [{ metaKey: true }, { ctrlKey: true }, { altKey: true }]) {
-      expect(update(start, keyOf("E", mods)).model.mapSurface.viewing.sideHidden, JSON.stringify(mods)).not.toBe(true);
+      expect(update(start, keyOf("E", mods)).model.mapSurface.viewing.sideHidden, JSON.stringify(mods)).toBe(false);
     }
   });
 
   it("隠していた列を E でもボタンでも出すと、列の幅だけのカメラのずらしが保留になる", () => {
     const hiddenFromStart = sideHiddenOf(measured(plainContext, 100));
     expect(update(hiddenFromStart, keyOf("E")).model.mapSurface.camera.pendingShift).toBe(true);
-    expect(update(hiddenFromStart, Message.ClickedSide()).model.mapSurface.camera.pendingShift).toBe(true);
+    expect(update(hiddenFromStart, Message.ToggledSide({ isOpen: true })).model.mapSurface.camera.pendingShift).toBe(true);
   });
 
   it("列を出し入れしても、字幕の状態は変わらない", () => {
     const start = measured(plainContext, 100);
-    expect(update(update(start, keyOf("E")).model, Message.ClickedSide()).model.captionsHidden).toBe(false);
+    expect(update(update(start, keyOf("E")).model, Message.ToggledSide({ isOpen: true })).model.captionsHidden).toBe(false);
   });
 });
 
@@ -219,9 +218,9 @@ describe("選んだノードが消える時刻へ動かすと、見る状態に�
   it("変わったことの項目を選ぶと見る状態は manual。その状態で先頭へ戻ると、選んだノードは今のマップに無いので、移り先（残っているノード）が選ばれる", () => {
     const selected = selectChangeAtEnd();
     expect(selected.mapSurface.camera.mode).toBe("manual");
-    expect(selected.mapSurface.viewing.selection?.id).toBe("n3");
+    expect(Option.getOrUndefined(selected.mapSurface.viewing.selection)?.id).toBe("n3");
     const atStart = update(selected, keyOf("Home")).model;
     expect(atStart.playback.time).toBe(0);
-    expect(atStart.mapSurface.viewing.selection?.id).not.toBe("n3");
+    expect(Option.getOrUndefined(atStart.mapSurface.viewing.selection)?.id).not.toBe("n3");
   });
 });

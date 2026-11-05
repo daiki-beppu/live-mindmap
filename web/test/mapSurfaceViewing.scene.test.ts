@@ -94,7 +94,7 @@ describe("mapSurface の Scene: ノード本体の click で選ぶ", () => {
   it("選んだ状態は viewing から描く: 選択を持つ Model では、その選択のノードだけが選ばれた見た目になる（選んだ畳んだ議題も選ばれた見た目）", () => {
     scene(
       app,
-      given(measuredModel(single(), "live", { selection: { id: "A", byKey: false } })),
+      given(measuredModel(single(), "live", { ...INITIAL_VIEWING, selection: Option.some({ id: "A", byKey: false }) })),
       expectScene(mapNodeOf("A")).toHaveClass("map-node--selected"),
       expectScene(mapNodeOf("A")).toHaveClass("map-node--folded"),
       expectScene(bodyButtonOf("A")).toHaveAttr("aria-pressed", "true"),
@@ -120,7 +120,7 @@ describe("mapSurface の Scene: ノード本体の click で選ぶ", () => {
     const positions = layout(shown.nodes, HEIGHTS);
     scene(
       app,
-      given(measuredModel(single(), "live", { selection: { id: "A1", byKey: false } })),
+      given(measuredModel(single(), "live", { ...INITIAL_VIEWING, selection: Option.some({ id: "A1", byKey: false }) })),
       expectScene(wrapperOf("A1")).toExist(),
       expectScene(mapNodeOf("A1")).toHaveClass("map-node--selected"),
       expectScene(bodyButtonOf("A1")).toHaveAttr("aria-pressed", "true"),
@@ -143,7 +143,7 @@ describe("mapSurface の Scene: ノード本体の click で選ぶ", () => {
   it("still は選択を描かない（viewing に選択があっても、選ばれた見た目にならない）", () => {
     scene(
       app,
-      given(measuredModel(single(), "still", { selection: { id: "B", byKey: false } })),
+      given(measuredModel(single(), "still", { ...INITIAL_VIEWING, selection: Option.some({ id: "B", byKey: false }) })),
       expectScene(mapNodeOf("B")).not.toHaveClass("map-node--selected"),
       expectScene(bodyButtonOf("B")).toHaveAttr("aria-pressed", "false"),
       mounted,
@@ -210,7 +210,7 @@ describe("mapSurface の Scene: 隠れた数の丸で開く・小さな丸で畳
   it("人が開いたノードにだけ「畳む」の小さな丸が付く。今の議題とその祖先・議題でも論点でもないノードには付かない", () => {
     scene(
       app,
-      given(measuredModel(single(), "live", { humanFolds: foldingActions(single(), [{ type: "toggle", id: "A" }]).human })),
+      given(measuredModel(single(), "live", { ...INITIAL_VIEWING, humanFolds: Option.fromUndefinedOr(foldingActions(single(), [{ type: "toggle", id: "A" }]).human) })),
       expectScene(foldDotOf("A")).toExist(),
       expectScene(foldDotOf("B")).toBeAbsent(),
       expectScene(foldDotOf("root")).toBeAbsent(),
@@ -223,7 +223,7 @@ describe("mapSurface の Scene: 隠れた数の丸で開く・小さな丸で畳
   it("人が開いていないノードに「畳む」の小さな丸は無い（開いているだけでは付かない）", () => {
     scene(
       app,
-      given(measuredModel(single(), "live", { humanFolds: foldingActions(single(), [{ type: "toggle", id: "A" }]).human })),
+      given(measuredModel(single(), "live", { ...INITIAL_VIEWING, humanFolds: Option.fromUndefinedOr(foldingActions(single(), [{ type: "toggle", id: "A" }]).human) })),
       expectScene(foldDotOf("B")).toBeAbsent(),
       expectScene(foldDotOf("A1")).toBeAbsent(),
       mounted,
@@ -237,7 +237,7 @@ describe("mapSurface の Scene: 隠れた数の丸で開く・小さな丸で畳
         measuredModel(
           snap([node("root", null, "会議"), node("T", "root", "議題"), node("T1", "T", "論点", { pointStatus: "未決" }), node("B", "root", "議題")], { currentTopic: "B", now: 100 }),
           "live",
-          { humanFolds: foldingActions(snap([node("root", null, "会議"), node("T", "root", "議題"), node("T1", "T", "論点"), node("B", "root", "議題")], { currentTopic: "B" }), [{ type: "toggle", id: "T" }]).human },
+          { ...INITIAL_VIEWING, humanFolds: Option.fromUndefinedOr(foldingActions(snap([node("root", null, "会議"), node("T", "root", "議題"), node("T1", "T", "論点"), node("B", "root", "議題")], { currentTopic: "B" }), [{ type: "toggle", id: "T" }]).human) },
         ),
       ),
       expectScene(mapNodeOf("T")).toHaveClass("map-node--folded"),
@@ -250,7 +250,7 @@ describe("mapSurface の Scene: 隠れた数の丸で開く・小さな丸で畳
   it("still は畳まないので、丸は付かない（viewing に人が開いた集合があっても）", () => {
     scene(
       app,
-      given(measuredModel(single(), "still", { humanFolds: foldingActions(single(), [{ type: "toggle", id: "A" }]).human })),
+      given(measuredModel(single(), "still", { ...INITIAL_VIEWING, humanFolds: Option.fromUndefinedOr(foldingActions(single(), [{ type: "toggle", id: "A" }]).human) })),
       expectScene(wrapperOf("A1")).toExist(),
       tap((simulation) => {
         expect(findAll(simulation.html, "button.map-node__count--pressable")).toHaveLength(0);

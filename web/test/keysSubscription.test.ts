@@ -1,4 +1,4 @@
-import { Effect, Fiber, Stream } from "effect";
+import { Effect, Fiber, Option, Stream } from "effect";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { bindingsOf, type Screen } from "../src/app/keys/table.ts";
 import { keyPressStream } from "../src/app/keys/subscription.ts";
@@ -351,7 +351,7 @@ describe("見返しの Subscription の keys: 依存と、画面の決まり方"
     const start = update(init(plainContext), Message.GotMapSurfaceMessage({ message: MapSurfaceMessage.MeasuredMapSurface({ width: 800, height: 600, nodeHeights: { root: 40, n1: 40, n2: 40, n3: 40 } }) })).model;
     expect(subscriptions(plainContext).keys.modelToDependencies(start)).toEqual({ hasSelection: false });
     const selected = update(start, Message.GotMapSurfaceMessage({ message: MapSurfaceMessage.ClickedNodeButton({ nodeId: "n1", clientX: 0, clientY: 0 }) })).model;
-    expect(selected.mapSurface.viewing.selection).toBeDefined();
+    expect(Option.isSome(selected.mapSurface.viewing.selection)).toBe(true);
     expect(subscriptions(plainContext).keys.modelToDependencies(selected)).toEqual({ hasSelection: true });
   });
 

@@ -1,3 +1,4 @@
+import { INITIAL_VIEWING } from "../src/viewing.ts";
 import { HashMap, Option, Schema } from "effect";
 import { given, message, model, story } from "foldkit/story";
 import { describe, expect, it } from "vitest";
@@ -177,14 +178,14 @@ describe("見返しの update: 表示面の実測", () => {
 // 見る状態（Issue #818）は表示面の Model.viewing に持ち、見返しの Model.mapSurface に持ち越される（時刻を動かしても残る）
 describe("見返しの update: 表示面の見る状態", () => {
   it("初期は自動のカメラ・選択なしで、本物の Model に通る", () => {
-    expect(init(context).mapSurface.viewing).toEqual({  });
+    expect(init(context).mapSurface.viewing).toEqual(INITIAL_VIEWING);
     expect(init(context).mapSurface.camera.mode).toBe("auto");
     expect(Schema.is(Model)(init(context))).toBe(true);
   });
 
   it("狭い幅で開くと（Flags の startsNarrow）、右の列と字幕を隠して始める。広い幅では両方出して始める", () => {
     const narrow = init(context, { startsNarrow: true });
-    expect(narrow.mapSurface.viewing).toEqual({ sideHidden: true });
+    expect(narrow.mapSurface.viewing).toEqual({ ...INITIAL_VIEWING, sideHidden: true });
     expect(narrow.mapSurface.camera.mode).toBe("auto");
     expect(narrow.captionsHidden).toBe(true);
     expect(Schema.is(Model)(narrow)).toBe(true);
@@ -198,12 +199,12 @@ describe("見返しの update: 表示面の見る状態", () => {
       update,
       given(at(30)),
       message(Message.GotMapSurfaceMessage({ message: MapSurfaceMessage.ClickedNodeButton({ nodeId: "t2", clientX: 0, clientY: 0 }) })),
-      model((m) => { expect(m.mapSurface.viewing).toEqual({ selection: { id: "t2", byKey: false } });
+      model((m) => { expect(m.mapSurface.viewing).toEqual({ ...INITIAL_VIEWING, selection: Option.some({ id: "t2", byKey: false }) });
       expect(m.mapSurface.camera.mode).toBe("auto"); }),
       message(Message.ClickedPrev()),
       model((m) => {
         expect(m.playback.time).toBe(10);
-        expect(m.mapSurface.viewing).toEqual({ selection: { id: "t2", byKey: false } });
+        expect(m.mapSurface.viewing).toEqual({ ...INITIAL_VIEWING, selection: Option.some({ id: "t2", byKey: false }) });
         expect(m.mapSurface.camera.mode).toBe("auto");
       }),
     );
@@ -249,7 +250,7 @@ describe("見返しの update: 表示面のカメラ", () => {
       given(moved),
       message(surface(MapSurfaceMessage.ElapsedIdleTime())),
       model((m) => {
-        expect(m.mapSurface.viewing).toEqual({  });
+        expect(m.mapSurface.viewing).toEqual(INITIAL_VIEWING);
         expect(m.mapSurface.camera.mode).toBe("auto");
         expect(m.mapSurface.camera.viewport).not.toEqual(moved.mapSurface.camera.viewport);
       }),
@@ -264,7 +265,7 @@ describe("見返しの update: 表示面のカメラ", () => {
       given(base),
       message(surface(MapSurfaceMessage.ElapsedIdleTime())),
       model((m) => {
-        expect(m.mapSurface.viewing).toEqual({  });
+        expect(m.mapSurface.viewing).toEqual(INITIAL_VIEWING);
         expect(m.mapSurface.camera.mode).toBe("auto");
         expect(m.mapSurface.camera.viewport).toEqual(base.mapSurface.camera.viewport);
       }),
