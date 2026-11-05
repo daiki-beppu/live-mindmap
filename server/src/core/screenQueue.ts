@@ -1,4 +1,3 @@
-import { Result } from "effect";
 import type { DiffEvent } from "./session.ts";
 
 type ScreenRef = NonNullable<(typeof DiffEvent.Type)["input"]["screens"]>[number];
@@ -61,17 +60,17 @@ export function select(queue: ScreenQueue, cutoff: number): Pick<(typeof DiffEve
   };
 }
 
-export function consume(queue: ScreenQueue, event: typeof DiffEvent.Type, cutoff: number): Result.Result<ScreenQueue, string> {
+export function consume(queue: ScreenQueue, event: typeof DiffEvent.Type, cutoff: number): ScreenQueue {
   const selectedBefore = event.input.screenCount ?? 0;
-  if (selectedBefore > queue.received) return Result.fail(`diff の screenCount ${selectedBefore} が、ここまでの screen の行の数 ${queue.received} より大きい`);
+  if (selectedBefore > queue.received) throw new Error(`diff の screenCount ${selectedBefore} が、ここまでの screen の行の数 ${queue.received} より大きい`);
   const attached = event.input.screens ?? [];
   const candidates = event.input.fresh.length ? byStart(queue.unsent.filter((screen) => screen.seq < selectedBefore && (screen.start <= cutoff || (screen.image !== null && screen.image === queue.carried)))) : [];
   const carried = event.input.fresh.length ? (queue.images ? carriedOf(candidates, attached) : undefined) : queue.carried;
   const unsent = event.input.fresh.length ? queue.unsent.filter((screen) => screen.seq >= selectedBefore || screen.start > cutoff || (screen.image !== null && screen.image === carried)) : queue.unsent;
-  return Result.succeed({
+  return {
     ...queue, unsent, carried, anchor: anchorAfter(attached, queue.anchor),
     catchUp: queue.catchUp !== undefined && unsent.includes(queue.catchUp) ? queue.catchUp : undefined,
-  });
+  };
 }
 
 export const markPaused = (queue: ScreenQueue): ScreenQueue => ({ ...queue, catchUp: queue.unsent.reduce<HeldScreen | undefined>(laterStart, undefined) });

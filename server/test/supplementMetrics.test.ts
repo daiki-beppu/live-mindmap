@@ -46,4 +46,15 @@ describe("補足の実時刻による集計", () => {
       : { type, op: null, category: null, ms: 1, reflectedAt: 0 };
     expect(yield* Effect.flip(supplementMetrics([], [event]))).toMatchObject({ _tag: "InvalidLogEvent", index: 0 });
   }));
+
+  it.effect("diffの未知の発言IDは、その行の位置と理由を持つInvalidLogEventで失敗する", () => Effect.gen(function* () {
+    const log: EvaluationLogEvent[] = [...base(), {
+      type: "diff", input: { recent: ["r1"], fresh: ["r-missing"], nodeCount: 2 },
+      ops: [], dropped: [],
+    }];
+
+    const error = yield* Effect.flip(supplementMetrics([], log));
+
+    expect(error).toMatchObject({ _tag: "InvalidLogEvent", index: 3, reason: "ログに発言がありません: r-missing" });
+  }));
 });

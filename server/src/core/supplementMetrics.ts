@@ -56,14 +56,22 @@ const supplementHistory = Effect.fnUntraced(function* (events: readonly Evaluati
         break;
       case "diff": {
         if (progress === undefined) return yield* invalid("ログの diff より前に start がありません");
-        const { state } = yield* Effect.fromResult(reflectDiff(progress, event)).pipe(Effect.mapError(invalid));
+        const before = progress;
+        const { state } = yield* Effect.try({
+          try: () => reflectDiff(before, event),
+          catch: (error) => invalid(error instanceof Error ? error.message : String(error)),
+        });
         addedTimes(progress, state, event.loggedAt, added);
         progress = state;
         break;
       }
       case "supplement": {
         if (progress === undefined) return yield* invalid("ログの supplement より前に start がありません");
-        const { state, dropped } = yield* Effect.fromResult(reflectSupplement(progress, event)).pipe(Effect.mapError(invalid));
+        const before = progress;
+        const { state, dropped } = yield* Effect.try({
+          try: () => reflectSupplement(before, event),
+          catch: (error) => invalid(error instanceof Error ? error.message : String(error)),
+        });
         if (dropped.length === 0) recordSupplement(progress, state, event, metadata, added, delays);
         progress = state;
         break;

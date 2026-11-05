@@ -274,6 +274,29 @@ describe("CLI の入口の出力", () => {
     expect(result.stderr).toBe(`${join(run, "log.jsonl")} の 3 行目が JSON として読めません: ${reason}\n`);
   }).pipe(Effect.scoped));
 
+  it.live("restore の未知の発言IDは、元の行番号と欠落IDの理由を stderr に出して exit 1", () => Effect.gen(function* () {
+    const sessionsDir = yield* temporaryDirectory;
+    const run = join(sessionsDir, "run");
+    const logPath = join(run, "log.jsonl");
+    yield* Effect.tryPromise(async () => {
+      await mkdir(run);
+      await writeFile(logPath, [
+        JSON.stringify({ type: "start", title: "定例" }),
+        "",
+        JSON.stringify({ type: "diff", input: { recent: [], fresh: ["r-missing"], nodeCount: 0 }, ops: [], dropped: [] }),
+        "",
+      ].join("\n"));
+    });
+
+    const result = yield* runEntry(["restore"], sessionsDir);
+
+    expect(result).toEqual({
+      code: 1,
+      stdout: "",
+      stderr: `${logPath} の 3 行目が読めません: ログに発言がありません: r-missing\n`,
+    });
+  }).pipe(Effect.scoped));
+
   it.live("eval の不正イベントは、パスと空行を含む元の行番号の日本語一行を出して exit 1", () => Effect.gen(function* () {
     const sessionsDir = yield* temporaryDirectory;
     const run = join(sessionsDir, "run");
