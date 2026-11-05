@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { NodeFileSystem } from "@effect/platform-node";
 import { describe, expect, it } from "@effect/vitest";
-import { Effect, Result, Schema } from "effect";
+import { Cause, Effect, Exit, Result, Schema } from "effect";
 import { mapOnlyReviewEvents } from "../src/core/index.ts";
 import { renderReviewPages, ReviewBuild, ReviewPageFailed, writeReviewPages } from "../src/review.ts";
 import { BrokenLogLine, reviewVariants, selfReviewVariants, writeReviews } from "../src/sessionFiles.ts";
@@ -100,14 +100,35 @@ describe("review の書き出し", () => {
     expect(mix.calls).toEqual([]);
   }));
 
-  it.effect("テンプレートに </body> が無ければ ReviewPageFailed になる", () => Effect.gen(function* () {
+  it.effect("テンプレートに </body> が無ければ defect になり、型付き失敗には変換しない", () => Effect.gen(function* () {
     const dir = yield* temporaryDirectory;
     const events = [{ type: "start", title: "t" }];
 
-    const result = yield* Effect.result(writeReviewPages(dir, events, [PLAIN]).pipe(fakeBuild(Effect.succeed("<html></html>")), Effect.provide(fakeAudioMix().layer)));
+    const exit = yield* Effect.exit(writeReviewPages(dir, events, [PLAIN]).pipe(fakeBuild(Effect.succeed("<html></html>")), Effect.provide(fakeAudioMix().layer)));
 
-    expect(Result.isFailure(result) && Schema.is(ReviewPageFailed)(result.failure)).toBe(true);
+    expect(Exit.isFailure(exit)).toBe(true);
+    if (Exit.isSuccess(exit)) return;
+    expect(Cause.hasDies(exit.cause)).toBe(true);
+    expect(Cause.hasFails(exit.cause)).toBe(false);
     expect(existsSync(join(dir, "map.html"))).toBe(false);
+  }));
+
+  it.effect("補足の decode 失敗は、通知行を除く前の位置と項目を ReviewPageFailed の説明に残す", () => Effect.gen(function* () {
+    const dir = yield* temporaryDirectory;
+    const events = [
+      { type: "start", title: "定例" },
+      { type: "discussion-notice", pointId: "n1", at: 1, text: "通知" },
+      { type: "supplement", op: 42 },
+    ];
+
+    const error = yield* Effect.flip(writeReviewPages(dir, events, [MAP_ONLY]).pipe(
+      fakeBuild(Effect.succeed(TEMPLATE)), Effect.provide(fakeAudioMix().layer),
+    ));
+
+    expect(error).toBeInstanceOf(ReviewPageFailed);
+    expect(error.message).toContain("出来事 2 行目を読めません");
+    expect(error.message).toContain("op");
+    expect(existsSync(join(dir, "map-only.html"))).toBe(false);
   }));
 });
 
@@ -261,7 +282,7 @@ describe("selfReviewVariants（自分の声だけの版）", () => {
     const plain = yield* Effect.tryPromise(() => readFile(paths[0]!, "utf8"));
     const mapOnly = yield* Effect.tryPromise(() => readFile(paths[1]!, "utf8"));
     expect(JSON.parse(embeddedText(plain))).toEqual(events);
-    expect(JSON.parse(embeddedText(mapOnly))).toEqual(mapOnlyReviewEvents(events));
+    expect(JSON.parse(embeddedText(mapOnly))).toEqual((yield* mapOnlyReviewEvents(events)));
     for (const secret of ["給与は九百万です", "きゅうよは九百万です", "社外秘 売上 12 億"]) {
       expect(plain).toContain(secret);
       expect(mapOnly).not.toContain(secret);
