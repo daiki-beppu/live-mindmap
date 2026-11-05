@@ -98,7 +98,7 @@ export class Sessions extends Context.Service<Sessions, {
   apps: Effect.Effect<unknown>;
   start: (input: SessionStart) => Effect.Effect<{ dir: string; warnings: ReadonlyArray<string> }, SessionFailure>;
   startRecorded: (input: RecordedStart) => Effect.Effect<RecordedRun, SessionFailure>;
-  stop: Effect.Effect<{ paths: string[]; ocrSummary: typeof import("./core/recordedProgress.ts").OcrSummary.Type; kind: "live" | "recorded" }, SessionFailure>;
+  stop: Effect.Effect<{ paths: string[]; warnings: ReadonlyArray<string>; ocrSummary: typeof import("./core/recordedProgress.ts").OcrSummary.Type; kind: "live" | "recorded" }, SessionFailure>;
   status: Effect.Effect<IntakeStatusReport>;
   resume: Effect.Effect<{ warnings: ReadonlyArray<string> }, SessionFailure>;
   checkResume: Effect.Effect<typeof CheckReport.Type, SessionFailure>;
@@ -390,9 +390,9 @@ export class Sessions extends Context.Service<Sessions, {
 
       const finishRecorded = (recorded: Recorded, writeOut: Effect.Success<ReturnType<RecordedSink["end"]>>["writeOut"], failure: { code: number | null; signal: string | null; stderrTail: ReadonlyArray<string> } | undefined) =>
         Effect.gen(function* () {
-          const { paths, ocrSummary } = yield* writeOut;
+          const { paths, ocrSummary, warnings } = yield* writeOut;
           yield* Queue.offer(recorded.events, { type: "finished", paths, ocrSummary, ...(failure === undefined ? {} : { failure }) });
-          return { paths, ocrSummary };
+          return { paths, ocrSummary, warnings };
         });
 
       const concludeRecorded = Effect.fnUntraced(function* (recorded: Recorded, prepare: ReturnType<RecordedSink["end"]>, failure: { code: number | null; signal: string | null; stderrTail: ReadonlyArray<string> } | undefined) {

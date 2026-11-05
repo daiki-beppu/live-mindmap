@@ -92,7 +92,9 @@ describe("SessionSinks（実物 Layer）", () => {
       return calls === 1 ? Effect.fail(new DiffUpdatePaused({ reason: "ChatGPT の利用上限", message: "合成の利用上限" })) : Effect.succeed({ ops: [] });
     }) }));
     const exportLayer = sinksLayer({ updaterLayer, capture: (snapshot) => Effect.gen(function* () {
-      expect(snapshot).toEqual(published[0]);
+      const { now, ...map } = snapshot;
+      expect(map).toEqual(published[0]);
+      expect(now).toBe(3);
       yield* TestClock.adjust(600_000);
       expect(calls).toBe(1);
     }) });
@@ -249,7 +251,9 @@ describe("SessionSinks（実物 Layer）", () => {
       yield* sink.final({ track: "相手", start: 0, end: 1, text: "採用" });
 
       const { writeOut } = yield* sink.end({ kind: "入れ切る" });
-      const { paths } = yield* writeOut.pipe(Effect.provideService(Console.Console, warnings.service));
+      const written = yield* writeOut.pipe(Effect.provideService(Console.Console, warnings.service));
+      const { paths } = written;
+      expect(written).toMatchObject({ warnings: [] });
 
       expect(paths).toHaveLength(5);
       expect(mix.calls).toEqual([]);
@@ -272,7 +276,9 @@ describe("SessionSinks（実物 Layer）", () => {
       mix.failure.reason = "録音を混ぜられない";
 
       const { writeOut } = yield* sink.end({ kind: "入れ切る" });
-      const { paths } = yield* writeOut.pipe(Effect.provideService(Console.Console, warnings.service));
+      const written = yield* writeOut.pipe(Effect.provideService(Console.Console, warnings.service));
+      const { paths } = written;
+      expect(written).toMatchObject({ warnings: ["map-audio.html を書き出せませんでした: 録音を混ぜられない"] });
 
       expect(paths.map((p) => p.split("/").pop())).toEqual(["map.md", "map.json", "map.drawnix", "map.png", "map.html"]);
       expect(existsSync(join(dir, "map-audio.html"))).toBe(false);
@@ -291,7 +297,9 @@ describe("SessionSinks（実物 Layer）", () => {
       yield* sink.final({ track: "相手", start: 0, end: 1, text: "採用" });
 
       const { writeOut } = yield* sink.end({ kind: "入れ切る" });
-      const { paths } = yield* writeOut.pipe(Effect.provideService(Console.Console, warnings.service));
+      const written = yield* writeOut.pipe(Effect.provideService(Console.Console, warnings.service));
+      const { paths } = written;
+      expect(written).toMatchObject({ warnings: ["map.png を書き出せませんでした: 撮影に失敗"] });
 
       expect(paths.map((p) => p.split("/").pop())).toEqual(["map.md", "map.json", "map.drawnix", "map.html"]);
       expect(existsSync(join(dir, "map.png"))).toBe(false);
@@ -309,7 +317,9 @@ describe("SessionSinks（実物 Layer）", () => {
       yield* sink.final({ track: "相手", start: 0, end: 1, text: "採用" });
 
       const { writeOut } = yield* sink.end({ kind: "入れ切る" });
-      const { paths } = yield* writeOut.pipe(Effect.provideService(Console.Console, warnings.service));
+      const written = yield* writeOut.pipe(Effect.provideService(Console.Console, warnings.service));
+      const { paths } = written;
+      expect(written).toMatchObject({ warnings: ["map.html を書き出せませんでした: ビルドに失敗"] });
 
       expect(paths.map((p) => p.split("/").pop())).toEqual(["map.md", "map.json", "map.drawnix", "map.png"]);
       expect(existsSync(join(dir, "map.html"))).toBe(false);
@@ -325,43 +335,45 @@ describe("SessionSinks（実物 Layer）", () => {
     yield* sink.final({ track: "相手", start: 0, end: 1, text: "採用" });
     return { dir, sink };
   });
-  const fileNames = (paths: readonly string[]) => paths.map((p) => p.split("/").pop());
 
-  it.effect("撮影の後始末が defect で失敗しても、writeOut は map.html を含む 4 パスを返し、標準エラーに理由を残す", () =>
+  it.effect("撮影の後始末の defect は警告に変えず伝える", () =>
     Effect.scoped(Effect.gen(function* () {
       const warnings = collectingConsole();
       const { sink } = yield* openWithRemark;
-
       const { writeOut } = yield* sink.end({ kind: "入れ切る" });
-      const { paths } = yield* writeOut.pipe(Effect.provideService(Console.Console, warnings.service));
+      const exit = yield* writeOut.pipe(Effect.provideService(Console.Console, warnings.service), Effect.exit);
+      expect(Exit.isFailure(exit) && Cause.hasDies(exit.cause)).toBe(true);
+      if (Exit.isFailure(exit)) expect(Cause.squash(exit.cause)).toMatchObject({ message: "後始末に失敗" });
+      expect(warnings.errors).toEqual([]);
+    })).pipe(Effect.provide(sinksLayer({
+      updaterLayer: makeFakeUpdater().updaterLayer,
+      capture: () => Effect.scoped(Effect.acquireRelease(Effect.void, () => Effect.die(new Error("後始末に失敗")))),
+    }))));
 
-      expect(fileNames(paths)).toEqual(["map.md", "map.json", "map.drawnix", "map.html"]);
-      expect(warnings.errors).toHaveLength(1);
-      expect(warnings.errors[0]).toContain("map.png を書き出せませんでした: 後始末に失敗");
-      expect(warnings.errors[0]).not.toContain("pnpm cli install");
-    })).pipe(
-      Effect.provide(
-        sinksLayer({
-          updaterLayer: makeFakeUpdater().updaterLayer,
-          capture: () => Effect.scoped(Effect.acquireRelease(Effect.void, () => Effect.die(new Error("後始末に失敗")))),
-        }),
-      ),
-    ));
-
-  it.effect("map.html のビルドが defect で失敗しても、writeOut はほかの 4 パスを返し、標準エラーに理由を残す", () =>
+  it.effect("map.html のビルドの defect は警告に変えず伝える", () =>
     Effect.scoped(Effect.gen(function* () {
       const warnings = collectingConsole();
       const { dir, sink } = yield* openWithRemark;
-
       const { writeOut } = yield* sink.end({ kind: "入れ切る" });
-      const { paths } = yield* writeOut.pipe(Effect.provideService(Console.Console, warnings.service));
-
-      expect(fileNames(paths)).toEqual(["map.md", "map.json", "map.drawnix", "map.png"]);
+      const exit = yield* writeOut.pipe(Effect.provideService(Console.Console, warnings.service), Effect.exit);
+      expect(Exit.isFailure(exit) && Cause.hasDies(exit.cause)).toBe(true);
+      if (Exit.isFailure(exit)) expect(Cause.squash(exit.cause)).toMatchObject({ message: "ビルドが落ちた" });
       expect(existsSync(join(dir, "map.html"))).toBe(false);
-      expect(warnings.errors).toEqual(["map.html を書き出せませんでした: ビルドが落ちた"]);
-    })).pipe(
-      Effect.provide(sinksLayer({ updaterLayer: makeFakeUpdater().updaterLayer, build: Effect.die(new Error("ビルドが落ちた")) })),
-    ));
+      expect(warnings.errors).toEqual([]);
+    })).pipe(Effect.provide(sinksLayer({ updaterLayer: makeFakeUpdater().updaterLayer, build: Effect.die(new Error("ビルドが落ちた")) }))));
+
+  it.effect("撮影の通常失敗と後始末の defect が混在しても defect を失わない", () =>
+    Effect.scoped(Effect.gen(function* () {
+      const warnings = collectingConsole();
+      const { sink } = yield* openWithRemark;
+      const { writeOut } = yield* sink.end({ kind: "入れ切る" });
+      const exit = yield* writeOut.pipe(Effect.provideService(Console.Console, warnings.service), Effect.exit);
+      expect(Exit.isFailure(exit) && Cause.hasDies(exit.cause)).toBe(true);
+      expect(warnings.errors).toEqual([]);
+    })).pipe(Effect.provide(sinksLayer({
+      updaterLayer: makeFakeUpdater().updaterLayer,
+      capture: () => failingCapture()().pipe(Effect.ensuring(Effect.die(new Error("後始末に失敗")))),
+    }))));
 
   it.effect("撮影が中断されたときは、警告にせず中断のまま伝える", () =>
     Effect.scoped(Effect.gen(function* () {

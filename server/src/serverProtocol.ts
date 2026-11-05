@@ -43,7 +43,7 @@ export const SelfPauseBody = Schema.Struct({ paused: Schema.Boolean });
 export const SpeakerNameBody = Schema.Struct({ label: Schema.String, name: Schema.String });
 
 const StartedSession = Schema.Struct({ dir: Schema.String, ...StartupWarnings.fields });
-const StoppedSession = Schema.Struct({ paths: Schema.Array(Schema.String), ocrSummary: OcrSummary, kind: Schema.Literals(["live", "recorded"]) });
+const StoppedSession = Schema.Struct({ paths: Schema.Array(Schema.String), ocrSummary: OcrSummary, kind: Schema.Literals(["live", "recorded"]), ...StartupWarnings.fields });
 const ServerIdentity = Schema.Struct({ pid: Schema.Int.check(Schema.isGreaterThan(0)) });
 
 export type ServerRoute = {

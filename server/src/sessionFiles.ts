@@ -181,11 +181,16 @@ export const writeReviews = Effect.fnUntraced(function* (dir: string) {
 
 export const writeExportsAndCapture = Effect.fnUntraced(function* (dir: string, snapshot: Snapshot, formatReason: (e: unknown) => string, names: ReadonlyMap<string, string>) {
   const paths = yield* writeExportFiles(dir, snapshot, names).pipe(Effect.mapError((e) => new ExportFilesFailed({ message: `マップを書き出せませんでした: ${dir}（${fileReason(e)}）` })));
+  const warnings: string[] = [];
+  const warn = Effect.fnUntraced(function* (message: string) {
+    warnings.push(message);
+    yield* Console.error(message);
+  });
   const orWarn = <A, E, R>(effect: Effect.Effect<A, E, R>, warning: (reason: string) => string) =>
     Effect.catchCauseIf(
       effect,
-      (cause) => !Cause.hasInterrupts(cause),
-      (cause) => Effect.as(Console.error(warning(formatReason(Cause.squash(cause)))), undefined),
+      (cause) => Cause.hasFails(cause) && !Cause.hasDies(cause) && !Cause.hasInterrupts(cause),
+      (cause) => Effect.as(warn(warning(formatReason(Cause.squash(cause)))), undefined),
     );
   const png = join(dir, "map.png");
   const captured = yield* orWarn(
@@ -196,9 +201,9 @@ export const writeExportsAndCapture = Effect.fnUntraced(function* (dir: string, 
   const reviewed = yield* orWarn(writeReviews(dir), (reason) => reviewWarning("map.html", reason));
   if (reviewed) {
     paths.push(...reviewed.paths);
-    for (const { file, reason } of reviewed.skipped) yield* Console.error(reviewWarning(file, reason));
+    for (const { file, reason } of reviewed.skipped) yield* warn(reviewWarning(file, reason));
   }
-  return paths;
+  return { paths, warnings };
 });
 
 export const createSessionDir = Effect.fnUntraced(function* (sessionsDir: string, at?: DateTime.DateTime) {

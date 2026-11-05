@@ -3,10 +3,10 @@ import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { NodeFileSystem, NodeHttpClient, NodeServices } from "@effect/platform-node";
 import { describe, expect, it } from "@effect/vitest";
-import { ConfigProvider, Console, Effect, Exit, Layer } from "effect";
+import { ConfigProvider, Console, Effect, Layer } from "effect";
 import { beforeEach, vi } from "vitest";
 import { MapCapture } from "../src/capture.ts";
-import { runCli } from "../src/cli.ts";
+import { runCliEntry } from "./fixtures/cliEntry.ts";
 import { ManagedDeps } from "../src/managedDeps.ts";
 import { Playwright } from "../src/playwright.ts";
 import { ReviewBuild } from "../src/review.ts";
@@ -67,31 +67,24 @@ describe("管理 Chromium と stop", () => {
       }));
       expect(started.status).toBe(200);
       const { dir: sessionDir } = yield* Effect.tryPromise(() => started.json() as Promise<{ dir: string }>);
-      // stop は CLI の HTTP クライアントだけを使う。標準出力は Console で集め、終了は Exit で見る（サーバーの警告を集める Console とは別）
-      const stdout: string[] = [];
-      const cliConsole: Console.Console = { ...console, log: (...args: unknown[]) => { stdout.push(args.map(String).join(" ") + "\n"); } };
-      const stopExit = yield* runCli(["stop"]).pipe(
-        Effect.provide(Layer.mergeAll(
+      const stopped = yield* runCliEntry(["stop"], Layer.mergeAll(
           NodeServices.layer, unusedApple, readyManagedDeps, NodeHttpClient.layerUndici,
-          ConfigProvider.layer(ConfigProvider.fromEnvRecord({ LIVE_MINDMAP_PORT: String(server.port), LIVE_MINDMAP_DEPS: root, LIVE_MINDMAP_SESSIONS: options.sessionsDir, LIVE_MINDMAP_CONFIG: join(dir, "absent.json") })),
-          Layer.succeed(Console.Console, cliConsole),
+          ConfigProvider.layer(ConfigProvider.fromEnvRecord({ HOME: join(dir, "home"), LIVE_MINDMAP_PORT: String(server.port), LIVE_MINDMAP_DEPS: root, LIVE_MINDMAP_SESSIONS: options.sessionsDir, LIVE_MINDMAP_CONFIG: join(dir, "absent.json") })),
           Layer.succeed(MapCapture, MapCapture.of({ capture: () => Effect.void })),
           Layer.succeed(ReviewBuild, ReviewBuild.of({ build: Effect.succeed(FAKE_TEMPLATE) })),
           fakeAudioMix().layer,
           fakeScreenJpeg().layer,
-        )),
-        Effect.exit,
-      );
-      expect(Exit.isSuccess(stopExit), String(stopExit)).toBe(true);
-      const stopped = { stdout: stdout.join("") };
+        ));
+      expect(stopped.code).toBe(0);
       const expected = ["map.md", "map.json", "map.drawnix", "map.html"];
       for (const file of expected) {
         expect(existsSync(join(sessionDir, file)), file).toBe(true);
         expect(stopped.stdout).toContain(join(sessionDir, file));
       }
       expect(existsSync(join(sessionDir, "map.png"))).toBe(false);
-      const captureWarnings = warnings.errors.filter((message) => message.startsWith("map.png を書き出せませんでした:"));
+      const captureWarnings = stopped.stderr.trimEnd().split("\n");
       expect(captureWarnings).toHaveLength(1);
+      expect(captureWarnings[0]).toMatch(/^map\.png を書き出せませんでした: /);
       if (available) {
         expect(captureWarnings[0]).toContain("通常依存の Chromium は使用できません");
         expect(unmanaged.launch).toHaveBeenCalledTimes(1);

@@ -27,7 +27,7 @@ import { SessionSinks } from "../src/sessionSinks.ts";
 import { buildPrompt } from "../src/claudePrompt.ts";
 import { vocabularyPoolPath } from "../src/vocabularyPool.ts";
 import { fakeAudioMix } from "./fixtures/audioMix.ts";
-import { fakeExportServices, type ExportServicesOptions } from "./fixtures/exportServices.ts";
+import { failingBuild, failingCapture, fakeExportServices, type ExportServicesOptions } from "./fixtures/exportServices.ts";
 import { allowedMails } from "./fixtures/allowedMail.ts";
 import { startedServer } from "./fixtures/startedServer.ts";
 import { fakeTunnel, FAKE_TUNNEL_HOST } from "./fixtures/tunnel.ts";
@@ -94,7 +94,7 @@ const makeFakeHelpers = (attempts: AttemptScript[], permission: { microphone: "a
   return { helpers: Helpers.of({ ...service, installSpeechJa: Stream.die("このテストでは日本語モデルを導入しない") }), calls, sent };
 };
 
-const resourceWithFakeHelpers = Effect.fnUntraced(function* (attempts: AttemptScript[], options: { managedDeps?: Layer.Layer<ManagedDeps>; updaterLayer?: () => Layer.Layer<DiffUpdater>; permission?: { microphone: "authorized" | "denied" | "notDetermined"; screenCapture: boolean }; viewing?: ServerLayers["viewing"] } & Pick<ExportServicesOptions, "capture"> = {}) {
+const resourceWithFakeHelpers = Effect.fnUntraced(function* (attempts: AttemptScript[], options: { managedDeps?: Layer.Layer<ManagedDeps>; updaterLayer?: () => Layer.Layer<DiffUpdater>; permission?: { microphone: "authorized" | "denied" | "notDetermined"; screenCapture: boolean }; viewing?: ServerLayers["viewing"] } & Pick<ExportServicesOptions, "capture" | "build" | "mix"> = {}) {
   const dir = yield* Effect.acquireRelease(
     Effect.tryPromise(() => mkdtemp(join(tmpdir(), "live-mindmap-http-fake-"))),
     (path) => Effect.promise(() => rm(path, { recursive: true, force: true })),
@@ -104,7 +104,7 @@ const resourceWithFakeHelpers = Effect.fnUntraced(function* (attempts: AttemptSc
   const startupChecks = StartupChecks.layer({
     prepareUpdater: () => Effect.succeed({ layer: options.updaterLayer ? options.updaterLayer() : updaterLayer(() => Effect.succeed({ ops: [] })) }),
   }).pipe(Layer.provide(fakeExportServices({ capture: options.capture })));
-  const sessionSinksLayer = SessionSinks.layer.pipe(Layer.provide(fakeExportServices({ capture: options.capture })));
+  const sessionSinksLayer = SessionSinks.layer.pipe(Layer.provide(fakeExportServices({ capture: options.capture, build: options.build, mix: options.mix })));
   const server = yield* startedServer(
     { port: 0, sessionsDir },
     { helpers: Layer.succeed(Helpers)(fakeHelpers.helpers), startupChecks, sessionSinks: sessionSinksLayer, managedDeps: options.managedDeps ?? readyManagedDeps, ...(options.viewing === undefined ? {} : { viewing: options.viewing }) },
@@ -119,8 +119,8 @@ const resourceWithFakeHelpers = Effect.fnUntraced(function* (attempts: AttemptSc
 });
 
 describe("セッションのディスク失敗の HTTP・CLI 応答", () => {
-  const resource = Effect.fnUntraced(function* () {
-    const r = yield* resourceWithFakeHelpers([{}]);
+  const resource = Effect.fnUntraced(function* (exports: Pick<ExportServicesOptions, "capture" | "build" | "mix"> = {}) {
+    const r = yield* resourceWithFakeHelpers([{}], exports);
     const responses: { status: number; body: unknown }[] = [];
     const observedClient = Layer.effect(HttpClient.HttpClient, Effect.map(HttpClient.HttpClient, (client) =>
       HttpClient.tap(client, (response) => Effect.gen(function* () {
@@ -139,6 +139,48 @@ describe("セッションのディスク失敗の HTTP・CLI 応答", () => {
     );
     return { ...r, responses, cli: (argv: string[]) => runCliEntry(argv, cliLayer) };
   });
+
+  it.live("PNG と HTML の失敗は HTTP 200 の警告から CLI の stderr に一行ずつ届き、成功した形式と exit 0 を保つ", () => Effect.gen(function* () {
+    const r = yield* resource({ capture: failingCapture("撮影に失敗\n詳細"), build: failingBuild("ビルドに失敗\n詳細") });
+    const started = yield* r.cli(["start", "--app", "us.zoom.xos", "--no-audio", "--no-screen"]);
+    expect(started.code).toBe(0);
+    const dir = started.stdout.trim();
+    const stopped = yield* r.cli(["stop"]);
+    expect(stopped.code).toBe(0);
+    expect(stopped.stdout.trimEnd().split("\n")).toEqual(["map.md", "map.json", "map.drawnix"].map((file) => join(dir, file)));
+    expect(stopped.stderr.trimEnd().split("\n")).toEqual([
+      "map.png を書き出せませんでした: 撮影に失敗 詳細",
+      "map.html を書き出せませんでした: ビルドに失敗 詳細",
+    ]);
+    expect(r.responses.at(-1)).toMatchObject({ status: 200, body: { warnings: [
+      "map.png を書き出せませんでした: 撮影に失敗\n詳細",
+      "map.html を書き出せませんでした: ビルドに失敗\n詳細",
+    ] } });
+  }));
+
+  it.live("音声の結合失敗は map-audio.html の警告として CLI に届き、通常の HTML と exit 0 を保つ", () => Effect.gen(function* () {
+    const mix = fakeAudioMix();
+    mix.failure.reason = "録音を混ぜられない";
+    const r = yield* resource({ mix });
+    const started = yield* r.cli(["start", "--app", "us.zoom.xos", "--no-audio", "--no-screen"]);
+    expect(started.code).toBe(0);
+    const dir = started.stdout.trim();
+    yield* Effect.tryPromise(() => writeFile(join(dir, "相手.m4a"), "録音"));
+    const stopped = yield* r.cli(["stop"]);
+    expect(stopped.code).toBe(0);
+    expect(stopped.stdout.trimEnd().split("\n")).toEqual(["map.md", "map.json", "map.drawnix", "map.png", "map.html"].map((file) => join(dir, file)));
+    expect(stopped.stderr).toBe("map-audio.html を書き出せませんでした: 録音を混ぜられない\n");
+  }));
+
+  it.live("全形式を書き出せた stop は警告を出さず exit 0 になる", () => Effect.gen(function* () {
+    const r = yield* resource();
+    const started = yield* r.cli(["start", "--app", "us.zoom.xos", "--no-audio", "--no-screen"]);
+    expect(started.code).toBe(0);
+    const stopped = yield* r.cli(["stop"]);
+    expect(stopped.code).toBe(0);
+    expect(stopped.stderr).toBe("");
+    expect(stopped.stdout.trimEnd().split("\n")).toEqual(["map.md", "map.json", "map.drawnix", "map.png", "map.html"].map((file) => join(started.stdout.trim(), file)));
+  }));
 
   it.live("stop の書き出し失敗は HTTP 500 の文面を stderr と exit 1 に伝え、同じサーバーの status はセッションなしになる", () => Effect.gen(function* () {
     const r = yield* resource();
