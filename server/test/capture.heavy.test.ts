@@ -123,4 +123,20 @@ describe("map.png の撮影", () => {
     expect(height).toBeLessThan(width / 2);
     expect(height).toBeLessThan(1000 * 2);
   }), TIMEOUT);
+
+  it.live("表示ページの依存を、他の Vite と共有する web の .vite/deps から読まない（別の設定の Vite が作り直しても撮影の読み込みが壊れない）", () => Effect.gen(function* () {
+    const snapshot: Snapshot = {
+      nodes: [{ id: "root", parent: null, kind: "会議", text: "週次", evidence: [] }],
+      round: 1,
+      changes: [],
+      remarks: [],
+    };
+
+    const urls = yield* withCapturePage(snapshot, (page) =>
+      Effect.tryPromise(() => page.evaluate(() => performance.getEntriesByType("resource").map((e) => e.name))),
+    ).pipe(Effect.provide(managedPlaywright));
+
+    expect(urls.some((u) => u.includes("/src/main.ts"))).toBe(true);
+    expect(urls.filter((u) => u.includes("/node_modules/.vite/deps/"))).toEqual([]);
+  }), TIMEOUT);
 });
