@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -59,6 +59,7 @@ console.log("fixture:" + stage + ":done");
 async function runBootstrap(failures: readonly Stage[]) {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), "bootstrap-")));
   try {
+    execFileSync("git", ["init", "--quiet", dir]);
     const bin = join(dir, "bin");
     const home = join(dir, "home");
     for (const path of [bin, home, join(dir, "scripts"), join(dir, "helper/scripts")]) {
@@ -117,7 +118,8 @@ async function runBootstrap(failures: readonly Stage[]) {
           timer = setTimeout(() => reject(new Error(`Timed out waiting for pnpm bootstrap to finish\n${output}`)), 12_000);
         }),
       ]);
-      return { code, output, lines: output.split(/\r?\n/).filter(Boolean) };
+      const hooksPath = spawnSync("git", ["config", "--get", "core.hooksPath"], { cwd: dir, encoding: "utf8" }).stdout.trim();
+      return { code, output, hooksPath, lines: output.split(/\r?\n/).filter(Boolean) };
     } finally {
       clearTimeout(timer);
       if (child.pid !== undefined) {
@@ -149,6 +151,7 @@ describe("pnpm bootstrap", () => {
     const lastCompletion = result.lines.findLastIndex((line) => line.includes(":done"));
     expect(nextStep, result.output).toBeGreaterThan(lastCompletion);
     expect(result.lines.filter((line) => line.includes("fixture:unexpected")), result.output).toEqual([]);
+    expect(result.hooksPath).toBe("scripts/hooks");
   });
 
   it.each<{ failures: Stage[] }>([

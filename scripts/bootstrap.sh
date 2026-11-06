@@ -30,4 +30,5 @@ if [ "${#failed[@]}" -gt 0 ]; then
   exit 1
 fi
 
+git config core.hooksPath scripts/hooks
 printf 'Bootstrap complete. Next: pnpm dev\n'

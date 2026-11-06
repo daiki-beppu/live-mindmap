@@ -1,0 +1,25 @@
+#!/bin/sh
+# HEAD を refs/heads/* へ送る push だけ、作業ツリーで型検査と unit を走らせる。
+# 有効化は scripts/bootstrap.sh、--no-verify の扱いは AGENTS.md。
+say() { printf 'pre-push: %s\n' "$*" >&2; }
+# git が渡す GIT_DIR などを残すと、子の git が一時 repo でなくこの repo を触る。
+unset $(git rev-parse --local-env-vars)
+head=$(git rev-parse --verify --quiet HEAD) || head=
+check=
+while read -r local_ref local_sha remote_ref remote_sha; do
+  case "$remote_ref" in
+    refs/heads/*) [ "$local_sha" = "$head" ] && check=1 ;;
+  esac
+done
+if [ -z "$check" ]; then say 'HEAD を送る branch が無いので検査しない'; exit 0; fi
+if [ ! -d node_modules ] || ! command -v pnpm >/dev/null 2>&1; then
+  say 'node_modules か pnpm が無いので検査しない（CI に任せる）'; exit 0
+fi
+start=$(date +%s)
+for script in typecheck:linux test:linux; do
+  say "$script を実行する"
+  if ! pnpm "$script"; then
+    say "$script で失敗。push していない。依存の不足なら bash scripts/setup-deps.sh"; exit 1
+  fi
+done
+say "通過 $(($(date +%s) - start)) 秒"

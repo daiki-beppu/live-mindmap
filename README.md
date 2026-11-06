@@ -61,7 +61,7 @@ For Claude, set your API key in the terminal that starts the server:
 export ANTHROPIC_API_KEY=sk-ant-...
 git clone https://github.com/daiki-beppu/live-mindmap
 cd live-mindmap
-pnpm bootstrap      # once: installs packages, builds the WebRTC audio-processing library, fetches Swift packages
+pnpm bootstrap      # once: installs packages, builds the WebRTC audio-processing library, fetches Swift packages, enables the pre-push hook
 pnpm dev            # builds the helper, starts the server and the view
 ```
 

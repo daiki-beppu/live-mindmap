@@ -55,6 +55,7 @@ PR は各プラットフォームの仕組みで作る。Claude cloud は組み�
 
 - 作業前に `bash scripts/setup-deps.sh` を実行する。ブランチの切り替え・pull で lockfile が変わったときも実行し直す。
 - 実装中は `pnpm test:linux`、完了時は `pnpm typecheck:linux` と `pnpm test:it:linux` を実行する。`typecheck:linux` は fallow を含み、問題が1件でもあれば失敗する。
+- クラウドでは hook を有効にしない（`setup-deps.sh` は設定しない）。上の検査は自分で実行する。
 - ルートの `pnpm typecheck`・`pnpm test`・`pnpm test:it` は helper まで走って失敗するので、クラウドでは使わない。
 - helper の検証・準備である `build-webrtc-apm.sh`・`fetch-speaker-models.sh`・`swift test`、heavy IT、`test:external`、e2e の smoke、Evals、`measure-bootstrap.sh` は実行しない。追加・変更した heavy IT をファイル指定で実行する手順も対象外とする。これらは CI または手元に任せる。CI の helper は macOS で実行する。
 - PR 本文に実行した層と結果を書く。加えて「helper・heavy IT・e2e は流しておらず CI に任せた」と1行で書く。e2e の smoke や Evals が必要な変更では「手元で要る」と書いて人に引き継ぐ。
@@ -72,6 +73,8 @@ SDK または `playwright-core` の固定版を更新するときは、[Claude �
 Linux のクラウドのセッション（Cursor・Claude cloud・Devin）では、[クラウドのセッション](#クラウドのセッション) の「検証」に従う。
 
 Run before a PR, from the repo root (inside `server/` or `web/`, `pnpm typecheck` skips fallow, and CI fails on it): `bash helper/scripts/build-webrtc-apm.sh` (needs `uv`; a no-op once built), `bash helper/scripts/fetch-speaker-models.sh` (fetches the speaker-diarization models once, needs network on the first run; a no-op once fetched; the helper never fetches them during a session), `pnpm typecheck` (ends with the root `pnpm fallow`: `.fallowrc.json`, 未使用・重複・複雑度。1 件でも落ちる), `pnpm test` while implementing (unit tests of server, web and helper), `pnpm test:it` when done (light integration tests of all three). Run heavy ITs you added or changed by file, e.g. `pnpm --filter @live-mindmap/server exec vitest run test/foo.heavy.test.ts`, and leave the full set to CI. State the layers you ran and their results in the PR body. Before merging, also follow `CODING_STANDARDS.md`. Merge with `gh pr merge --squash --auto` instead of waiting on CI; if the PR then shows `DIRTY`, rebase onto `origin/main` and push; it stays unmerged until you do. A `BEHIND` PR merges once the required `check` passes (ADR 0026).
+
+`pnpm bootstrap` enables the pre-push hook (`scripts/hooks/pre-push`), which runs `typecheck:linux` and `test:linux` when a push sends HEAD to a branch. Local agents give `git push` a 5-minute timeout (Claude's Bash `timeout: 300000`; the default 120 s can cut it off under load). If it is cut off, the push has not arrived: retry. Fix a failure the change caused rather than using `--no-verify`. Use `--no-verify` only for a failure unrelated to the change (such as one coming from main) or when a person says so, and state why in the PR body.
 
 When fallow fails, the default fix is to rewrite the code; suppress only as `CODING_STANDARDS.md` → Suppressions allows. CI's `ts` job runs fallow last, with `github-annotations` output and `--fail-on-issues`.
 
