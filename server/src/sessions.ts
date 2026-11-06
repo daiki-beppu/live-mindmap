@@ -567,6 +567,7 @@ export class Sessions extends Context.Service<Sessions, {
       const status: Effect.Effect<IntakeStatusReport> = Effect.gen(function* () {
         const current = yield* Ref.get(state);
         if (current.kind === "recorded") return { status: "running", dir: current.recorded.dir, restarts: 0 };
+        if (current.kind === "starting" || current.kind === "stopping") return { status: "transition" };
         if (current.kind !== "live") return { status: "none" };
         const { live } = current;
         const lastInterruptedAt = yield* Ref.get(live.lastInterruptedAt);

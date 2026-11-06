@@ -1055,6 +1055,7 @@ const serverStop = Command.make(
         });
       case "terminate": {
         const { status } = yield* requestServer(port, ServerRoutes.sessionStatus);
+        if (status === "transition") return yield* new CommandFailed({ message: "セッションの開始・終了の処理中です。終わってから、もう一度 server stop を打ってください" });
         if (status !== "none") return yield* new CommandFailed({ message: "セッションが進行中です。先に cli stop で書き出してから、もう一度 server stop を打ってください" });
         yield* processes.terminate(plan.pid);
         const exited = yield* processes.alive(plan.pid).pipe(
