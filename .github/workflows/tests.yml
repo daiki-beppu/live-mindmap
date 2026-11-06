@@ -260,10 +260,16 @@ jobs:
           key: e2e-playwright-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
   helper:
     if: inputs.run-helper
+    name: helper (${{ matrix.layer }})
     # ヘルパーは SpeechAnalyzer を使うので macOS 26 の SDK が要る
     runs-on: macos-26
-    # 通常は 5 分ほどで終わる。テストが止まったときに macOS の枠を占め続けず、ログを残して落とす
+    # テストが止まったときに macOS の枠を占め続けず、ログを残して落とす
     timeout-minutes: 20
+    # 待ちを決めるのは遅い脚なので、並べて短くする。IT が落ちても heavy IT の結果を隠さない
+    strategy:
+      fail-fast: false
+      matrix:
+        layer: [unit-it, heavy]
     steps:
       - uses: actions/checkout@v7
       # WebRTC AEC3 のライブラリ。キャッシュが外れたときだけ uv を入れてビルドする
@@ -308,16 +314,18 @@ jobs:
       # ランナーには Xcode があるので swift test をそのまま使う。
       # 層の選び方は helper/package.json の test・test:it・test:it:heavy と同じ
       - name: unit
+        if: matrix.layer != 'heavy'
         timeout-minutes: 5
         run: swift test --skip-build --skip 'ITTests/|HeavyTests/'
         working-directory: helper
       - name: IT
+        if: matrix.layer != 'heavy'
         timeout-minutes: 5
         run: swift test --skip-build --filter 'ITTests/'
         working-directory: helper
       # 話者分離（Nemotron 3）と、混入の検出（WeSpeaker）のモデル。セットアップの段で前もって取得する（会議の中では取りに行かない）。キャッシュが外れたときだけ取得する
       - id: speaker-models
-        if: inputs.restore-caches && inputs.save-shared-caches
+        if: matrix.layer != 'unit-it' && inputs.restore-caches && inputs.save-shared-caches
         uses: actions/cache@v6
         timeout-minutes: 5
         with:
@@ -326,7 +334,7 @@ jobs:
             ~/Library/Application Support/FluidAudio/Models/speaker-diarization
           key: speaker-models-${{ runner.os }}-${{ hashFiles('helper/Package.resolved', 'helper/scripts/fetch-speaker-models.sh') }}
       - id: speaker-models-restore
-        if: inputs.restore-caches && !inputs.save-shared-caches
+        if: matrix.layer != 'unit-it' && inputs.restore-caches && !inputs.save-shared-caches
         uses: actions/cache/restore@v6
         timeout-minutes: 5
         with:
@@ -334,14 +342,16 @@ jobs:
             ~/Library/Application Support/FluidAudio/Models/nemotron-3-diarization
             ~/Library/Application Support/FluidAudio/Models/speaker-diarization
           key: speaker-models-${{ runner.os }}-${{ hashFiles('helper/Package.resolved', 'helper/scripts/fetch-speaker-models.sh') }}
-      - if: steps.speaker-models.outputs.cache-hit != 'true' && steps.speaker-models-restore.outputs.cache-hit != 'true'
+      - if: matrix.layer != 'unit-it' && steps.speaker-models.outputs.cache-hit != 'true' && steps.speaker-models-restore.outputs.cache-hit != 'true'
         run: bash helper/scripts/fetch-speaker-models.sh
         timeout-minutes: 5
       - name: heavy IT
+        if: matrix.layer != 'unit-it'
         timeout-minutes: 5
         run: swift test --skip-build --filter 'HeavyTests/'
         working-directory: helper
-      - if: inputs.save-main-caches && steps.build-cache.outputs.cache-hit != 'true'
+      # モデルの取得が .build に作る release の helper も残すため、取得を走らせる脚で保存する
+      - if: matrix.layer != 'unit-it' && inputs.save-main-caches && steps.build-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v6
         with:
           path: helper/.build
@@ -352,7 +362,7 @@ jobs:
         with:
           path: helper/.deps/webrtc-apm
           key: webrtc-apm-${{ runner.os }}-${{ hashFiles('helper/scripts/build-webrtc-apm.sh') }}
-      - if: inputs.save-shared-caches && !inputs.restore-caches
+      - if: matrix.layer != 'unit-it' && inputs.save-shared-caches && !inputs.restore-caches
         uses: actions/cache/save@v6
         timeout-minutes: 5
         with:
