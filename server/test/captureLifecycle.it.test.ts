@@ -68,18 +68,18 @@ const capture = (path: string) => Effect.gen(function* () {
 }).pipe(Effect.provide(MapCapture.layer.pipe(Layer.provide(playwright))));
 
 describe("撮影 scope の資源所有権", () => {
-  it.effect("成功時は撮影の最後の利用後に browser、Vite の順で一度だけ閉じる", () => Effect.gen(function* () {
+  it.effect("成功時は browser、Vite の順で取得し、撮影の最後の利用後に Vite、browser の順で一度だけ閉じる", () => Effect.gen(function* () {
     const dir = yield* directory;
     const path = join(dir, "map.png");
     yield* capture(path);
-    expect(events).toEqual(["vite.acquire", "listen", "browser.acquire", "screenshot", "browser.close", "vite.close"]);
+    expect(events).toEqual(["browser.acquire", "vite.acquire", "listen", "screenshot", "vite.close", "browser.close"]);
     expect(resources.screenshot).toHaveBeenCalledWith(expect.objectContaining({ path, type: "png" }));
     expect(resources.addInitScript.mock.calls[0]?.[1]).toMatchObject({ value: snapshot });
     expect(resources.closeBrowser).toHaveBeenCalledTimes(1);
     expect(resources.closeVite).toHaveBeenCalledTimes(1);
   }));
 
-  it.effect("Vite を取得した後の listen 失敗でも Vite を閉じ、browser を取得しない", () => Effect.gen(function* () {
+  it.effect("Vite を取得した後の listen 失敗でも Vite と取得済みの browser を閉じる", () => Effect.gen(function* () {
     const dir = yield* directory;
     resources.listen.mockRejectedValue(new Error("listen failed"));
     const result = yield* Effect.result(capture(join(dir, "map.png")));
@@ -87,10 +87,10 @@ describe("撮影 scope の資源所有権", () => {
     expect(resources.createServer).toHaveBeenCalledTimes(1);
     expect(resources.listen).toHaveBeenCalledTimes(1);
     expect(resources.closeVite).toHaveBeenCalledTimes(1);
-    expect(resources.launch).not.toHaveBeenCalled();
+    expect(resources.closeBrowser).toHaveBeenCalledTimes(1);
   }));
 
-  it.effect("browser の取得失敗でも取得済み Vite を閉じる", () => Effect.gen(function* () {
+  it.effect("browser を取得できないときは Vite を起動しない", () => Effect.gen(function* () {
     const dir = yield* directory;
     resources.launch.mockRejectedValue(new Error("launch failed"));
     const result = yield* Effect.result(capture(join(dir, "map.png")));
@@ -101,9 +101,9 @@ describe("撮影 scope の資源所有権", () => {
     expect(result.failure.message).toContain("Chromium を起動できません");
     expect(result.failure.message).toContain("launch failed");
     expect(result.failure.message).not.toContain("pnpm cli install");
-    expect(resources.createServer).toHaveBeenCalledTimes(1);
     expect(resources.launch).toHaveBeenCalledTimes(1);
-    expect(resources.closeVite).toHaveBeenCalledTimes(1);
+    expect(resources.createServer).not.toHaveBeenCalled();
+    expect(resources.closeVite).not.toHaveBeenCalled();
     expect(resources.closeBrowser).not.toHaveBeenCalled();
   }));
 
@@ -114,7 +114,7 @@ describe("撮影 scope の資源所有権", () => {
     expect(Result.isFailure(result)).toBe(true);
     expect(resources.launch).toHaveBeenCalledTimes(1);
     expect(resources[operation]).toHaveBeenCalledTimes(1);
-    expect(events.slice(-2)).toEqual(["browser.close", "vite.close"]);
+    expect(events.slice(-2)).toEqual(["vite.close", "browser.close"]);
     expect(resources.closeBrowser).toHaveBeenCalledTimes(1);
     expect(resources.closeVite).toHaveBeenCalledTimes(1);
   }));
@@ -134,7 +134,7 @@ describe("撮影 scope の資源所有権", () => {
     expect(resources.closeBrowser).not.toHaveBeenCalled();
     expect(resources.closeVite).not.toHaveBeenCalled();
     yield* Fiber.interrupt(fiber).pipe(Effect.ensuring(Effect.sync(release)));
-    expect(events.slice(-2)).toEqual(["browser.close", "vite.close"]);
+    expect(events.slice(-2)).toEqual(["vite.close", "browser.close"]);
     expect(resources.closeBrowser).toHaveBeenCalledTimes(1);
     expect(resources.closeVite).toHaveBeenCalledTimes(1);
   }));
@@ -147,7 +147,7 @@ describe("撮影 scope の資源所有権", () => {
     expect(result.failure).toBeInstanceOf(FnFailed);
     expect(result.failure).not.toBeInstanceOf(CaptureFailed);
     expect(result.failure.message).toBe("fn の失敗");
-    expect(events.slice(-2)).toEqual(["browser.close", "vite.close"]);
+    expect(events.slice(-2)).toEqual(["vite.close", "browser.close"]);
     expect(resources.closeBrowser).toHaveBeenCalledTimes(1);
     expect(resources.closeVite).toHaveBeenCalledTimes(1);
   }));
@@ -167,7 +167,7 @@ describe("撮影 scope の資源所有権", () => {
     expect(result.failure.message).toContain("収められません");
     expect(resources.screenshot).not.toHaveBeenCalled();
     expect(existsSync(path)).toBe(false);
-    expect(events.slice(-2)).toEqual(["browser.close", "vite.close"]);
+    expect(events.slice(-2)).toEqual(["vite.close", "browser.close"]);
     expect(resources.closeBrowser).toHaveBeenCalledTimes(1);
     expect(resources.closeVite).toHaveBeenCalledTimes(1);
   }));
