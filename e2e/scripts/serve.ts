@@ -119,7 +119,8 @@ const program = Command.make("serve", {
     Effect.promise(() => {
       // /session-files/ は同じ配信を web と同じ origin（ポート）でも返す。replay cache は origin 込みで画面を照合するため、ポートが毎回変わるファイル配信の origin では agent.act の記録が再生できない
       const sessionFiles = { name: "session-files", configureServer: (server: ViteDevServer) => void server.middlewares.use("/session-files", (req, res) => Effect.runSync(serveFile(new URL(req.url ?? "/", "http://x").pathname, res))) };
-      return createServer({ root: webDir, plugins: [sessionFiles], server: { host: "127.0.0.1", port: webPort, strictPort: true } });
+      // Why: session-files のプラグインで設定のハッシュが変わるので、.vite を共有すると他の Vite が読んでいる依存をこの Vite が消す。
+      return createServer({ root: webDir, cacheDir: join(webDir, "node_modules/.vite-e2e"), plugins: [sessionFiles], server: { host: "127.0.0.1", port: webPort, strictPort: true } });
     }),
     (vite) => Effect.promise(() => vite.close()),
   );
