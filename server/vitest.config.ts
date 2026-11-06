@@ -10,7 +10,7 @@ export default defineConfig({
     setupFiles: ["test/setup.ts"],
     testTimeout: 20_000,
     projects: [
-      { extends: true, test: { name: "unit", exclude: [...configDefaults.exclude, IT, HEAVY, EXTERNAL] } },
+      { extends: true, test: { name: "unit", isolate: false, exclude: [...configDefaults.exclude, IT, HEAVY, EXTERNAL] } },
       { extends: true, test: { name: "it", include: [IT] } },
       { extends: true, test: { name: "heavy", include: [HEAVY] } },
       { extends: true, test: { name: "external", include: [EXTERNAL] } },

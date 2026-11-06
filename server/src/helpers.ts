@@ -8,6 +8,15 @@ import { openHelperSocket } from "./helperSocket.ts";
 
 export const HELPER_STOP_TIMEOUT_MS = Context.Reference("live-mindmap/HelperStopTimeoutMs", { defaultValue: (): number => 5_000 });
 
+type PortProbe = {
+  once: (event: "error", listener: (error: Error) => void) => unknown;
+  listen: (port: number, host: string, onListening: () => void) => unknown;
+  address: () => { readonly port: number } | string | null;
+  close: (callback?: () => void) => unknown;
+};
+
+export const CreatePortProbe = Context.Reference("live-mindmap/CreatePortProbe", { defaultValue: (): (() => PortProbe) => () => createServer() });
+
 export type HelperExitInfo = { code: number | null; signal: string | null };
 
 export class HelperLaunchFailure extends Schema.TaggedError<HelperLaunchFailure>()("HelperLaunchFailure", {
@@ -138,9 +147,9 @@ class HelperListFailure extends Schema.TaggedError<HelperListFailure>()("HelperL
 
 const decodeJsonText = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown));
 
-const freePort = Effect.callback<number, HelperLaunchFailure>((resume) => {
+const freePort = (createProbe: () => PortProbe) => Effect.callback<number, HelperLaunchFailure>((resume) => {
   const fail = (reason: string) => resume(Effect.fail(new HelperLaunchFailure({ stderrTail: [reason] })));
-  const probe = createServer();
+  const probe = createProbe();
   let closed = false;
   probe.once("error", (error) => fail(error.message));
   probe.listen(0, "127.0.0.1", () => {
@@ -160,6 +169,7 @@ const connectRetry = Schedule.min([Schedule.exponential("10 millis"), Schedule.s
 const make = Effect.fnUntraced(function* (helper: HelperCommand) {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const stopTimeoutMs = yield* HELPER_STOP_TIMEOUT_MS;
+  const createProbe = yield* CreatePortProbe;
 
   const listFailed = (reason: string) => Effect.die(new HelperListFailure({ message: reason }));
   const apps = Effect.scoped(
@@ -209,7 +219,7 @@ const make = Effect.fnUntraced(function* (helper: HelperCommand) {
     stopRequested: Deferred.Deferred<void>,
   ): Effect.fn.Return<HelperAttempt, HelperLaunchFailure, Scope.Scope> {
     const scope = yield* Effect.scope;
-    const port = yield* freePort;
+    const port = yield* freePort(createProbe);
     const controlToken = randomBytes(32).toString("hex");
     // 既定の detached: true のまま起動し、プロセスグループごと止める。forceKillAfter は Scope の後始末（kill を通らない）にも効かせる
     const handle = yield* spawner

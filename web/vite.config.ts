@@ -26,7 +26,7 @@ export default defineConfig(({ mode }) => {
     plugins,
     test: {
       projects: [
-        { extends: true, test: { name: "unit", exclude: [...configDefaults.exclude, IT, HEAVY] } },
+        { extends: true, test: { name: "unit", isolate: false, exclude: [...configDefaults.exclude, IT, HEAVY] } },
         { extends: true, test: { name: "it", include: [IT] } },
         { extends: true, test: { name: "heavy", include: [HEAVY] } },
       ],
