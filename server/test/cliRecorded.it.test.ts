@@ -783,6 +783,36 @@ describe("cli recorded <file> 差分更新の一時停止", () => {
     expect(lines.at(-1)).not.toContain(CHATGPT);
   })).pipe(Effect.scoped), 60_000);
 
+  // 最後の発言の 1 回目だけ一時停止する差分更新。calls にその発言の呼び出しを記録する
+  const limitedOnLast = (retryAt: number) => {
+    const calls: string[] = [];
+    const updater = fakeUpdater((input) => {
+      if (!input.fresh.some((remark) => remark.text === "三つ目の発言です")) return Effect.void;
+      calls.push(calls.length === 0 ? "1回目" : "再試行");
+      return calls.length === 1 ? Effect.fail(new DiffUpdatePaused({ reason: CHATGPT, message: CHATGPT, retryAt })) : Effect.void;
+    });
+    return { calls, updater };
+  };
+
+  it.effect("最後の発言の呼び出しが一時停止しても、再試行で反映してから終える", () => withVirtualClock(() => Effect.gen(function* () {
+    const { calls, updater } = limitedOnLast(60_000);
+    const r = yield* resource(THREE, updater);
+    yield* runToEnd(r.cli(["recorded", r.file]));
+    const lines = logLines(onlySession(r.sessionsDir));
+    expect({ calls, resumed: lines.filter((l) => l.type === "diff-update-resumed").length }).toEqual({ calls: ["1回目", "再試行"], resumed: 1 });
+  })).pipe(Effect.scoped), 60_000);
+
+  it.effect("読み終えた後の一時停止を待っている間の stop は、再試行を待たずに終える", () => withVirtualClock(() => Effect.gen(function* () {
+    const { calls, updater } = limitedOnLast(RETRY_AT);
+    const r = yield* resource(THREE, updater);
+    const running = yield* r.cli(["recorded", r.file]).pipe(Effect.forkChild);
+    yield* eventually(() => pausedLine(r, CHATGPT, RETRY_AT), "進み具合の行に、理由と次に試す時刻が出る");
+    yield* eventually(() => running.pollUnsafe() === undefined, "読み終えても CLI が待っている");
+    yield* runToEnd(r.cli(["stop"]));
+    yield* runToEnd(Fiber.join(running));
+    expect(calls).toEqual(["1回目"]);
+  })).pipe(Effect.scoped), 60_000);
+
   it.live("一時停止がなければ、進み具合に理由は出ない", () => Effect.gen(function* () {
     const r = yield* resource(THREE);
     yield* r.cli(["recorded", r.file]);
