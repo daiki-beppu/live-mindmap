@@ -20,6 +20,15 @@ export const withCapturePage = Effect.fnUntraced(function* <A, E, R>(
   fn: (page: Page) => Effect.Effect<A, E, R>,
 ) {
   const playwright = yield* Playwright;
+  // Why: 使えない撮影で Vite を起動すると、閉じた後も最適化の書き出しが続いて deps_temp が残る。
+  const browser = yield* Effect.acquireRelease(
+    playwright.launch.pipe(
+      Effect.mapError((e) =>
+        new CaptureFailed({ message: e._tag === "ChromiumMissing" ? e.message : `Chromium を起動できません（${e.message}）` }),
+      ),
+    ),
+    (browser) => Effect.promise(() => browser.close()),
+  );
   const vite = yield* Effect.acquireRelease(
     Effect.tryPromise({
       try: () =>
@@ -39,14 +48,6 @@ export const withCapturePage = Effect.fnUntraced(function* <A, E, R>(
   yield* Effect.tryPromise({ try: () => vite.listen(), catch: failed });
   const url = vite.resolvedUrls?.local[0];
   if (!url) return yield* new CaptureFailed({ message: "撮影用の表示ページの URL を取得できません" });
-  const browser = yield* Effect.acquireRelease(
-    playwright.launch.pipe(
-      Effect.mapError((e) =>
-        new CaptureFailed({ message: e._tag === "ChromiumMissing" ? e.message : `Chromium を起動できません（${e.message}）` }),
-      ),
-    ),
-    (browser) => Effect.promise(() => browser.close()),
-  );
   const page = yield* Effect.tryPromise({ try: () => browser.newPage({ viewport: VIEWPORT, deviceScaleFactor: 2 }), catch: failed });
   yield* Effect.tryPromise({
     try: () =>
