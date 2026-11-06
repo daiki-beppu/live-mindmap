@@ -1,5 +1,5 @@
-import { Clock, Effect } from "effect";
-import { DiffUpdater, type DiffInput, type PreviousResponse, type Remark, type ScreenChange } from "./core/index.ts";
+import { Clock, Effect, Schema } from "effect";
+import { DiffUpdatePaused, DiffUpdater, type DiffInput, type PreviousResponse, type Remark, type ScreenChange } from "./core/index.ts";
 import type { JudgeAsk, JudgeQuestion } from "./systemOne.ts";
 
 export const SONNET = "claude-sonnet-5-5";
@@ -46,6 +46,7 @@ export const routedUpdater = (parts: Parts) => Effect.sync(() => {
 
     const arrived = input.screens ?? [];
     const screens = [...unseen[destination], ...arrived];
+    const unseenBefore = { ...unseen };
     unseen[destination] = [];
     const other = destination === SONNET ? HAIKU : SONNET;
     unseen[other] = [...unseen[other], ...arrived].slice(-UNSEEN_SCREENS_MAX);
@@ -59,7 +60,12 @@ export const routedUpdater = (parts: Parts) => Effect.sync(() => {
       ...rest,
       ...(screens.length ? { screens } : {}),
       ...(handed ? { previousResponse: handed } : {}),
-    }).pipe(Effect.mapError((error) => ({ _tag: error._tag, message: error.message, judge })));
+    }).pipe(Effect.mapError((error) => {
+      if (!Schema.is(DiffUpdatePaused)(error)) return { _tag: error._tag, message: error.message, judge };
+      // 一時停止の回はこの回の画面をコアが消費せず再試行で渡し直すので、未送も呼ぶ前に戻す
+      Object.assign(unseen, unseenBefore);
+      return error;
+    }));
     return { ...result, judge, ...(selected.supplement === undefined ? {} : { supplement: selected.supplement }) };
   });
 
