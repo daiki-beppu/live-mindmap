@@ -9,6 +9,7 @@ import { Cause, Console, Deferred, Effect, Exit, Fiber, Layer, Scope } from "eff
 import { TestClock } from "effect/testing";
 import { DiffUpdatePaused, DiffUpdater, REVIEW_LOG_ELEMENT_ID, type DiffInput, type Snapshot, type CaptionsFrame, type SupplementInput } from "../src/core/index.ts";
 import { SessionSinks } from "../src/sessionSinks.ts";
+import type { SessionWriteFailed } from "../src/core/index.ts";
 import type { ExportFilesFailed } from "../src/sessionFiles.ts";
 import { vocabularyPoolPath } from "../src/vocabularyPool.ts";
 import { SPEAKING_INTERVAL_MS } from "../src/speakingRelay.ts";
@@ -898,7 +899,7 @@ describe("SessionSinks（実物 Layer）: 過去のセッションの語彙を�
 
   // セッションを 1 つ流す: 開く → script → 発言を締める → 書き出し（終了の処理）→ 閉じる。同じ sessionsDir で続けて呼ぶと、前のセッションの溜まりを引き継ぐ。
   // exports: false は、終了の処理を通らなかったセッション（書き出しを呼ばずに閉じる）
-  const runSession = Effect.fn("runSession")(function* (sessionsDir: string, script: (context: Context) => Effect.Effect<void, ExportFilesFailed>, options: { exports?: boolean; vocab?: ReadonlyArray<string> } = {}) {
+  const runSession = Effect.fn("runSession")(function* (sessionsDir: string, script: (context: Context) => Effect.Effect<void, ExportFilesFailed | SessionWriteFailed>, options: { exports?: boolean; vocab?: ReadonlyArray<string> } = {}) {
     // セッションのフォルダ名は開始時刻（ミリ秒）。続けて開いても重ならないよう実時間で少し待つ
     yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 3)));
     return yield* Effect.scoped(Effect.gen(function* () {

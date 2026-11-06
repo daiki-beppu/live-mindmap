@@ -249,8 +249,6 @@ describe("formatIntakeStatus（cli status の標準出力）", () => {
 
   it("止まったときは、最後の途切れの時刻を値として出す", () => {
     const out = formatIntakeStatus({ status: "stopped", dir: "/tmp/s", restarts: 0, lastInterruptedAt: "2026-01-02T03:04:05.678Z" });
-    expect(out).toContain("止まった");
-    expect(out).toContain("起動し直した回数: 0");
-    expect(out).toContain("最後の途切れの時刻: 2026-01-02T03:04:05.678Z");
+    expect(out).toBe("止まった\nセッションのフォルダ: /tmp/s\n起動し直した回数: 0\n最後の途切れの時刻: 2026-01-02T03:04:05.678Z\n");
   });
 });

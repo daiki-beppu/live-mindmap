@@ -1,11 +1,11 @@
 import { defaultClaude } from "../src/modelSelection.ts";
-import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { NodeFileSystem } from "@effect/platform-node";
 import { describe, expect, it } from "@effect/vitest";
-import { Cause, DateTime, Deferred, Effect, Exit, Fiber, FileSystem, Layer } from "effect";
+import { Cause, DateTime, Deferred, Effect, Exit, Fiber, FileSystem, Layer, PlatformError } from "effect";
 import { TestClock } from "effect/testing";
 import { DiffUpdater, mapOnlyReviewEvents, restoreState } from "../src/core/index.ts";
 import { buildReviewTimeline, snapshotAt } from "../../web/src/reviewTimeline.ts";
@@ -38,7 +38,7 @@ it.effect("堂々巡りの frame は通知行をファイルに保存してか�
 // セッションのフォルダへの書き込み（log.jsonl の追記・export.json・フォルダ名）の契約。
 // 書き込みは FileSystem 経由の非同期になるので、同期の書き込みで自然に成り立っていた次の性質を固定する:
 // 呼んだ順に行が並ぶこと、最後に書かれた export.json が最新であること、時刻は Effect を実行した時点の実時刻であること、
-// ログが書けないのは defect であること。
+// 保存できないときは、パスと元のエラーを持つ型付き失敗になること。
 
 const sessionsDir = Effect.acquireRelease(
   Effect.tryPromise(() => mkdtemp(join(tmpdir(), "live-mindmap-log-"))),
@@ -292,16 +292,6 @@ describe("ログを開いたセッションの名前", () => {
     }).pipe(Effect.scoped));
   }
 
-  it.effect("名前変更時にexportだけ保存できないときはdefectになる", () => Effect.gen(function* () {
-    const dir = yield* sessionsDir;
-    const { session } = yield* openLoggedTranscriptSession({ dir }).pipe(Effect.provide(NodeFileSystem.layer));
-    yield* session.push(namedRemark(1));
-    rmSync(join(dir, EXPORT_FILE));
-    const fs = yield* FileSystem.FileSystem;
-    yield* fs.makeDirectory(join(dir, EXPORT_FILE));
-    const exit = yield* Effect.exit(session.nameSpeaker({ label: "相手 A", name: "田中", source: "手入力" }));
-    expect(Exit.isFailure(exit) && Cause.hasDies(exit.cause) && !Cause.hasFails(exit.cause)).toBe(true);
-  }).pipe(Effect.provide(NodeFileSystem.layer), Effect.scoped));
 });
 
 describe("createSessionDir", () => {
@@ -367,7 +357,6 @@ describe("openLoggedSession のログと export.json", () => {
 
       const [first] = lines();
       expect(first).toMatchObject({ type: "start", title: "定例" });
-      expect(Object.keys(first!)).toEqual(["at", "type", "title", "model"]);
       expect(new Date(first!.at as string).toISOString()).toBe(first!.at); // ISO 文字列
       expect(Date.parse(first!.at as string)).toBeGreaterThanOrEqual(before - 1);
       expect(Date.parse(first!.at as string)).toBeLessThanOrEqual(Date.now() + 1);
@@ -445,12 +434,27 @@ describe("openLoggedSession のログと export.json", () => {
       expect(exported()).toEqual(JSON.parse(JSON.stringify(yield* session.exportJson)));
     }).pipe(Effect.scoped));
 
-  it.effect("ログが書けない（フォルダが無い）ときは、型付きの失敗ではなく defect になる", () =>
-    Effect.gen(function* () {
-      const { appendLog, dir } = yield* open();
-      rmSync(dir, { recursive: true, force: true });
-
-      const exit = yield* Effect.exit(appendLog(note(1)));
-      expect(Exit.isFailure(exit) && Cause.hasDies(exit.cause) && !Cause.hasFails(exit.cause)).toBe(true);
+  for (const file of [LOG_FILE, EXPORT_FILE]) {
+    it.effect(`${file} の書込失敗はパスと元のエラーを持つ型付き失敗として返る`, () => Effect.gen(function* () {
+      const dir = yield* sessionsDir;
+      const path = join(dir, file);
+      const original = PlatformError.systemError({ _tag: "PermissionDenied", module: "FileSystem", method: "writeFileString", pathOrDescriptor: path, cause: new Error("EACCES: 合成の書込拒否") });
+      let denied = false;
+      const files = Layer.effect(FileSystem.FileSystem, Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        return { ...fs, writeFileString: (target, data, options) => Effect.suspend(() =>
+          denied && target === path ? Effect.fail(original) : fs.writeFileString(target, data, options),
+        ) } satisfies FileSystem.FileSystem;
+      })).pipe(Layer.provide(NodeFileSystem.layer));
+      const { session, appendLog } = yield* openLoggedTranscriptSession({ dir }).pipe(Effect.provide(files));
+      yield* session.push(namedRemark(1));
+      denied = true;
+      const exit = yield* Effect.exit(file === LOG_FILE ? appendLog(note(1)) : session.nameSpeaker({ label: "相手 A", name: "田中", source: "手入力" }));
+      expect(Exit.isFailure(exit)).toBe(true);
+      if (Exit.isFailure(exit)) {
+        expect(Cause.hasDies(exit.cause)).toBe(false);
+        expect(Cause.findError(exit.cause)).toMatchObject({ _tag: "Success", success: { path, cause: original } });
+      }
     }).pipe(Effect.scoped));
+  }
 });

@@ -1,7 +1,7 @@
 import { Context, Effect, Fiber, FiberSet, Ref, type Scope } from "effect";
 import {
   correctRemark, katakanaTable, requestScreenWords, wordsForKatakana,
-  type DiffUpdater, type LogEvent, type PoolWord, type Replacement,
+  type SessionWriteFailed, type DiffUpdater, type LogEvent, type PoolWord, type Replacement,
   type ScreenVocabularyState, type SettledRemark, type VocabularyWord,
 } from "./core/index.ts";
 import type { Readings } from "./readings.ts";
@@ -42,24 +42,24 @@ export const modelReadings = (katakana: DiffUpdater["Service"]["katakana"], read
 
 export type SessionVocabulary = {
   correct: (settled: SettledRemark) => Effect.Effect<CorrectedRemark>;
-  addUser: (words: ReadonlyArray<string>) => Effect.Effect<Effect.Effect<void>>;
-  addScreen: (lines: ReadonlyArray<string> | undefined, from?: number) => Effect.Effect<Effect.Effect<void>>;
+  addUser: (words: ReadonlyArray<string>) => Effect.Effect<Effect.Effect<void, SessionWriteFailed>>;
+  addScreen: (lines: ReadonlyArray<string> | undefined, from?: number) => Effect.Effect<Effect.Effect<void, SessionWriteFailed>>;
   settled: Effect.Effect<void>;
 };
 
 export const makeSessionVocabulary = Effect.fnUntraced(function* (options: {
   read: ReadingSource;
   commonWords: ReadonlySet<string>;
-  log: (line: VocabLogLine) => Effect.Effect<void>;
+  log: (line: VocabLogLine) => Effect.Effect<void, SessionWriteFailed>;
   carried: ReadonlyArray<Pick<PoolWord, "surface" | "romaji">>;
   excluded?: (surfaces: ReadonlyArray<string>) => Effect.Effect<void>;
-}): Effect.fn.Return<SessionVocabulary, never, Scope.Scope> {
+}): Effect.fn.Return<SessionVocabulary, SessionWriteFailed, Scope.Scope> {
   const { read, commonWords, log, carried } = options;
   const vocabulary = yield* Ref.make<ReadonlyArray<VocabularyWord & { readonly from?: number }>>([]);
   const screenState = yield* Ref.make<ScreenVocabularyState>({
     seen: new Map(), requested: new Set(carried.map((w) => w.surface)),
   });
-  const adds = yield* FiberSet.make();
+  const adds = yield* FiberSet.make<void, SessionWriteFailed>();
   if (carried.length > 0) {
     yield* Effect.uninterruptible(Effect.gen(function* () {
       yield* log({ type: "vocab", words: carried.map((w) => ({ surface: w.surface, romaji: w.romaji, source: "carried" })) });

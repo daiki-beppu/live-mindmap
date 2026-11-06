@@ -85,6 +85,8 @@ function makeFakeSessionSinks(options: { exportsFails?: boolean; warnings?: read
         yield* Effect.addFinalizer(() => Effect.sync(() => { opened.closed++; order.push("close"); }));
         const sink = {
           dir: args.dir,
+          writeFailure: Effect.never,
+          writeError: Effect.succeed(undefined),
           partial: (p: HelperPartial) => Effect.sync(() => { partials.push({ track: p.track, text: p.text }); words.partial.push((p as { words?: unknown }).words); }),
           final: (r: SettledRemark) => Effect.sync(() => { count++; sequence.push("final"); finals.push({ id: `r${count}`, track: r.track, text: r.text }); words.final.push((r as { words?: unknown }).words); }),
           screen: (s: Parameters<LiveSink["screen"]>[0]) => Effect.sync(() => { savedScreens.push(s); screens.push({ start: s.start, image: s.image, ...(s.lines !== undefined ? { lines: s.lines } : {}) }); }),

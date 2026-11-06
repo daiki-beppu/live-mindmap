@@ -1,5 +1,5 @@
 import { Deferred, Effect, Ref, Semaphore, type Scope } from "effect";
-import { PACED_CALL_REMARKS, createPacer, createTrackMerge, type DiffUpdateFrame, type DiffUpdateState, type Session, type Track } from "./core/index.ts";
+import { type SessionWriteFailed, PACED_CALL_REMARKS, createPacer, createTrackMerge, type DiffUpdateFrame, type DiffUpdateState, type Session, type Track } from "./core/index.ts";
 import { createRecordedBacklog } from "./recordedBacklog.ts";
 import type { Feed, Inlet } from "./remarkFlow.ts";
 import type { CorrectedRemark } from "./sessionVocabulary.ts";
@@ -60,7 +60,7 @@ export const recordedFeed = (options: {
     })));
   const pacer = options.realtime ? createPacer((ms) => Effect.sleep(ms)) : undefined;
   const sentScreenOff = yield* Ref.make(false);
-  const backlog = yield* createRecordedBacklog<RecordedItem>({
+  const backlog = yield* createRecordedBacklog<RecordedItem, SessionWriteFailed>({
     hold,
     ...(pacer === undefined ? {} : { pace: (item: RecordedItem) => Effect.andThen(pacer.waitUntil(timeOf(item)), item.kind === "remark" ? roomForRemark : Effect.void) }),
     deliver: Effect.fnUntraced(function* (item) {

@@ -1,3 +1,4 @@
+import type { SessionWriteFailed } from "./core/index.ts";
 import { Schema } from "effect";
 import type { UpdaterUnavailable } from "./updaterUnavailable.ts";
 import type { StartupDepsMissing } from "./startupDepsMissing.ts";
@@ -66,4 +67,4 @@ export class HelperExited extends Schema.TaggedError<HelperExited>()("HelperExit
   }
 }
 
-export type SessionFailure = SessionBusy | SessionTransition | NoSession | IntakeNotStopped | NotForRecordedSession | Aborted | RestartGaveUp | HelperExited | UpdaterUnavailable | StartupDepsMissing | ManagedDepsFailed | ExportFilesFailed;
+export type SessionFailure = SessionBusy | SessionTransition | NoSession | IntakeNotStopped | NotForRecordedSession | Aborted | RestartGaveUp | HelperExited | UpdaterUnavailable | StartupDepsMissing | ManagedDepsFailed | ExportFilesFailed | SessionWriteFailed;

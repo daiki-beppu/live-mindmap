@@ -1,5 +1,5 @@
 import { Effect } from "effect";
-import type { LogEvent, Session } from "./core/index.ts";
+import type { SessionWriteFailed, LogEvent, Session } from "./core/index.ts";
 import { makeSessionVocabulary, type ReadingSource } from "./sessionVocabulary.ts";
 
 type VocabLine = Extract<LogEvent, { type: "vocab" }>;
@@ -22,7 +22,7 @@ export const withReplayCorrection = Effect.fnUntraced(function* (
   options: {
     readonly vocab: ReadonlyArray<VocabLine>;
     readonly commonWords: ReadonlySet<string>;
-    readonly appendLog: (event: LogEvent) => Effect.Effect<void>;
+    readonly appendLog: (event: LogEvent) => Effect.Effect<void, SessionWriteFailed>;
   },
 ) {
   const { vocab, commonWords, appendLog } = options;

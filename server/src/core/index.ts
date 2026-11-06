@@ -49,6 +49,7 @@ export {
   VocabEvent,
 } from "./session.ts";
 export { PACED_CALL_REMARKS } from "./session.ts";
+export { SessionWriteFailed } from "./sessionWriteFailed.ts";
 export type { DiffInput, DiffResult, DiffUpdateError, KatakanaAsk, PreviousResponse, ScreenChange, Session } from "./session.ts";
 export * from "./settle.ts";
 export type { SettledRemark } from "./remarkGate.ts";

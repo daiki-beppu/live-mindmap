@@ -45,7 +45,7 @@ const scenario = Effect.fnUntraced(function* (status: "決定済み" | "済み",
     yield* Deferred.succeed(release, undefined);
     yield* session.idle;
   } else if (!overlap) {
-    const playing = yield* playback(session, [spoken(1000), spoken(1001)], { sleep: () => session.idle }).pipe(Effect.forkChild);
+    const playing = yield* playback(session, [spoken(1000), spoken(1001)], { sleep: () => session.idle.pipe(Effect.orDie) }).pipe(Effect.forkChild);
     yield* Deferred.await(started);
     yield* Deferred.succeed(release, undefined);
     yield* Fiber.join(playing);

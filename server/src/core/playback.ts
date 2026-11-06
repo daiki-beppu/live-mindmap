@@ -1,5 +1,6 @@
 import { Effect } from "effect";
 import type { ScreenEvent, ScreenOffEvent, Session } from "./session.ts";
+import type { SessionWriteFailed } from "./sessionWriteFailed.ts";
 import { createPacer } from "./pacing.ts";
 import type { Remark } from "./remark.ts";
 import type { Word } from "./words.ts";
@@ -24,7 +25,7 @@ export const playback = Effect.fnUntraced(function* <E = never>(
   session: Session,
   remarks: Iterable<PlaybackRemark>,
   { sleep, screens }: PlaybackOptions<E> = {},
-): Effect.fn.Return<void, E> {
+): Effect.fn.Return<void, E | SessionWriteFailed> {
   const { waitUntil } = createPacer(sleep);
   const waiting = [...(screens ?? [])].sort((a, b) => a.start - b.start);
   let next = 0;

@@ -1,5 +1,5 @@
 import { Clock, Console, Deferred, Effect, Exit, Fiber, Ref, Result, Scope, Stream, SynchronizedRef } from "effect";
-import { CONFIGURATION_CHANGE_WINDOW_MS, MAX_CONFIGURATION_CHANGES, decideIntakeRestart, decodeHelperEvent, type HelperEvent, type IntakeLogEvent } from "./core/index.ts";
+import { type SessionWriteFailed, CONFIGURATION_CHANGE_WINDOW_MS, MAX_CONFIGURATION_CHANGES, decideIntakeRestart, decodeHelperEvent, type HelperEvent, type IntakeLogEvent } from "./core/index.ts";
 import { Helpers, type HelperAttempt, type HelperExitInfo, type HelperInstruction, type HelperLaunchOptions } from "./helpers.ts";
 import { HelperExited } from "./sessionFailure.ts";
 import { withoutFinalNewline } from "./consoleText.ts";
@@ -11,11 +11,11 @@ type Transition = { kind: "connected"; restarted: boolean } | { kind: "crashed" 
 type RunOptions = {
   trigger: "auto" | "resume";
   exitZero: "restart" | "finish";
-  log: (line: Extract<IntakeLogEvent, { type: "intake-stopped" | "intake-restarted" | "intake-gave-up" }>) => Effect.Effect<void>;
-  apply: (event: HelperEvent) => Effect.Effect<void>;
-  observe: (transition: Transition) => Effect.Effect<void>;
+  log: (line: Extract<IntakeLogEvent, { type: "intake-stopped" | "intake-restarted" | "intake-gave-up" }>) => Effect.Effect<void, SessionWriteFailed>;
+  apply: (event: HelperEvent) => Effect.Effect<void, SessionWriteFailed>;
+  observe: (transition: Transition) => Effect.Effect<void, SessionWriteFailed>;
 };
-type Running = { reached: Effect.Effect<Reached>; end: Effect.Effect<IntakeEnd> };
+type Running = { reached: Effect.Effect<Reached>; end: Effect.Effect<IntakeEnd, SessionWriteFailed> };
 type Intake = {
   run: (options: RunOptions) => Effect.Effect<Running>;
   send: (instruction: HelperInstruction) => Effect.Effect<void>;
@@ -123,7 +123,7 @@ export const openIntake = Effect.fnUntraced(function* (options: {
       }
       if (!(yield* Deferred.isDone(stopRequested))) yield* Deferred.succeed(reached, { kind: "running" });
       return yield* serve(connected, p.apply);
-    });
+    }, (effect, connected) => effect.pipe(Effect.onError(() => Scope.close(connected.scope, Exit.void))));
     const readNext = Effect.fnUntraced(function* (current: Launched | undefined) {
       if (current !== undefined) return { kind: "served" as const, last: yield* readConnected(current, false), startedAt: current.startedAt };
       if (yield* Deferred.isDone(stopRequested)) return { kind: "stopped" as const, exit: undefined };
@@ -134,7 +134,7 @@ export const openIntake = Effect.fnUntraced(function* (options: {
       }
       return { kind: "served" as const, last: yield* readConnected({ attempt: next.result.success, scope: next.scope, startedAt: next.startedAt }, true), startedAt: next.startedAt };
     });
-    const body = Effect.gen(function* (): Effect.fn.Return<IntakeEnd> {
+    const body = Effect.gen(function* (): Effect.fn.Return<IntakeEnd, SessionWriteFailed> {
       let current = yield* Ref.getAndSet(initial, undefined);
       for (;;) {
         const next = yield* readNext(current);
@@ -148,7 +148,10 @@ export const openIntake = Effect.fnUntraced(function* (options: {
         }
         if ((yield* finishAttempt(last, startedAt)) === "giveup") return { kind: "gaveUp", last };
       }
-    }).pipe(Effect.ensuring(Deferred.succeed(reached, { kind: "aborted" })));
+    }).pipe(
+      Effect.tapError(() => Deferred.succeed(stopRequested, undefined)),
+      Effect.ensuring(Deferred.succeed(reached, { kind: "aborted" })),
+    );
     const fiber = yield* Effect.forkIn(body, options.scope);
     return { reached: Deferred.await(reached), end: Fiber.join(fiber) };
   });

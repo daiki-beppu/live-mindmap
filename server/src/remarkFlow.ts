@@ -1,20 +1,20 @@
 import { Effect, Ref, type Scope } from "effect";
-import type { CaptionsFrame, ScreenEvent, HelperPartial, Replacement, Session, SpeakerLogEvent, WordTime } from "./core/index.ts";
+import type { SessionWriteFailed, CaptionsFrame, ScreenEvent, HelperPartial, Replacement, Session, SpeakerLogEvent, WordTime } from "./core/index.ts";
 import type { CorrectedRemark, SessionVocabulary } from "./sessionVocabulary.ts";
 import { createRemarkSettling } from "./remarkSettling.ts";
 import { createSpeakingRelay, type CaptionContext } from "./speakingRelay.ts";
 
 export type Inlet = {
-  remark: (corrected: CorrectedRemark) => Effect.Effect<void>;
-  screen: (change: { start: number; image: Uint8Array | null; lines?: ReadonlyArray<string> | undefined; ocrFailed?: (typeof ScreenEvent.Type)["ocrFailed"] }) => Effect.Effect<void>;
+  remark: (corrected: CorrectedRemark) => Effect.Effect<void, SessionWriteFailed>;
+  screen: (change: { start: number; image: Uint8Array | null; lines?: ReadonlyArray<string> | undefined; ocrFailed?: (typeof ScreenEvent.Type)["ocrFailed"] }) => Effect.Effect<void, SessionWriteFailed>;
   screenOff: Session["pushScreenOff"];
 };
 
 export type Ending =
   | { kind: "入れ切る" }
-  | { kind: "捨てる"; quiesce: Effect.Effect<void> };
+  | { kind: "捨てる"; quiesce: Effect.Effect<void, SessionWriteFailed> };
 
-export type Feed = Inlet & { finish: Effect.Effect<void>; discard: Effect.Effect<void> };
+export type Feed = Inlet & { finish: Effect.Effect<void, SessionWriteFailed>; discard: Effect.Effect<void> };
 
 export const directFeed = (inlet: Inlet): Effect.Effect<Feed> =>
   Effect.succeed({ ...inlet, finish: Effect.void, discard: Effect.void });
@@ -28,7 +28,7 @@ export const makeRemarkFlow = Effect.fnUntraced(function* <F extends Feed>(optio
 }) {
   const { session, correct, speak, captions } = options;
   const captionTexts = yield* Ref.make<ReadonlyMap<string, { readonly text: string; readonly wordTimes: readonly WordTime[]; readonly replacements: readonly Replacement[] }>>(new Map());
-  const { preview, emitTo } = yield* createRemarkSettling();
+  const { preview, emitTo } = yield* createRemarkSettling<SessionWriteFailed>();
   const relay = yield* createSpeakingRelay({
     context: Effect.zipWith(session.unreflectedRemarks, Ref.get(captionTexts), (remarks, texts): CaptionContext => ({
         unreflected: remarks.map(({ id, ...remark }) => {

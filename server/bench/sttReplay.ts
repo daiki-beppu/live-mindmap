@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { NodeRuntime, NodeServices } from "@effect/platform-node";
 import { Clock, Console, Effect, Layer, Option, Schema } from "effect";
 import { Argument, Command, Flag } from "effect/cli";
-import { LogEvent, recall, Remark, SpeakerNameLogEvent, type Session } from "../src/core/index.ts";
+import { LogEvent, recall, Remark, SpeakerNameLogEvent, type Session, type SessionWriteFailed } from "../src/core/index.ts";
 import { claudeUpdaterLayer } from "../src/diffUpdater.ts";
 import { ManagedDeps } from "../src/managedDeps.ts";
 import { depsDirConfig } from "../src/config.ts";
@@ -24,7 +24,7 @@ export type ReplayItem = typeof ReplayItem["Type"];
 export const replayByArrival = Effect.fnUntraced(function* (
   session: Session,
   items: readonly ReplayItem[],
-): Effect.fn.Return<void> {
+): Effect.fn.Return<void, SessionWriteFailed> {
   const t0 = yield* Clock.currentTimeMillis;
   for (const item of items) {
     const wait = t0 + item.at * 1000 - (yield* Clock.currentTimeMillis);

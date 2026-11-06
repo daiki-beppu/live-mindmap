@@ -1,7 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Deferred, Effect, Layer } from "effect";
 import { TestClock } from "effect/testing";
-import { DIFF_UPDATE_RETRY_MS, DiffUpdatePaused, InvalidLogEvent, makeSession, restoreSession, restoreState, type DiffInput, type DiffOutput, type LogEvent, type Op, type Remark, type ScreenChange, type Session } from "../src/core/index.ts";
+import { DIFF_UPDATE_RETRY_MS, DiffUpdatePaused, InvalidLogEvent, makeSession, restoreSession, restoreState, type DiffInput, type DiffOutput, type LogEvent, type Op, type Remark, type ScreenChange, type Session, type SessionWriteFailed } from "../src/core/index.ts";
 import { reflectSupplement, type ReflectionState } from "../src/core/reflection.ts";
 import { playBatches } from "./fixtures/batches.ts";
 import { remark, restore, scripted, type Step } from "./fixtures/restore.ts";
@@ -529,7 +529,7 @@ describe("話者の名前を含むログからの復元", () => {
         ]).pipe(Effect.flip);
         expect(error).toBeInstanceOf(InvalidLogEvent);
         expect(error).toMatchObject({ _tag: "InvalidLogEvent", index: 1 });
-        expect(error.reason).not.toBe("");
+        expect(error).toHaveProperty("reason", expect.stringMatching(/\S/));
       }));
   }
 });
@@ -605,7 +605,7 @@ describe("壊れたログは InvalidLogEvent で失敗する", () => {
       const diff = { type: "diff", input: { recent: [], fresh: [], nodeCount: 0 }, ops: [], dropped: [] };
       const error = yield* flip([{ type: "intake-restarted", trigger: "auto" }, diff, start]);
       expect(error).toMatchObject({ _tag: "InvalidLogEvent", index: 1 });
-      expect(error.reason).toContain("start がありません");
+      expect(error).toHaveProperty("reason", expect.stringContaining("start がありません"));
     }));
 
   it.effect("diff が挙げた発言がログに無ければ、その diff の位置の InvalidLogEvent で失敗する", () =>
@@ -629,7 +629,7 @@ describe("壊れたログは InvalidLogEvent で失敗する", () => {
       Effect.gen(function* () {
         const error = yield* flip(events);
         expect(error).toMatchObject({ _tag: "InvalidLogEvent", index });
-        expect(error.reason).not.toBe("");
+        expect(error).toHaveProperty("reason", expect.stringMatching(/\S/));
       }));
   }
 
@@ -840,7 +840,7 @@ describe("共有画面の復元（復元はファイル名だけを戻し、画�
         yield* Effect.yieldNow;
       }
     });
-    const comparePaused = (prepare: (s: Session) => Effect.Effect<void>, pausedEnd: number, during: readonly ScreenChange[], next: readonly number[], whilePaused: readonly ScreenChange[] = []) =>
+    const comparePaused = (prepare: (s: Session) => Effect.Effect<void, SessionWriteFailed>, pausedEnd: number, during: readonly ScreenChange[], next: readonly number[], whilePaused: readonly ScreenChange[] = []) =>
       Effect.gen(function* () {
         const events: LogEvent[] = [];
         const screens: Screens = [];
