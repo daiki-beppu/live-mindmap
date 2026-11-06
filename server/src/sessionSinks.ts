@@ -160,6 +160,8 @@ export class SessionSinks extends Context.Service<SessionSinks, {
               return { writeOut: Effect.gen(function* () {
                 yield* session.flush;
                 yield* vocabulary.settled;
+                const failure = yield* writeError;
+                if (failure !== undefined) return yield* failure;
                 yield* updatePoolFromSession(dir, dirname(dir));
                 const written = args.noMap === true ? { paths: [], warnings: [] } : yield* Effect.flatMap(
                   Effect.all([session.snapshot, session.exportJson]),

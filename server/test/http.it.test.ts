@@ -36,6 +36,7 @@ import { updaterLayer } from "./fixtures/sessionLayers.ts";
 import { connect } from "./fixtures/wsClient.ts";
 import { runCliEntry } from "./fixtures/cliEntry.ts";
 import { EXPORT_FILE, LOG_FILE } from "../src/sessionFiles.ts";
+import { fakeReadings } from "./fixtures/readings.ts";
 
 const apps = [{ bundleID: "us.zoom.xos", name: "zoom.us" }];
 
@@ -103,7 +104,7 @@ const makeFakeHelpers = (attempts: AttemptScript[], permission: { microphone: "a
   return { helpers: Helpers.of({ ...service, installSpeechJa: Stream.die("このテストでは日本語モデルを導入しない") }), calls, sent, stopped, emit };
 };
 
-const resourceWithFakeHelpers = Effect.fnUntraced(function* (attempts: AttemptScript[], options: { managedDeps?: Layer.Layer<ManagedDeps>; updaterLayer?: () => Layer.Layer<DiffUpdater>; permission?: { microphone: "authorized" | "denied" | "notDetermined"; screenCapture: boolean }; viewing?: ServerLayers["viewing"] } & Pick<ExportServicesOptions, "capture" | "build" | "mix" | "fileSystem"> = {}) {
+const resourceWithFakeHelpers = Effect.fnUntraced(function* (attempts: AttemptScript[], options: { managedDeps?: Layer.Layer<ManagedDeps>; updaterLayer?: () => Layer.Layer<DiffUpdater>; permission?: { microphone: "authorized" | "denied" | "notDetermined"; screenCapture: boolean }; viewing?: ServerLayers["viewing"]; writeOutStarted?: Deferred.Deferred<void> } & Pick<ExportServicesOptions, "capture" | "build" | "mix" | "fileSystem" | "readings"> = {}) {
   const dir = yield* Effect.acquireRelease(
     Effect.tryPromise(() => mkdtemp(join(tmpdir(), "live-mindmap-http-fake-"))),
     (path) => Effect.promise(() => rm(path, { recursive: true, force: true })),
@@ -113,7 +114,17 @@ const resourceWithFakeHelpers = Effect.fnUntraced(function* (attempts: AttemptSc
   const startupChecks = StartupChecks.layer({
     prepareUpdater: () => Effect.succeed({ layer: options.updaterLayer ? options.updaterLayer() : updaterLayer(() => Effect.succeed({ ops: [] })) }),
   }).pipe(Layer.provide(fakeExportServices({ capture: options.capture })));
-  const sessionSinksLayer = SessionSinks.layer.pipe(Layer.provide(fakeExportServices({ capture: options.capture, build: options.build, mix: options.mix, fileSystem: options.fileSystem })));
+  const realSinks = SessionSinks.layer.pipe(Layer.provide(fakeExportServices({ capture: options.capture, build: options.build, mix: options.mix, fileSystem: options.fileSystem, readings: options.readings })));
+  const writeOutStarted = options.writeOutStarted;
+  const sessionSinksLayer = writeOutStarted === undefined ? realSinks : Layer.effect(SessionSinks, Effect.map(SessionSinks, (sinks) => SessionSinks.of({
+    ...sinks,
+    open: (args) => Effect.map(sinks.open(args), (sink) => ({
+      ...sink,
+      end: (ending) => Effect.map(sink.end(ending), ({ writeOut }) => ({
+        writeOut: Effect.andThen(Deferred.succeed(writeOutStarted, undefined), writeOut),
+      })),
+    })),
+  }))).pipe(Layer.provide(realSinks));
   const server = yield* startedServer(
     { port: 0, sessionsDir },
     { helpers: Layer.succeed(Helpers)(fakeHelpers.helpers), startupChecks, sessionSinks: sessionSinksLayer, managedDeps: options.managedDeps ?? readyManagedDeps, ...(options.viewing === undefined ? {} : { viewing: options.viewing }) },
@@ -128,7 +139,7 @@ const resourceWithFakeHelpers = Effect.fnUntraced(function* (attempts: AttemptSc
 });
 
 describe("セッションのディスク失敗の HTTP・CLI 応答", () => {
-  const resource = Effect.fnUntraced(function* (exports: Pick<ExportServicesOptions, "capture" | "build" | "mix" | "fileSystem"> & { updaterLayer?: () => Layer.Layer<DiffUpdater> } = {}) {
+  const resource = Effect.fnUntraced(function* (exports: Pick<ExportServicesOptions, "capture" | "build" | "mix" | "fileSystem" | "readings"> & { updaterLayer?: () => Layer.Layer<DiffUpdater>; writeOutStarted?: Deferred.Deferred<void> } = {}) {
     const r = yield* resourceWithFakeHelpers([{}], exports);
     const responses: { status: number; body: unknown }[] = [];
     const observedClient = Layer.effect(HttpClient.HttpClient, Effect.map(HttpClient.HttpClient, (client) =>
@@ -148,6 +159,57 @@ describe("セッションのディスク失敗の HTTP・CLI 応答", () => {
     );
     return { ...r, responses, cli: (argv: string[]) => runCliEntry(argv, cliLayer) };
   });
+
+  for (const source of ["user", "screen"] as const) {
+    for (const denied of [false, true]) {
+      it.live(`${source} 語彙の読み待機中に stop すると保存の${denied ? "失敗" : "成功"}が HTTP・CLI に届く`, () => Effect.gen(function* () {
+        const releaseReading = yield* Deferred.make<void>();
+        const writeOutStarted = yield* Deferred.make<void>();
+        const readings = fakeReadings({ "港南店": "kounanten" });
+        readings.gate.current = releaseReading;
+        const failed: string[] = [];
+        const files = Layer.effect(FileSystem.FileSystem, Effect.map(FileSystem.FileSystem, (fs) => ({
+          ...fs,
+          writeFileString: (path, data, options) => Effect.suspend(() => {
+            if (denied && path.endsWith(`/${LOG_FILE}`) && JSON.parse(data).type === "vocab") {
+              failed.push(path);
+              return Effect.fail(PlatformError.systemError({ _tag: "PermissionDenied", module: "FileSystem", method: "writeFileString", pathOrDescriptor: path, cause: new Error("EACCES: 合成の書込拒否") }));
+            }
+            return fs.writeFileString(path, data, options);
+          }),
+        } satisfies FileSystem.FileSystem))).pipe(Layer.provide(NodeFileSystem.layer));
+        const r = yield* resource({ fileSystem: files, readings, writeOutStarted });
+        const vocabPath = join(dirname(r.sessionsDir), "vocab.txt");
+        yield* Effect.tryPromise(() => writeFile(vocabPath, "港南店\n"));
+        const started = yield* r.cli(["start", "--app", "us.zoom.xos", "--no-audio", ...(source === "user" ? ["--no-screen", "--vocab", vocabPath] : [])]);
+        expect(started.code).toBe(0);
+        const dir = started.stdout.trim();
+        const path = join(dir, LOG_FILE);
+        if (source === "screen") yield* r.emit({ type: "screen", start: 0, image: "aW1hZ2U=", lines: ["港南店"] });
+        yield* Effect.tryPromise(() => vi.waitFor(() => expect(readings.calls).toEqual([["港南店"]])));
+        const stopping = yield* Effect.forkChild(r.cli(["stop"]));
+        yield* Deferred.await(writeOutStarted).pipe(Effect.timeout("5 seconds"));
+        expect(failed).toEqual([]);
+        yield* Deferred.succeed(releaseReading, undefined);
+        const stopped = yield* Fiber.join(stopping);
+        const response = r.responses.at(-1);
+        expect(failed).toEqual(denied ? [path] : []);
+        expect({ status: response?.status, code: stopped.code }).toEqual({ status: denied ? 500 : 200, code: denied ? 1 : 0 });
+        if (denied) {
+          expect(response?.body).toMatchObject({ error: expect.stringContaining(path) });
+          expect(response?.body).toMatchObject({ error: expect.stringContaining("EACCES: 合成の書込拒否") });
+          expect(stopped.stderr).toContain(path);
+          expect(stopped.stderr).toContain("EACCES: 合成の書込拒否");
+        } else {
+          const rows = (yield* Effect.tryPromise(() => readFile(path, "utf8"))).trim().split("\n").map((line) => JSON.parse(line));
+          expect(rows).toContainEqual(expect.objectContaining({ type: "vocab", words: [{ surface: "港南店", romaji: "kounanten", source }] }));
+        }
+        const after = yield* Effect.tryPromise(() => r.request("GET", "/session/status", undefined, undefined));
+        expect(after.status).toBe(200);
+        expect(yield* Effect.tryPromise(() => after.json())).toMatchObject({ status: "none" });
+      }));
+    }
+  }
 
   for (const file of [LOG_FILE, EXPORT_FILE]) {
     for (const asynchronous of [false, true]) {
