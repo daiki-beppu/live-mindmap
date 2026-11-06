@@ -3,7 +3,8 @@ import { Context, Effect, Fiber, Layer, Scope } from "effect";
 import type { SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { AgentSdk, layerClaude } from "../src/claude.ts";
 import { TestClock } from "effect/testing";
-import { DiffUpdater, emptyMap, type DiffInput, type DiffResult, type DiffUpdateError, type KatakanaAnswer, type PreviousResponse, type Remark } from "../src/core/index.ts";
+import { collectLog } from "./fixtures/sessionLayers.ts";
+import { DiffUpdatePaused, DiffUpdater, emptyMap, makeSession, type LogEvent, type DiffInput, type DiffResult, type DiffUpdateError, type KatakanaAnswer, type PreviousResponse, type Remark } from "../src/core/index.ts";
 import { HAIKU, routedUpdater, SONNET } from "../src/routedDiffUpdater.ts";
 import type { JudgeAsk, JudgeOutcome } from "../src/systemOne.ts";
 
@@ -277,6 +278,52 @@ describe("振り分け: 判定の記録", () => {
     const result = yield* router.update(input([remark(1)]));
     expect(result.judge).toMatchObject({ model: SONNET, ms: expect.any(Number), failure: "時間切れ" });
     expect(result.judge).not.toHaveProperty("confidence");
+  }));
+});
+
+describe("振り分け: 利用上限の一時停止", () => {
+  const limit = new DiffUpdatePaused({ reason: "Claude の利用上限", message: "Claude の利用上限", retryAt: 60_000 });
+
+  it.effect("振り分けたモデルが上限なら、セッションは一時停止して発言を保持し、次に試す時刻を持つ", () => Effect.gen(function* () {
+    const events: LogEvent[] = [];
+    const sonnet = DiffUpdater.of({ update: () => Effect.fail(limit) });
+    const router = yield* routedUpdater({ ask: fakeAsk([0.9]).ask, sonnet, haiku: fakeUpdater("haiku").service });
+    const session = yield* makeSession({ title: "定例" }).pipe(Effect.provide(Layer.merge(Layer.succeed(DiffUpdater, router), collectLog(events))));
+    yield* session.push(remark(1));
+    yield* session.idle;
+    expect({
+      status: (yield* session.diffUpdate).status,
+      unreflected: (yield* session.unreflectedRemarks).map((r) => r.id),
+      retryAt: yield* session.nextRetryAt,
+      paused: events.filter((e) => e.type === "diff-update-paused").length,
+    }).toEqual({ status: "paused", unreflected: ["r1"], retryAt: 60_000, paused: 1 });
+  }).pipe(Effect.scoped));
+
+  const shot = (start: number) => ({ start, image: { id: `img${start}`, bytes: new Uint8Array([start]) } });
+  // Haiku へ 2 枚を送って Sonnet の未送にためる → Sonnet の回が上限で止まる → retried の確からしさで再試行する
+  const retryAfterLimit = (retried: number) => Effect.gen(function* () {
+    let limited = false;
+    const seen: (number[] | undefined)[] = [];
+    const sonnet = DiffUpdater.of({ update: (i) => Effect.suspend(() => {
+      seen.push(i.screens?.map((s) => s.start));
+      if (limited) return Effect.succeed({ ops: [] });
+      limited = true;
+      return Effect.fail(limit);
+    }) });
+    const haiku = fakeUpdater("haiku");
+    const router = yield* routedUpdater({ ask: fakeAsk([0.1, 0.9, retried]).ask, sonnet, haiku: haiku.service });
+    yield* router.update(input([remark(1)], { screens: [shot(10), shot(20)] }));
+    yield* Effect.flip(router.update(input([remark(2)], { screens: [shot(30)] })));
+    yield* router.update(input([remark(2)], { screens: [shot(30)] }));
+    return { sonnet: seen, haiku: haiku.inputs.map((i) => i.screens?.map((s) => s.start)) };
+  });
+
+  it.effect("止まった回の未送の画面は、同じ行き先の再試行に古い順に全件届く", () => Effect.gen(function* () {
+    expect((yield* retryAfterLimit(0.9)).sonnet).toEqual([[10, 20, 30], [10, 20, 30]]);
+  }));
+
+  it.effect("再試行が別の行き先へ回っても、止まった回の画面を二重に渡さない", () => Effect.gen(function* () {
+    expect((yield* retryAfterLimit(0.1)).haiku).toEqual([[10, 20], [30]]);
   }));
 });
 
