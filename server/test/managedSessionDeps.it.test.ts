@@ -192,7 +192,7 @@ describe("712: セッションと管理実体の寿命", () => {
     const stopping = yield* stop(server.port).pipe(Effect.forkChild);
     yield* Deferred.await(entered);
     try {
-      expect(yield* status(server.port)).toEqual({ status: "none" });
+      expect(yield* status(server.port)).toEqual({ status: "transition" });
       for (const path of ["/deps/install", "/update"]) yield* rejected(yield* request(server.port, path, { names: ["claude"] }));
       expect(calls).toEqual([]);
     } finally {
@@ -201,7 +201,7 @@ describe("712: セッションと管理実体の寿命", () => {
     yield* accepted(yield* Fiber.join(stopping));
   }).pipe(Effect.scoped));
 
-  it.live("start の接続待ち中も導入を拒否する（公開 status が none でも導入しない）", () => Effect.gen(function* () {
+  it.live("start の接続待ち中も導入を拒否する", () => Effect.gen(function* () {
     const dir = yield* temporaryDeps;
     const release = yield* Deferred.make<void>();
     const launches: HelperLaunchOptions[] = [];
@@ -210,7 +210,7 @@ describe("712: セッションと管理実体の寿命", () => {
     const starting = yield* start(server.port).pipe(Effect.forkChild);
     try {
       yield* Effect.tryPromise(() => vi.waitFor(() => expect(launches).toHaveLength(1)));
-      expect(yield* status(server.port)).toEqual({ status: "none" });
+      expect(yield* status(server.port)).toEqual({ status: "transition" });
       for (const path of ["/deps/install", "/update"]) {
         const response = yield* request(server.port, path, { names: ["claude"] });
         yield* rejected(response);

@@ -239,6 +239,10 @@ describe("formatIntakeStatus（cli status の標準出力）", () => {
     expect(formatIntakeStatus({ status: "none" })).toBe("セッションなし\n");
   });
 
+  it("開始・終了の処理中はその一言を出す", () => {
+    expect(formatIntakeStatus({ status: "transition" })).toBe("開始・終了の処理中\n");
+  });
+
   it("動いているときは、状態・セッションのフォルダ・起動し直した回数を出し、途切れの時刻は出さない", () => {
     const out = formatIntakeStatus({ status: "running", dir: "/tmp/s", restarts: 0 });
     expect(out).toContain("動いている");

@@ -70,6 +70,15 @@ describe("cli server stop", () => {
     expect(result.signalled).toEqual([]);
   }).pipe(Effect.scoped));
 
+  it.live("セッションの開始・終了の処理中なら断り、シグナルを送らない", () => Effect.gen(function* () {
+    const sessionsDir = join(yield* directory, "sessions");
+    const port = yield* fakeServerPort((url) => ({ status: 200, body: url === "/server" ? { pid: 424242 } : { status: "transition" } }));
+    const result = yield* stopWithoutSignal(sessionsDir, port);
+    expect(result.failed).toBe(true);
+    expect(result.message).toBe("セッションの開始・終了の処理中です。終わってから、もう一度 server stop を打ってください");
+    expect(result.signalled).toEqual([]);
+  }).pipe(Effect.scoped));
+
   it.live("/server が 404 を返す server（/server より前の版）には、Ctrl-C で止めるよう案内して断り、シグナルを送らない", () => Effect.gen(function* () {
     const sessionsDir = join(yield* directory, "sessions");
     const port = yield* fakeServerPort(() => ({ status: 404, body: { error: "未対応のリクエスト: GET /server" } }));

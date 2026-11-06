@@ -248,6 +248,37 @@ describe("現在のセッションの状態による操作の許可", () => {
     expect(named).toEqual(state === "recorded" && operation === "setSpeakerName" ? [{ label: "相手 A", name: "山田" }] : []);
   }).pipe(Effect.scoped));
 
+  it.effect("開始中と書き出しの間の status は処理中を返し、終わるとセッションなしに戻る", () => Effect.gen(function* () {
+    const launchEntered = yield* Deferred.make<void>();
+    const releaseLaunch = yield* Deferred.make<void>();
+    const writeEntered = yield* Deferred.make<void>();
+    const releaseWrite = yield* Deferred.make<void>();
+    const fakeHelpers = yield* makeFakeHelpers([{ connectGate: releaseLaunch }]);
+    const helpers = Helpers.of({ ...fakeHelpers.helpers, launch: (args, stopRequested) => Effect.andThen(
+      Deferred.succeed(launchEntered, undefined), fakeHelpers.helpers.launch(args, stopRequested),
+    ) });
+    const fake = yield* makeFakeSessionSinks();
+    const sinks = SessionSinks.of({ ...fake.sinks,
+      open: (args) => Effect.map(fake.sinks.open(args), (sink) => ({ ...sink,
+        end: (ending) => Effect.map(sink.end(ending), ({ writeOut }) => ({ writeOut: Effect.andThen(Deferred.succeed(writeEntered, undefined), Effect.andThen(Deferred.await(releaseWrite), writeOut)) })),
+      })),
+    });
+    const { sessions } = yield* bootSessions(Layer.succeed(Helpers, helpers), Layer.succeed(SessionSinks, sinks));
+
+    const starting = yield* sessions.start(start()).pipe(Effect.forkChild);
+    yield* Deferred.await(launchEntered);
+    expect(yield* sessions.status).toEqual({ status: "transition" });
+    yield* Deferred.succeed(releaseLaunch, undefined);
+    yield* Fiber.join(starting);
+
+    const stopping = yield* sessions.stop.pipe(Effect.forkChild);
+    yield* Deferred.await(writeEntered);
+    expect(yield* sessions.status).toEqual({ status: "transition" });
+    yield* Deferred.succeed(releaseWrite, undefined);
+    yield* Fiber.join(stopping);
+    expect(yield* sessions.status).toEqual({ status: "none" });
+  }).pipe(Effect.scoped));
+
   it.effect.each(["live", "recorded"] as const)("%s の writeOut 待機中の二重 stop は拒否し、書き出しと close は1回だけ行う", (kind) => Effect.gen(function* () {
     const helpers = yield* makeFakeHelpers([{}]);
     const fake = yield* makeFakeSessionSinks();

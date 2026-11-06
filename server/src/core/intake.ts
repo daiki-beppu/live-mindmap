@@ -68,8 +68,11 @@ export function tailLines(text: string, n: number): string[] {
   return lines.slice(-n);
 }
 
+// transition は開始・終了の処理中。処理の間だけの報告の値で、画面へ送る IntakeFrame には載せない
+const IntakeReportStatus = Schema.Literals([...SessionIntakeStatus.literals, "transition"]);
+
 export const IntakeStatusReport = Schema.Struct({
-  status: SessionIntakeStatus,
+  status: IntakeReportStatus,
   dir: Schema.optionalKey(Schema.String),
   restarts: Schema.optionalKey(Schema.Finite),
   lastInterruptedAt: Schema.optionalKey(Schema.String),
@@ -77,8 +80,9 @@ export const IntakeStatusReport = Schema.Struct({
 });
 export type IntakeStatusReport = typeof IntakeStatusReport["Type"];
 
-const STATUS_WORDS: Record<SessionIntakeStatus, string> = {
+const STATUS_WORDS: Record<IntakeStatusReport["status"], string> = {
   none: "セッションなし",
+  transition: "開始・終了の処理中",
   running: "動いている",
   interrupted: "途切れている",
   stopped: "止まった",
