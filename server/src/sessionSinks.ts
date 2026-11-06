@@ -5,7 +5,7 @@ import { COMMON_WORDS_PATH, loadCommonWords } from "./commonWords.ts";
 import type { UpdaterUnavailable } from "./updaterUnavailable.ts";
 import type { ExecutableModel } from "./modelSelection.ts";
 import { createSessionDir, ExportFilesFailed, openLoggedSession, openLoggedTranscriptSession, writeExportsAndCapture } from "./sessionFiles.ts";
-import { DiffUpdater, DiffUpdateReason, type HelperPartial, type IntakeLogEvent, type SelfPauseLogEvent, type SettledRemark, type SpeakerLogEvent, wordsForKatakana, type Track } from "./core/index.ts";
+import { type SessionWriteFailed, DiffUpdater, DiffUpdateReason, type HelperPartial, type IntakeLogEvent, type SelfPauseLogEvent, type SettledRemark, type SpeakerLogEvent, wordsForKatakana, type Track } from "./core/index.ts";
 import { startPoolSession, updatePoolFromSession } from "./vocabularyPool.ts";
 import { AudioMix } from "./audioMix.ts";
 import { Readings } from "./readings.ts";
@@ -25,25 +25,27 @@ type Written = {
 };
 
 type SinkBase = {
+  writeFailure: Effect.Effect<SessionWriteFailed>;
+  writeError: Effect.Effect<SessionWriteFailed | undefined>;
   dir: string;
-  partial: (p: HelperPartial) => Effect.Effect<void>;
-  final: (r: SettledRemark) => Effect.Effect<void>;
+  partial: (p: HelperPartial) => Effect.Effect<void, SessionWriteFailed>;
+  final: (r: SettledRemark) => Effect.Effect<void, SessionWriteFailed>;
   screen: Inlet["screen"];
-  screenOff: (off: { start: number; reason: "指定" | "許可なし" }) => Effect.Effect<void>;
-  end: (ending: Ending) => Effect.Effect<{ writeOut: Effect.Effect<Written, ExportFilesFailed> }>;
+  screenOff: (off: { start: number; reason: "指定" | "許可なし" }) => Effect.Effect<void, SessionWriteFailed>;
+  end: (ending: Ending) => Effect.Effect<{ writeOut: Effect.Effect<Written, ExportFilesFailed | SessionWriteFailed> }, SessionWriteFailed>;
   stopRelays: Effect.Effect<void>;
-  speaker: (event: SpeakerLogEvent) => Effect.Effect<void>;
-  speakersRenumbered: Effect.Effect<void>;
-  nameSpeaker: (speaker: { label: string; name: string }) => Effect.Effect<void, SpeakerNameRejected>;
-  appendLog: (event: Exclude<IntakeLogEvent, SpeakerLogEvent> | SelfPauseLogEvent) => Effect.Effect<void>;
+  speaker: (event: SpeakerLogEvent) => Effect.Effect<void, SessionWriteFailed>;
+  speakersRenumbered: Effect.Effect<void, SessionWriteFailed>;
+  nameSpeaker: (speaker: { label: string; name: string }) => Effect.Effect<void, SpeakerNameRejected | SessionWriteFailed>;
+  appendLog: (event: Exclude<IntakeLogEvent, SpeakerLogEvent> | SelfPauseLogEvent) => Effect.Effect<void, SessionWriteFailed>;
 };
 
 export type LiveSink = SinkBase & {
-  interrupted: Effect.Effect<void>;
+  interrupted: Effect.Effect<void, SessionWriteFailed>;
 };
 
 export type RecordedSink = SinkBase & {
-  drainForRestart: Effect.Effect<TrackEnds>;
+  drainForRestart: Effect.Effect<TrackEnds, SessionWriteFailed>;
 };
 
 type SinkMode =
@@ -75,8 +77,8 @@ export const audioFileNames = (attempt: number): string[] => TRACKS.map((track) 
 
 export class SessionSinks extends Context.Service<SessionSinks, {
   createDir: (sessionsDir: string, at?: DateTime.DateTime) => Effect.Effect<string, ExportFilesFailed>;
-  open: (args: OpenSessionSink & { noMap?: false }) => Effect.Effect<LiveSink, never, Scope.Scope>;
-  openRecorded: (args: OpenSessionSink & { recorded: RecordedOptions }) => Effect.Effect<RecordedSink, never, Scope.Scope>;
+  open: (args: OpenSessionSink & { noMap?: false }) => Effect.Effect<LiveSink, SessionWriteFailed, Scope.Scope>;
+  openRecorded: (args: OpenSessionSink & { recorded: RecordedOptions }) => Effect.Effect<RecordedSink, SessionWriteFailed, Scope.Scope>;
 }>()("live-mindmap/server/SessionSinks") {
   static readonly layer: Layer.Layer<SessionSinks, never, MapCapture | ReviewBuild | AudioMix | Readings | FileSystem.FileSystem> =
     Layer.effect(SessionSinks)(
@@ -110,7 +112,7 @@ export class SessionSinks extends Context.Service<SessionSinks, {
             }),
             onDiff: Effect.suspend((): Effect.Effect<void> => flow.captionsChanged),
           };
-          const { session, appendLog: appendRecordedLog } = yield* (args.noMap === true
+          const { session, appendLog: appendRecordedLog, writeFailure, writeError } = yield* (args.noMap === true
             ? openLoggedTranscriptSession(loggedOptions)
             : openLoggedSession({ ...loggedOptions, model: args.model }).pipe(Effect.provideService(DiffUpdater, baseUpdater!))).pipe(Effect.provideContext(exportServices));
           if (started !== undefined) yield* appendRecordedLog({ type: "vocab-pool", session: started.session });
@@ -135,6 +137,7 @@ export class SessionSinks extends Context.Service<SessionSinks, {
             }),
           });
           const sink: SinkBase = {
+            writeFailure, writeError,
             dir,
             partial: flow.partial,
             final: flow.final,
@@ -157,6 +160,8 @@ export class SessionSinks extends Context.Service<SessionSinks, {
               return { writeOut: Effect.gen(function* () {
                 yield* session.flush;
                 yield* vocabulary.settled;
+                const failure = yield* writeError;
+                if (failure !== undefined) return yield* failure;
                 yield* updatePoolFromSession(dir, dirname(dir));
                 const written = args.noMap === true ? { paths: [], warnings: [] } : yield* Effect.flatMap(
                   Effect.all([session.snapshot, session.exportJson]),
@@ -165,7 +170,7 @@ export class SessionSinks extends Context.Service<SessionSinks, {
                 return { ...written, ocrSummary: yield* flow.ocrSummary };
               }).pipe(
                 Effect.provideContext(exportServices),
-                Effect.mapError((error) => error._tag === "ExportFilesFailed"
+                Effect.mapError((error) => error._tag === "ExportFilesFailed" || error._tag === "SessionWriteFailed"
                   ? error
                   : new ExportFilesFailed({ message: `セッションを書き出せませんでした: ${dir}（${errorMessage(error)}）` })),
               ) };

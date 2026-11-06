@@ -4,7 +4,7 @@ import { createStopGate } from "./stopGate.ts";
 
 export type RemarkSettlingOptions = { speakers?: SpeakerAttributionOptions };
 
-export const createRemarkSettling = Effect.fnUntraced(function* ({ speakers }: RemarkSettlingOptions = {}) {
+export const createRemarkSettling = Effect.fnUntraced(function* <E = never>({ speakers }: RemarkSettlingOptions = {}) {
   const settler = createRemarkSettler();
   const attribution = createSpeakerAttribution(speakers);
   const gate = yield* createStopGate;
@@ -18,7 +18,7 @@ export const createRemarkSettling = Effect.fnUntraced(function* ({ speakers }: R
 
   return {
     preview,
-    emitTo: (emit: (remark: SettledRemark) => Effect.Effect<void>) => {
+    emitTo: (emit: (remark: SettledRemark) => Effect.Effect<void, E>) => {
       const emitAll = (remarks: readonly SettledRemark[]) => Effect.forEach(remarks, emit, { discard: true });
       return {
         partial: (p: HelperPartial) => unlessStopped(Effect.suspend(() => emitAll(attribution.remarks(settler.partial(p), p.end * 1000)))),

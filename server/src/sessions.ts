@@ -1,6 +1,7 @@
 import { Cause, Clock, Console, Context, DateTime, Effect, Exit, Fiber, Layer, Option, Queue, Ref, Result, Scope, Stream } from "effect";
 import { parse } from "node:path";
 import {
+  type SessionWriteFailed,
   type RecordedEvent,
   type RecordedProgress,
   isScreenBrowser,
@@ -156,7 +157,7 @@ export class Sessions extends Context.Service<Sessions, {
 
       const note = (text: string) => Console.error(withoutFinalNewline(text));
 
-      const applyEvent = (live: Live, event: HelperEvent): Effect.Effect<void> => {
+      const applyEvent = (live: Live, event: HelperEvent): Effect.Effect<void, SessionWriteFailed> => {
         switch (event.type) {
           case "origin":
             return Effect.andThen(
@@ -329,6 +330,15 @@ export class Sessions extends Context.Service<Sessions, {
           selfPauseState,
         };
         yield* Ref.set(live.running, yield* runLive(live, "auto"));
+        yield* Effect.forkIn(Effect.gen(function* () {
+          yield* sink.writeFailure;
+          yield* controller.stop;
+          yield* sink.stopRelays;
+          const running = yield* Ref.get(live.running);
+          if (running !== undefined) yield* running.end.pipe(Effect.catchTag("SessionWriteFailed", () => Effect.void));
+          yield* Ref.set(live.intake, "stopped");
+          yield* send({ type: "intake", status: "stopped" });
+        }), scope);
         return { active: { kind: "live", live } satisfies Active, local: model.local, result: { dir, warnings } };
       }));
 
@@ -344,7 +354,7 @@ export class Sessions extends Context.Service<Sessions, {
       const announceOnce = (recorded: Recorded, key: "audioTracks" | "screenOff" | "speakerOff") =>
         Ref.modify(recorded.announced, (announced): [boolean, Announced] => [!announced[key], { ...announced, [key]: true }]);
 
-      const applyRecordedEvent = (recorded: Recorded, event: HelperEvent): Effect.Effect<void> => {
+      const applyRecordedEvent = (recorded: Recorded, event: HelperEvent): Effect.Effect<void, SessionWriteFailed> => {
         switch (event.type) {
           case "remark": {
             const { type: _type, ...settled } = event;
@@ -381,7 +391,7 @@ export class Sessions extends Context.Service<Sessions, {
         }
       };
 
-      const applyRecordedEventFrom = (recorded: Recorded, event: HelperEvent): Effect.Effect<void> =>
+      const applyRecordedEventFrom = (recorded: Recorded, event: HelperEvent): Effect.Effect<void, SessionWriteFailed> =>
         event.type === "remark" || event.type === "partial"
           ? Effect.flatMap(Ref.get(recorded.from), (from) => from[event.track] !== undefined && event.start < from[event.track]! ? Effect.void : applyRecordedEvent(recorded, event))
           : applyRecordedEvent(recorded, event);
@@ -482,7 +492,7 @@ export class Sessions extends Context.Service<Sessions, {
             return end.kind === "finished"
               ? concludeRecorded(recorded, sink.end({ kind: "入れ切る" }), undefined)
               : concludeRecorded(recorded, sink.end({ kind: "捨てる", quiesce: Effect.void }), { ...end.last.exit, stderrTail: end.last.stderrTail });
-          }), scope)),
+          }).pipe(Effect.catchTag("SessionWriteFailed", (failure) => concludeRecorded(recorded, Effect.fail(failure), undefined))), scope)),
         };
       }));
 
@@ -491,7 +501,11 @@ export class Sessions extends Context.Service<Sessions, {
           yield* live.meetingTabNotice.stop;
           yield* live.controller.stop;
           const running = yield* Ref.get(live.running);
-          const end = running === undefined ? { kind: "stopped" as const, exit: undefined } : yield* running.end;
+          const end = running === undefined ? { kind: "stopped" as const, exit: undefined } : yield* running.end.pipe(
+            Effect.catchTag("SessionWriteFailed", () => Effect.succeed({ kind: "stopped" as const, exit: undefined })),
+          );
+          const failure = yield* live.sink.writeError;
+          if (failure !== undefined) return yield* failure;
           const { writeOut } = yield* live.sink.end({ kind: "入れ切る" });
           if (end.kind === "stopped" && end.exit?.signal === "SIGKILL") {
             yield* note(`ヘルパーが SIGTERM から ${stopTimeoutMs}ms 経っても終了しないので、SIGKILL で止めます\n`);
@@ -524,6 +538,8 @@ export class Sessions extends Context.Service<Sessions, {
 
       const resume = Effect.gen(function* () {
         const live = yield* current("live");
+        const failure = yield* live.sink.writeError;
+        if (failure !== undefined) return yield* failure;
         if ((yield* Ref.get(live.intake)) !== "stopped") return yield* new IntakeNotStopped();
         const { warnings } = yield* checks.prepare({ entry: "resume", route: live.model.route, screen: live.screen }).pipe(Effect.provideService(Helpers, helpers));
         const afterCheck = yield* Ref.get(state);
@@ -554,11 +570,13 @@ export class Sessions extends Context.Service<Sessions, {
         if (current.kind !== "live") return { status: "none" };
         const { live } = current;
         const lastInterruptedAt = yield* Ref.get(live.lastInterruptedAt);
+        const failure = yield* live.sink.writeError;
         return {
           status: yield* Ref.get(live.intake),
           dir: live.dir,
           restarts: (yield* live.controller.stats).restarts,
           ...(lastInterruptedAt === undefined ? {} : { lastInterruptedAt }),
+          ...(failure === undefined ? {} : { stoppedReason: failure.message }),
         };
       });
 

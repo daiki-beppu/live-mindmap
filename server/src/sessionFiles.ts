@@ -1,5 +1,5 @@
 import { basename, join } from "node:path";
-import { Cause, Console, DateTime, Effect, FileSystem, Layer, PlatformError, Predicate, Ref, Result, Schema, Semaphore } from "effect";
+import { Cause, Console, DateTime, Deferred, Effect, FileSystem, Layer, PlatformError, Predicate, Ref, Result, Schema, Semaphore } from "effect";
 import { MapCapture } from "./capture.ts";
 import { ReviewPageFailed, writeReviewPages, type ReviewVariant } from "./review.ts";
 import {
@@ -10,6 +10,7 @@ import {
   makeSession,
   makeTranscriptSession,
   SessionLog,
+  SessionWriteFailed,
   StartEvent,
   toJsonExport,
   type IntakeLogEvent,
@@ -233,14 +234,26 @@ export type LoggedSessionOptions = {
 
 const openLogged = Effect.fnUntraced(function* ({ dir, title, criteria, logShiftMs = 0, carriedTerms, send, onDiff, model }: Omit<LoggedSessionOptions, "model"> & { model: ExecutableModel | undefined }, updater: DiffUpdater["Service"] | undefined) {
   const fs = yield* FileSystem.FileSystem;
+  const failed = yield* Deferred.make<SessionWriteFailed>();
+  const writeFailure = Deferred.await(failed);
+  const writeError = Effect.gen(function* () {
+    return (yield* Deferred.isDone(failed)) ? yield* writeFailure : undefined;
+  });
+  const write = Effect.fnUntraced(function* (path: string, data: string, options?: Parameters<FileSystem.FileSystem["writeFileString"]>[2]) {
+    const previous = yield* writeError;
+    if (previous !== undefined) return yield* previous;
+    return yield* fs.writeFileString(path, data, options).pipe(Effect.catch((cause) => Effect.gen(function* () {
+      yield* Deferred.succeed(failed, new SessionWriteFailed({ path, cause }));
+      const failure = yield* writeFailure;
+      return yield* failure;
+    })));
+  });
   const writeLogLine = (event: LogEvent | IntakeLogEvent | SelfPauseLogEvent) =>
-    Effect.suspend(() =>
-      fs.writeFileString(join(dir, LOG_FILE), JSON.stringify({ at: logTimestamp(logShiftMs), ...event }) + "\n", { flag: "a" }),
-    ).pipe(Effect.orDie);
+    Effect.suspend(() => write(join(dir, LOG_FILE), JSON.stringify({ at: logTimestamp(logShiftMs), ...event }) + "\n", { flag: "a" }));
   const writeExport = (session: Session) =>
-    Effect.flatMap(session.exportJson, (json) => fs.writeFileString(join(dir, EXPORT_FILE), JSON.stringify(json))).pipe(Effect.orDie);
+    Effect.flatMap(session.exportJson, (json) => write(join(dir, EXPORT_FILE), JSON.stringify(json)));
   const lock = yield* Semaphore.make(1);
-  const serialized = <A>(effect: Effect.Effect<A>) => lock.withPermit(Effect.uninterruptible(effect));
+  const serialized = <A, E, R>(effect: Effect.Effect<A, E, R>) => lock.withPermit(Effect.uninterruptible(effect));
   const appendLog = (event: LogEvent | IntakeLogEvent | SelfPauseLogEvent) => serialized(writeLogLine(event));
   const current = yield* Ref.make<Session | undefined>(undefined);
   const log = Layer.succeed(SessionLog)(
@@ -289,7 +302,7 @@ const openLogged = Effect.fnUntraced(function* ({ dir, title, criteria, logShift
   }
   yield* serialized(writeExport(session));
   if (send) yield* Effect.flatMap(session.snapshot, (snapshot) => send({ type: "snapshot", snapshot }));
-  return { session, appendLog };
+  return { session, appendLog, writeFailure, writeError };
 });
 
 export const openLoggedSession = Effect.fnUntraced(function* (options: LoggedSessionOptions) {

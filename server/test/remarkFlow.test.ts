@@ -24,7 +24,7 @@ const utterance = (...tokens: (readonly [string, string])[]) => {
 const garbled = utterance(["江南", "kounan"], ["店", "ten"], ["に", "ni"], ["行き", "iki"], ["ます", "masu"]);
 
 const bufferedFeed = () => {
-  const pending: Effect.Effect<void>[] = [];
+  const pending: ReturnType<Inlet["remark"]>[] = [];
   const release = Effect.gen(function* () {
     while (pending.length > 0) yield* pending.shift()!;
   });

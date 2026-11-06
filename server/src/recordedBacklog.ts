@@ -1,6 +1,6 @@
 import { Cause, Deferred, Effect, Fiber, Queue, Ref } from "effect";
 
-export const createRecordedBacklog = Effect.fnUntraced(function* <A>({ deliver, pace, hold }: { deliver: (item: A) => Effect.Effect<void>; pace?: (item: A) => Effect.Effect<void>; hold?: Effect.Effect<void> }) {
+export const createRecordedBacklog = Effect.fnUntraced(function* <A, E = never>({ deliver, pace, hold }: { deliver: (item: A) => Effect.Effect<void, E>; pace?: (item: A) => Effect.Effect<void>; hold?: Effect.Effect<void> }) {
   const queue = yield* Queue.unbounded<A, Cause.Done>();
   const discarding = yield* Ref.make(false);
   const discarded = yield* Deferred.make<void>();

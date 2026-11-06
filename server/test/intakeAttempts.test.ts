@@ -3,6 +3,7 @@ import { Deferred, Effect, Result, Scope } from "effect";
 import { TestClock, TestConsole } from "effect/testing";
 import { vi } from "vitest";
 import { INITIAL_SELF_PAUSE_STATE } from "../src/core/selfPause.ts";
+import { SessionWriteFailed } from "../src/core/index.ts";
 import { Helpers } from "../src/helpers.ts";
 import { openIntake } from "../src/intakeAttempts.ts";
 import { makeFakeHelpers, type AttemptScript } from "./fixtures/intakeHelpers.ts";
@@ -21,7 +22,7 @@ const waitFor = (condition: () => boolean, label: string) => Effect.promise(() =
 
 const setup = Effect.fnUntraced(function* (
   scripts: AttemptScript[],
-  options: Partial<Pick<OpenOptions, "launchOptions" | "commands">> & Partial<Pick<RunOptions, "apply" | "observe" | "exitZero">> = {},
+  options: Partial<Pick<OpenOptions, "launchOptions" | "commands">> & Partial<Pick<RunOptions, "apply" | "observe" | "exitZero" | "log">> = {},
 ) {
   const fake = yield* makeFakeHelpers(scripts);
   const scope = yield* Scope.fork(yield* Effect.scope, "sequential");
@@ -36,7 +37,10 @@ const setup = Effect.fnUntraced(function* (
   const run = (trigger: "auto" | "resume") => intake.run({
     trigger,
     exitZero: options.exitZero ?? "restart",
-    log: (line) => Effect.sync(() => { logs.push(line); }),
+    log: (line) => Effect.gen(function* () {
+      logs.push(line);
+      if (options.log) yield* options.log(line);
+    }),
     apply: (event) => Effect.gen(function* () {
       events.push(event);
       if (options.apply) yield* options.apply(event);
@@ -51,6 +55,20 @@ const setup = Effect.fnUntraced(function* (
 });
 
 describe("取り込みの試行", () => {
+  it.effect("再接続の記録に失敗したら、イベントを読み始める前でもそのヘルパーを閉じ、再起動しない", () => Effect.gen(function* () {
+    const failure = new SessionWriteFailed({ path: "/session/log.jsonl", cause: new Error("EACCES") });
+    const r = yield* setup([crashed(1), {}, {}], {
+      log: (line) => line.type === "intake-restarted" ? Effect.fail(failure) : Effect.void,
+    });
+    expect(yield* r.running.reached).toEqual({ kind: "running" });
+    yield* TestClock.adjust(1);
+    const ended = yield* Effect.result(r.running.end);
+    expect(ended).toMatchObject({ _tag: "Failure", failure });
+    expect(r.fake.calls).toHaveLength(2);
+    expect(r.fake.stops).toContain(1);
+    expect(r.fake.lifecycle).toContain("closed:1");
+  }));
+
   it.effect.each([0, 2])("最初の接続失敗はコード%sでもHelperExitedで返し、起動し直さない", (code) => Effect.gen(function* () {
     const fake = yield* makeFakeHelpers([{ connect: false, launchExit: { code, signal: null }, stderrTail: ["初回の失敗"] }]);
     const result = yield* Effect.result(openIntake({

@@ -177,7 +177,7 @@ export const replayLog = Effect.fn("replayLog")(function* (lines: readonly Input
 const OfflineArrival = Schema.Struct({ arrival: Schema.Finite });
 const decodeArrival = Schema.decodeUnknownEffect(OfflineArrival);
 
-type Settling = ReturnType<Effect.Success<ReturnType<typeof createRemarkSettling>>["emitTo"]>;
+type Settling = ReturnType<Effect.Success<ReturnType<typeof createRemarkSettling<never>>>["emitTo"]>;
 const runOf = (settling: Settling, event: HelperEvent): Omit<Step, "at" | "inputAt"> | undefined => {
   if (event.type === "partial") return { run: settling.partial(event) };
   if (event.type === "remark") return { run: settling.final({ track: event.track, start: event.start, end: event.end, text: event.text, ...(event.words === undefined ? {} : { words: event.words }), ...(event.wordTimes === undefined ? {} : { wordTimes: event.wordTimes }) }) };

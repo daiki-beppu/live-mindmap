@@ -73,6 +73,7 @@ export const IntakeStatusReport = Schema.Struct({
   dir: Schema.optionalKey(Schema.String),
   restarts: Schema.optionalKey(Schema.Finite),
   lastInterruptedAt: Schema.optionalKey(Schema.String),
+  stoppedReason: Schema.optionalKey(Schema.String),
 });
 export type IntakeStatusReport = typeof IntakeStatusReport["Type"];
 
@@ -85,6 +86,7 @@ const STATUS_WORDS: Record<SessionIntakeStatus, string> = {
 
 export function formatIntakeStatus(report: IntakeStatusReport): string {
   const lines = [STATUS_WORDS[report.status]];
+  if (report.stoppedReason !== undefined) lines.push(`止まった理由: ${report.stoppedReason}`);
   if (report.dir !== undefined) lines.push(`セッションのフォルダ: ${report.dir}`);
   if (report.restarts !== undefined) lines.push(`起動し直した回数: ${report.restarts}`);
   if (report.lastInterruptedAt !== undefined) lines.push(`最後の途切れの時刻: ${report.lastInterruptedAt}`);

@@ -816,7 +816,7 @@ const restore = Command.make(
           Layer.succeed(SessionLog)(SessionLog.of({ write: () => Effect.void, writeScreen: () => Effect.void, readScreen: () => Effect.die("restore は共有画面を読まない") })),
         ),
       ),
-      Effect.mapError(log.brokenAt),
+      Effect.catchTag("InvalidLogEvent", (error) => Effect.fail(log.brokenAt(error))),
     );
     const exported = yield* session.exportJson;
     const fs = yield* FileSystem.FileSystem;

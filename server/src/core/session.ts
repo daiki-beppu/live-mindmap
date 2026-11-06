@@ -1,3 +1,4 @@
+import type { SessionWriteFailed } from "./sessionWriteFailed.ts";
 import { Cause, Clock, Context, DateTime, Effect, Exit, Fiber, Predicate, Ref, Result, Schema, Semaphore, Stream, type Scope } from "effect";
 import { DIFF_UPDATE_RETRY_MS, DiffUpdatePaused, DiffUpdatePausedEvent, DiffUpdateRetryEvent, DiffUpdateResumedEvent, DiffUpdateStateEvent, type DiffUpdateLifecycle, type DiffUpdateState } from "./diffUpdate.ts";
 import { createDiscussionNoticeState, DiscussionNoticeEvent, nextDiscussionNotice, observeDiscussion, recordDiscussionNotice, type DiscussionNoticeState } from "./discussionNotice.ts";
@@ -117,7 +118,7 @@ export const LogEvent = Schema.Union([DiscussionNoticeEvent, StartEvent, RemarkE
 export type LogEvent = typeof LogEvent["Type"];
 
 export class SessionLog extends Context.Service<SessionLog, {
-  readonly write: (event: LogEvent) => Effect.Effect<void>;
+  readonly write: (event: LogEvent) => Effect.Effect<void, SessionWriteFailed>;
   readonly reflected?: (success: boolean) => Effect.Effect<void>;
   readonly writeScreen: (file: string, bytes: Uint8Array) => Effect.Effect<void>;
   readonly readScreen: (file: string) => Effect.Effect<Uint8Array>;
@@ -300,12 +301,12 @@ export function snapshotOf(state: SessionState): Snapshot {
 }
 
 export type Session = {
-  readonly nameSpeaker: (change: SpeakerNameChange) => Effect.Effect<void>;
-  readonly push: (remark: Remark, original?: { readonly raw: string; readonly words: readonly Word[] }, wordTimes?: readonly WordTime[]) => Effect.Effect<void>;
-  readonly idle: Effect.Effect<void>;
-  readonly pushScreen: (change: ScreenChange & Pick<typeof ScreenEvent.Type, "ocrFailed">, lines?: ReadonlyArray<string>) => Effect.Effect<void>;
-  readonly pushScreenOff: (off: Pick<typeof ScreenOffEvent["Type"], "start" | "reason">) => Effect.Effect<void>;
-  readonly flush: Effect.Effect<void>;
+  readonly nameSpeaker: (change: SpeakerNameChange) => Effect.Effect<void, SessionWriteFailed>;
+  readonly push: (remark: Remark, original?: { readonly raw: string; readonly words: readonly Word[] }, wordTimes?: readonly WordTime[]) => Effect.Effect<void, SessionWriteFailed>;
+  readonly idle: Effect.Effect<void, SessionWriteFailed>;
+  readonly pushScreen: (change: ScreenChange & Pick<typeof ScreenEvent.Type, "ocrFailed">, lines?: ReadonlyArray<string>) => Effect.Effect<void, SessionWriteFailed>;
+  readonly pushScreenOff: (off: Pick<typeof ScreenOffEvent["Type"], "start" | "reason">) => Effect.Effect<void, SessionWriteFailed>;
+  readonly flush: Effect.Effect<void, SessionWriteFailed>;
   readonly snapshot: Effect.Effect<Snapshot>;
   readonly diffUpdate: Effect.Effect<DiffUpdateState>;
   readonly nextRetryAt: Effect.Effect<number | undefined>;
@@ -314,7 +315,7 @@ export type Session = {
 };
 
 type Reservation = { readonly kind: "reserved"; readonly call: number };
-type InFlight = Reservation | { readonly kind: "running"; readonly call: number; readonly fiber: Fiber.Fiber<void> };
+type InFlight = Reservation | { readonly kind: "running"; readonly call: number; readonly fiber: Fiber.Fiber<void, SessionWriteFailed> };
 
 type Runtime = {
   readonly previousResponse: PreviousResponse | undefined;
@@ -360,11 +361,17 @@ function takeFresh(pending: readonly Remark[], catchUpUntil: string | undefined)
   return { fresh: pending.slice(0, PACED_CALL_REMARKS), rest: pending.slice(PACED_CALL_REMARKS), catchUpUntil };
 }
 
-const openSession = Effect.fnUntraced(function* (initial: SessionState, screens: RestoredScreens, logShiftMs: number, carriedTerms: readonly string[], updater?: DiffUpdater["Service"]): Effect.fn.Return<Session, never, Scope.Scope | SessionLog> {
+const openSession = Effect.fnUntraced(function* (initial: SessionState, screens: RestoredScreens, logShiftMs: number, carriedTerms: readonly string[], updater?: DiffUpdater["Service"]): Effect.fn.Return<Session, SessionWriteFailed, Scope.Scope | SessionLog> {
   const scope = yield* Effect.scope;
-  const log = yield* SessionLog;
+  const targetLog = yield* SessionLog;
   const screenTransitions = yield* Semaphore.make(1);
   const ref = yield* Ref.make<SessionState & Runtime>({ ...initial, previousResponse: undefined, retryEnabled: true, nextRetryAt: undefined, inFlight: undefined, nextCall: 0, reflecting: [], catchUpUntil: undefined, screenQueue: screens.queue, screenFiles: screens.files });
+  const log: SessionLog["Service"] = {
+    ...targetLog,
+    write: (event) => targetLog.write(event).pipe(Effect.tapError(() =>
+      Ref.update(ref, (state) => ({ ...state, retryEnabled: false, nextRetryAt: undefined, diffUpdate: { status: "stopped" as const } })),
+    )),
+  };
   const supplements = yield* makeSessionSupplement(Ref.get(ref), carriedTerms, screenTransitions.withPermit);
   const reflectPending = Effect.fnUntraced(function* (reflection: { readonly kind: "diff"; readonly reflectedAt: number } | { readonly kind: "stop" }) {
     const pending = yield* supplements.take(reflection.kind === "stop");
@@ -399,10 +406,10 @@ const openSession = Effect.fnUntraced(function* (initial: SessionState, screens:
     if (event !== undefined) yield* log.write(event);
   });
 
-  const transition = <A>(effect: Effect.Effect<A>): Effect.Effect<A> =>
+  const transition = <A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A, E | SessionWriteFailed, R> =>
     screenTransitions.withPermit(effect.pipe(Effect.tap(() => notifyDiscussion))).pipe(Effect.uninterruptible);
 
-  const nameSpeaker = (change: SpeakerNameChange): Effect.Effect<void> =>
+  const nameSpeaker = (change: SpeakerNameChange): Effect.Effect<void, SessionWriteFailed> =>
     Effect.uninterruptible(transition(Effect.gen(function* () {
       const next = yield* Ref.modify(ref, (s): [SpeakerNameTable | undefined, SessionState & Runtime] => {
         const next = updateSpeakerName(s.speakerNames, change);
@@ -457,12 +464,12 @@ const openSession = Effect.fnUntraced(function* (initial: SessionState, screens:
   });
   if (initial.diffUpdate.status === "paused") yield* scheduleRetry;
 
-  function runCall(updater: DiffUpdater["Service"], fresh: readonly Remark[]): Effect.Effect<void> {
+  function runCall(updater: DiffUpdater["Service"], fresh: readonly Remark[]): Effect.Effect<void, SessionWriteFailed> {
     return callUpdater(updater, fresh).pipe(
       Effect.onExit((exit) =>
         Effect.gen(function* () {
           yield* Ref.update(ref, (s) => ({ ...s, inFlight: undefined }));
-          if (Exit.isFailure(exit) && Cause.hasInterruptsOnly(exit.cause)) return;
+          if (Exit.isFailure(exit) && (Cause.hasInterruptsOnly(exit.cause) || Result.isSuccess(Cause.findError(exit.cause)))) return;
           const state = yield* Ref.get(ref);
           if (state.diffUpdate.status === "paused") {
             yield* scheduleRetry;
@@ -475,7 +482,7 @@ const openSession = Effect.fnUntraced(function* (initial: SessionState, screens:
     );
   }
 
-  function callUpdater(updater: DiffUpdater["Service"], fresh: readonly Remark[]): Effect.Effect<void> {
+  function callUpdater(updater: DiffUpdater["Service"], fresh: readonly Remark[]): Effect.Effect<void, SessionWriteFailed> {
     return Effect.uninterruptibleMask((restore) =>
       Effect.gen(function* () {
         const state = (yield* Ref.get(ref)).diffUpdate;
@@ -583,7 +590,7 @@ const openSession = Effect.fnUntraced(function* (initial: SessionState, screens:
     );
   }
 
-  const idle: Effect.Effect<void> = Effect.gen(function* () {
+  const idle: Effect.Effect<void, SessionWriteFailed> = Effect.gen(function* () {
     for (;;) {
       const { inFlight } = yield* Ref.get(ref);
       if (!inFlight) return;
@@ -645,7 +652,7 @@ const openSession = Effect.fnUntraced(function* (initial: SessionState, screens:
 
 type NewSessionOptions = { readonly title: string; readonly criteria?: readonly string[]; readonly images?: boolean; readonly logShiftMs?: number; readonly carriedTerms?: readonly string[] };
 
-const createSession = Effect.fnUntraced(function* ({ title, criteria, images = true, logShiftMs = 0, carriedTerms = [] }: NewSessionOptions, updater: DiffUpdater["Service"] | undefined): Effect.fn.Return<Session, never, Scope.Scope | SessionLog> {
+const createSession = Effect.fnUntraced(function* ({ title, criteria, images = true, logShiftMs = 0, carriedTerms = [] }: NewSessionOptions, updater: DiffUpdater["Service"] | undefined): Effect.fn.Return<Session, SessionWriteFailed, Scope.Scope | SessionLog> {
   const log = yield* SessionLog;
   yield* log.write({ type: "start", title, ...(criteria?.length ? { criteria: [...criteria] } : {}) });
   if (!images) yield* log.write({
@@ -677,7 +684,7 @@ export const makeSession = Effect.fnUntraced(function* (options: NewSessionOptio
 
 export const makeTranscriptSession = (options: NewSessionOptions) => createSession(options, undefined);
 
-export const restoreSession = Effect.fnUntraced(function* (events: Iterable<unknown>): Effect.fn.Return<Session, InvalidLogEvent, Scope.Scope | DiffUpdater | SessionLog> {
+export const restoreSession = Effect.fnUntraced(function* (events: Iterable<unknown>): Effect.fn.Return<Session, InvalidLogEvent | SessionWriteFailed, Scope.Scope | DiffUpdater | SessionLog> {
   const rows = [...events];
   const { screens, ...state } = yield* restoreState(rows);
   const carriedTerms = rows.flatMap((event) => {

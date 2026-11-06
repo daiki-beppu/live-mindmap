@@ -11,9 +11,9 @@ import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promis
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, expect, it, vi } from "@effect/vitest";
-import { NodeHttpClient, NodeServices } from "@effect/platform-node";
+import { NodeFileSystem, NodeHttpClient, NodeServices } from "@effect/platform-node";
 import { HttpClient, type HttpClientRequest } from "effect/http";
-import { ConfigProvider, Console, Deferred, Effect, Exit, Fiber, Layer, Queue, Ref, Scope, Stream, type Cause } from "effect";
+import { ConfigProvider, Console, Deferred, Effect, Exit, Fiber, FileSystem, Layer, PlatformError, Queue, Ref, Scope, Stream, type Cause } from "effect";
 import { TestClock } from "effect/testing";
 import { MapCapture } from "../src/capture.ts";
 import { AgentSdk, layerClaude } from "../src/claude.ts";
@@ -35,6 +35,8 @@ import { fakeScreenJpeg } from "./fixtures/screenJpeg.ts";
 import { updaterLayer } from "./fixtures/sessionLayers.ts";
 import { connect } from "./fixtures/wsClient.ts";
 import { runCliEntry } from "./fixtures/cliEntry.ts";
+import { EXPORT_FILE, LOG_FILE } from "../src/sessionFiles.ts";
+import { fakeReadings } from "./fixtures/readings.ts";
 
 const apps = [{ bundleID: "us.zoom.xos", name: "zoom.us" }];
 
@@ -54,6 +56,8 @@ type AttemptScript = {
 
 const makeFakeHelpers = (attempts: AttemptScript[], permission: { microphone: "authorized" | "denied" | "notDetermined"; screenCapture: boolean } = { microphone: "authorized", screenCapture: true }) => {
   const calls: HelperLaunchOptions[] = [];
+  const queues: Queue.Queue<unknown, Cause.Done>[] = [];
+  const stopped: number[] = [];
   const sent: boolean[] = []; // server から helper へ送られた休止の指示（paused の値を届いた順に）
   const check = ({ screen }: { readonly screen: boolean }) => Effect.sync(() => {
     return { microphone: permission.microphone, ...(screen ? { screenCapture: permission.screenCapture } : {}), speechJa: { status: "installed" as const, installedLocales: ["ja-JP"] } };
@@ -69,6 +73,7 @@ const makeFakeHelpers = (attempts: AttemptScript[], permission: { microphone: "a
         return yield* new HelperLaunchFailure({ stderrTail: [], exit: { code: null, signal: "SIGTERM" } });
       }
       const queue = yield* Queue.make<unknown, Cause.Done>();
+      queues.push(queue);
       for (const event of script.events ?? []) Queue.offerUnsafe(queue, JSON.stringify(event));
       const exitDeferred = yield* Deferred.make<HelperExitInfo>();
       const stoppedRef = yield* Ref.make(false);
@@ -84,6 +89,7 @@ const makeFakeHelpers = (attempts: AttemptScript[], permission: { microphone: "a
       const stop = Effect.gen(function* () {
         const already = yield* Ref.getAndSet(stoppedRef, true);
         if (already) return;
+        stopped.push(index);
         yield* Queue.end(queue);
         yield* Deferred.succeed(exitDeferred, script.exitAfterStop ?? { code: null, signal: "SIGTERM" });
       });
@@ -91,10 +97,14 @@ const makeFakeHelpers = (attempts: AttemptScript[], permission: { microphone: "a
       return { events: Stream.fromQueue(queue) as Stream.Stream<string>, stop, exit: Deferred.await(exitDeferred), stderrTail: Effect.succeed(script.stderrTail ?? []), send: (instruction: { type: string; paused: boolean }) => Effect.sync(() => { if (instruction.type === "self-pause") sent.push(instruction.paused); }) };
     });
   const service = { apps: Effect.succeed(apps), check, creationDate: () => Effect.succeed(null), launch };
-  return { helpers: Helpers.of({ ...service, installSpeechJa: Stream.die("このテストでは日本語モデルを導入しない") }), calls, sent };
+  const emit = (event: unknown) => Effect.suspend(() => {
+    const queue = queues.at(-1);
+    return queue === undefined ? Effect.die("ヘルパーが起動していません") : Queue.offer(queue, JSON.stringify(event));
+  });
+  return { helpers: Helpers.of({ ...service, installSpeechJa: Stream.die("このテストでは日本語モデルを導入しない") }), calls, sent, stopped, emit };
 };
 
-const resourceWithFakeHelpers = Effect.fnUntraced(function* (attempts: AttemptScript[], options: { managedDeps?: Layer.Layer<ManagedDeps>; updaterLayer?: () => Layer.Layer<DiffUpdater>; permission?: { microphone: "authorized" | "denied" | "notDetermined"; screenCapture: boolean }; viewing?: ServerLayers["viewing"] } & Pick<ExportServicesOptions, "capture" | "build" | "mix"> = {}) {
+const resourceWithFakeHelpers = Effect.fnUntraced(function* (attempts: AttemptScript[], options: { managedDeps?: Layer.Layer<ManagedDeps>; updaterLayer?: () => Layer.Layer<DiffUpdater>; permission?: { microphone: "authorized" | "denied" | "notDetermined"; screenCapture: boolean }; viewing?: ServerLayers["viewing"]; writeOutStarted?: Deferred.Deferred<void> } & Pick<ExportServicesOptions, "capture" | "build" | "mix" | "fileSystem" | "readings"> = {}) {
   const dir = yield* Effect.acquireRelease(
     Effect.tryPromise(() => mkdtemp(join(tmpdir(), "live-mindmap-http-fake-"))),
     (path) => Effect.promise(() => rm(path, { recursive: true, force: true })),
@@ -104,13 +114,23 @@ const resourceWithFakeHelpers = Effect.fnUntraced(function* (attempts: AttemptSc
   const startupChecks = StartupChecks.layer({
     prepareUpdater: () => Effect.succeed({ layer: options.updaterLayer ? options.updaterLayer() : updaterLayer(() => Effect.succeed({ ops: [] })) }),
   }).pipe(Layer.provide(fakeExportServices({ capture: options.capture })));
-  const sessionSinksLayer = SessionSinks.layer.pipe(Layer.provide(fakeExportServices({ capture: options.capture, build: options.build, mix: options.mix })));
+  const realSinks = SessionSinks.layer.pipe(Layer.provide(fakeExportServices({ capture: options.capture, build: options.build, mix: options.mix, fileSystem: options.fileSystem, readings: options.readings })));
+  const writeOutStarted = options.writeOutStarted;
+  const sessionSinksLayer = writeOutStarted === undefined ? realSinks : Layer.effect(SessionSinks, Effect.map(SessionSinks, (sinks) => SessionSinks.of({
+    ...sinks,
+    open: (args) => Effect.map(sinks.open(args), (sink) => ({
+      ...sink,
+      end: (ending) => Effect.map(sink.end(ending), ({ writeOut }) => ({
+        writeOut: Effect.andThen(Deferred.succeed(writeOutStarted, undefined), writeOut),
+      })),
+    })),
+  }))).pipe(Layer.provide(realSinks));
   const server = yield* startedServer(
     { port: 0, sessionsDir },
     { helpers: Layer.succeed(Helpers)(fakeHelpers.helpers), startupChecks, sessionSinks: sessionSinksLayer, managedDeps: options.managedDeps ?? readyManagedDeps, ...(options.viewing === undefined ? {} : { viewing: options.viewing }) },
   );
   return {
-    server, calls: fakeHelpers.calls, sent: fakeHelpers.sent, sessionsDir,
+    server, calls: fakeHelpers.calls, sent: fakeHelpers.sent, stopped: fakeHelpers.stopped, emit: fakeHelpers.emit, sessionsDir,
     request: (method: string, path: string, body: string | undefined, origin: string | undefined) => fetch(
       `http://127.0.0.1:${server.port}${path}`,
       { method, headers: { "content-type": "application/json", ...(origin === undefined ? {} : { origin }) }, ...(body === undefined ? {} : { body }) },
@@ -119,7 +139,7 @@ const resourceWithFakeHelpers = Effect.fnUntraced(function* (attempts: AttemptSc
 });
 
 describe("セッションのディスク失敗の HTTP・CLI 応答", () => {
-  const resource = Effect.fnUntraced(function* (exports: Pick<ExportServicesOptions, "capture" | "build" | "mix"> = {}) {
+  const resource = Effect.fnUntraced(function* (exports: Pick<ExportServicesOptions, "capture" | "build" | "mix" | "fileSystem" | "readings"> & { updaterLayer?: () => Layer.Layer<DiffUpdater>; writeOutStarted?: Deferred.Deferred<void> } = {}) {
     const r = yield* resourceWithFakeHelpers([{}], exports);
     const responses: { status: number; body: unknown }[] = [];
     const observedClient = Layer.effect(HttpClient.HttpClient, Effect.map(HttpClient.HttpClient, (client) =>
@@ -139,6 +159,154 @@ describe("セッションのディスク失敗の HTTP・CLI 応答", () => {
     );
     return { ...r, responses, cli: (argv: string[]) => runCliEntry(argv, cliLayer) };
   });
+
+  for (const source of ["user", "screen"] as const) {
+    for (const denied of [false, true]) {
+      it.live(`${source} 語彙の読み待機中に stop すると保存の${denied ? "失敗" : "成功"}が HTTP・CLI に届く`, () => Effect.gen(function* () {
+        const releaseReading = yield* Deferred.make<void>();
+        const writeOutStarted = yield* Deferred.make<void>();
+        const readings = fakeReadings({ "港南店": "kounanten" });
+        readings.gate.current = releaseReading;
+        const failed: string[] = [];
+        const files = Layer.effect(FileSystem.FileSystem, Effect.map(FileSystem.FileSystem, (fs) => ({
+          ...fs,
+          writeFileString: (path, data, options) => Effect.suspend(() => {
+            if (denied && path.endsWith(`/${LOG_FILE}`) && JSON.parse(data).type === "vocab") {
+              failed.push(path);
+              return Effect.fail(PlatformError.systemError({ _tag: "PermissionDenied", module: "FileSystem", method: "writeFileString", pathOrDescriptor: path, cause: new Error("EACCES: 合成の書込拒否") }));
+            }
+            return fs.writeFileString(path, data, options);
+          }),
+        } satisfies FileSystem.FileSystem))).pipe(Layer.provide(NodeFileSystem.layer));
+        const r = yield* resource({ fileSystem: files, readings, writeOutStarted });
+        const vocabPath = join(dirname(r.sessionsDir), "vocab.txt");
+        yield* Effect.tryPromise(() => writeFile(vocabPath, "港南店\n"));
+        const started = yield* r.cli(["start", "--app", "us.zoom.xos", "--no-audio", ...(source === "user" ? ["--no-screen", "--vocab", vocabPath] : [])]);
+        expect(started.code).toBe(0);
+        const dir = started.stdout.trim();
+        const path = join(dir, LOG_FILE);
+        if (source === "screen") yield* r.emit({ type: "screen", start: 0, image: "aW1hZ2U=", lines: ["港南店"] });
+        yield* Effect.tryPromise(() => vi.waitFor(() => expect(readings.calls).toEqual([["港南店"]])));
+        const stopping = yield* Effect.forkChild(r.cli(["stop"]));
+        yield* Deferred.await(writeOutStarted).pipe(Effect.timeout("5 seconds"));
+        expect(failed).toEqual([]);
+        yield* Deferred.succeed(releaseReading, undefined);
+        const stopped = yield* Fiber.join(stopping);
+        const response = r.responses.at(-1);
+        expect(failed).toEqual(denied ? [path] : []);
+        expect({ status: response?.status, code: stopped.code }).toEqual({ status: denied ? 500 : 200, code: denied ? 1 : 0 });
+        if (denied) {
+          expect(response?.body).toMatchObject({ error: expect.stringContaining(path) });
+          expect(response?.body).toMatchObject({ error: expect.stringContaining("EACCES: 合成の書込拒否") });
+          expect(stopped.stderr).toContain(path);
+          expect(stopped.stderr).toContain("EACCES: 合成の書込拒否");
+        } else {
+          const rows = (yield* Effect.tryPromise(() => readFile(path, "utf8"))).trim().split("\n").map((line) => JSON.parse(line));
+          expect(rows).toContainEqual(expect.objectContaining({ type: "vocab", words: [{ surface: "港南店", romaji: "kounanten", source }] }));
+        }
+        const after = yield* Effect.tryPromise(() => r.request("GET", "/session/status", undefined, undefined));
+        expect(after.status).toBe(200);
+        expect(yield* Effect.tryPromise(() => after.json())).toMatchObject({ status: "none" });
+      }));
+    }
+  }
+
+  for (const file of [LOG_FILE, EXPORT_FILE]) {
+    for (const asynchronous of [false, true]) {
+      it.live(`${asynchronous ? "差分更新の完了" : "ヘルパーイベント"}で ${file} が書けなくなると取り込みを止め、status と stop が理由を返す`, () => Effect.gen(function* () {
+        let deniedPath: string | undefined;
+        let cause = new Error("EACCES: 合成の書込拒否");
+        const failed: string[] = [];
+        const failedEvents: string[] = [];
+        let lastLogType = "";
+        const files = Layer.effect(FileSystem.FileSystem, Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          return { ...fs, writeFileString: (path, data, options) => Effect.suspend(() => {
+            if (path.endsWith(`/${LOG_FILE}`)) {
+              const event: { type: string } = JSON.parse(data);
+              lastLogType = event.type;
+            }
+            if (path !== deniedPath) return fs.writeFileString(path, data, options);
+            failed.push(path);
+            failedEvents.push(lastLogType);
+            return Effect.fail(PlatformError.systemError({ _tag: "PermissionDenied", module: "FileSystem", method: "writeFileString", pathOrDescriptor: path, cause }));
+          }) } satisfies FileSystem.FileSystem;
+        })).pipe(Layer.provide(NodeFileSystem.layer));
+        const updating = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        const r = yield* resource({ fileSystem: files, updaterLayer: () => updaterLayer(() => Effect.gen(function* () {
+          yield* Deferred.succeed(updating, undefined);
+          if (asynchronous) yield* Deferred.await(release);
+          return { ops: [] };
+        })) });
+        const started = yield* r.cli(["start", "--app", "us.zoom.xos", "--no-audio", "--no-screen"]);
+        expect(started.code).toBe(0);
+        const dir = started.stdout.trim();
+        const path = join(dir, file);
+        const status = () => r.request("GET", "/session/status", undefined, undefined);
+        expect(yield* Effect.tryPromise(async () => (await status()).json())).toMatchObject({ status: "running", dir });
+        expect(r.calls).toHaveLength(1);
+        expect(r.stopped).toEqual([]);
+        const savedBefore = yield* Effect.tryPromise(() => readFile(path, "utf8"));
+        expect(savedBefore.length).toBeGreaterThan(0);
+
+        if (asynchronous) {
+          yield* r.emit({ type: "speaker-off", start: 0, reason: "モデルなし" });
+          yield* r.emit({ type: "remark", track: "相手", start: 0, end: 5, text: "合成の会議です" });
+          yield* r.emit({ type: "remark", track: "相手", start: 5, end: 9, text: "次の議題です" });
+          yield* r.emit({ type: "tap-silent", start: 9 });
+          yield* Deferred.await(updating).pipe(Effect.timeout("5 seconds"));
+          yield* Effect.tryPromise(() => vi.waitFor(async () => {
+            const rows: { type: string; start?: number }[] = (await readFile(join(dir, LOG_FILE), "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+            expect(rows).toContainEqual(expect.objectContaining({ type: "tap-silent", start: 9 }));
+          }));
+        }
+        deniedPath = path;
+        if (asynchronous) yield* Deferred.succeed(release, undefined);
+        else yield* r.emit({ type: "screen-off", start: 10, reason: "許可なし" });
+
+        yield* Effect.tryPromise(() => vi.waitFor(async () => {
+          expect(failed).toContain(path);
+          expect(failedEvents[0]).toBe(asynchronous ? "diff" : "screen-off");
+          expect(await (await status()).json()).toMatchObject({ status: "stopped", dir, restarts: 0 });
+          expect(r.stopped).toEqual([0]);
+        }));
+        const reported = yield* r.cli(["status"]);
+        expect(reported.code).toBe(0);
+        const lines = reported.stdout.trimEnd().split("\n");
+        expect(lines[0]).toBe("止まった");
+        const reason = lines.find((line) => line.startsWith("止まった理由: "));
+        expect(reason).toContain(path);
+        expect(reason).toContain("EACCES: 合成の書込拒否");
+        expect(r.calls).toHaveLength(1);
+
+        deniedPath = undefined;
+        const resumed = yield* r.cli(["resume"]);
+        expect(resumed.code).toBe(1);
+        expect(resumed.stderr).toContain(path);
+        expect(resumed.stderr).toContain("EACCES: 合成の書込拒否");
+        expect(r.calls).toHaveLength(1);
+
+        deniedPath = path;
+        cause = new Error("ENOSPC: 終了時の別の失敗");
+        const stopped = yield* r.cli(["stop"]);
+        expect(stopped.code).toBe(1);
+        expect(stopped.stderr).toContain(path);
+        expect(stopped.stderr).toContain("EACCES: 合成の書込拒否");
+        const after = yield* Effect.tryPromise(() => status());
+        expect(after.status).toBe(200);
+        expect(yield* Effect.tryPromise(() => after.json())).toMatchObject({ status: "none" });
+        expect(r.calls).toHaveLength(1);
+
+        deniedPath = undefined;
+        expect((yield* r.cli(["start", "--app", "us.zoom.xos", "--no-audio", "--no-screen"])).code).toBe(0);
+        const next = yield* r.cli(["status"]);
+        expect(next.stdout.trimEnd().split("\n")[0]).toBe("動いている");
+        expect(next.stdout.trimEnd().split("\n").filter((line) => line.startsWith("止まった理由: "))).toEqual([]);
+        expect((yield* r.cli(["stop"])).code).toBe(0);
+      }));
+    }
+  }
 
   it.live("PNG と HTML の失敗は HTTP 200 の警告から CLI の stderr に一行ずつ届き、成功した形式と exit 0 を保つ", () => Effect.gen(function* () {
     const r = yield* resource({ capture: failingCapture("撮影に失敗\n詳細"), build: failingBuild("ビルドに失敗\n詳細") });
