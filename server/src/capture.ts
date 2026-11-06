@@ -20,12 +20,23 @@ export const withCapturePage = Effect.fnUntraced(function* <A, E, R>(
   fn: (page: Page) => Effect.Effect<A, E, R>,
 ) {
   const playwright = yield* Playwright;
+  // Why: 使えない撮影で Vite を起動すると、閉じた後も最適化の書き出しが続いて deps_temp が残る。
+  const browser = yield* Effect.acquireRelease(
+    playwright.launch.pipe(
+      Effect.mapError((e) =>
+        new CaptureFailed({ message: e._tag === "ChromiumMissing" ? e.message : `Chromium を起動できません（${e.message}）` }),
+      ),
+    ),
+    (browser) => Effect.promise(() => browser.close()),
+  );
   const vite = yield* Effect.acquireRelease(
     Effect.tryPromise({
       try: () =>
         createViteServer({
           root: WEB_ROOT,
           configFile: join(WEB_ROOT, "vite.config.ts"),
+          // Why: 設定の違う Vite は共有の .vite/deps を作り直す。このページは ws: false で 504 から戻れないので、撮影専用にする。ハッシュは NODE_ENV で変わるので名前に入れる。
+          cacheDir: join(WEB_ROOT, `node_modules/.vite-capture-${process.env.NODE_ENV ?? "development"}`),
           logLevel: "silent",
           clearScreen: false,
           server: { host: "127.0.0.1", port: 0, hmr: false, ws: false },
@@ -37,14 +48,6 @@ export const withCapturePage = Effect.fnUntraced(function* <A, E, R>(
   yield* Effect.tryPromise({ try: () => vite.listen(), catch: failed });
   const url = vite.resolvedUrls?.local[0];
   if (!url) return yield* new CaptureFailed({ message: "撮影用の表示ページの URL を取得できません" });
-  const browser = yield* Effect.acquireRelease(
-    playwright.launch.pipe(
-      Effect.mapError((e) =>
-        new CaptureFailed({ message: e._tag === "ChromiumMissing" ? e.message : `Chromium を起動できません（${e.message}）` }),
-      ),
-    ),
-    (browser) => Effect.promise(() => browser.close()),
-  );
   const page = yield* Effect.tryPromise({ try: () => browser.newPage({ viewport: VIEWPORT, deviceScaleFactor: 2 }), catch: failed });
   yield* Effect.tryPromise({
     try: () =>
