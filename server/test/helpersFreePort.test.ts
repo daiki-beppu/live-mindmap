@@ -1,58 +1,51 @@
 // Helpers.launch が空きポートを探している間（node:net の listen が終わる前）に中断されたら、探すための待受けを閉じる。
-// node:net だけを偽物にし、listen の完了を手元で操作して、中断・遅れて届く割り当てを観測する
+// 待受けを CreatePortProbe で偽物にし、listen の完了を手元で操作して、中断・遅れて届く割り当てを観測する
 import { describe, expect, it } from "@effect/vitest";
 import { Deferred, Effect, Fiber, Layer } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
-import { vi } from "vitest";
 import { INITIAL_SELF_PAUSE_STATE } from "../src/core/selfPause.ts";
-import { Helpers, type HelperLaunchOptions } from "../src/helpers.ts";
+import { CreatePortProbe, Helpers, type HelperLaunchOptions } from "../src/helpers.ts";
 
-const net = await vi.hoisted(async () => {
-  const { EventEmitter } = await import("node:events");
-  class FakeProbe extends EventEmitter {
-    listening = false;
-    closeCalls = 0;
-    onListening: (() => void) | undefined;
-    listen(_port: number, _host: string, onListening: () => void) {
-      this.onListening = onListening;
-      return this;
-    }
-    address() {
-      return { port: 54321, address: "127.0.0.1", family: "IPv4" };
-    }
-    close(callback?: () => void) {
-      this.closeCalls++;
-      this.listening = false;
-      callback?.();
-      return this;
-    }
-    // OS がポートを割り当てた（listen のコールバックを呼ぶ）
-    assign() {
-      this.listening = true;
-      this.onListening?.();
-    }
+class FakeProbe {
+  listening = false;
+  closeCalls = 0;
+  onListening: (() => void) | undefined;
+  once() {}
+  listen(_port: number, _host: string, onListening: () => void) {
+    this.onListening = onListening;
   }
-  return { probes: [] as FakeProbe[], FakeProbe };
-});
-vi.mock("node:net", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("node:net")>()),
-  createServer: () => {
-    const probe = new net.FakeProbe();
-    net.probes.push(probe);
-    return probe;
-  },
-}));
+  address() {
+    return { port: 54321 };
+  }
+  close(callback?: () => void) {
+    this.closeCalls++;
+    this.listening = false;
+    callback?.();
+  }
+  // OS がポートを割り当てた（listen のコールバックを呼ぶ）
+  assign() {
+    this.listening = true;
+    this.onListening?.();
+  }
+}
+
+const probes: FakeProbe[] = [];
+const createFakeProbe = () => {
+  const probe = new FakeProbe();
+  probes.push(probe);
+  return probe;
+};
 
 const neverSpawner = Layer.succeed(ChildProcessSpawner.ChildProcessSpawner)(
   ChildProcessSpawner.make(() => Effect.die("空きポートが決まる前に子プロセスは起動しない")),
 );
 
 const launchWhilePortPending = Effect.gen(function* () {
-  const helpers = yield* Helpers.pipe(Effect.provide(Helpers.layer({ command: "fake", args: [] }).pipe(Layer.provide(neverSpawner))));
+  const helpers = yield* Helpers.pipe(Effect.provide(Helpers.layer({ command: "fake", args: [] }).pipe(Layer.provide(neverSpawner))), Effect.provideService(CreatePortProbe, createFakeProbe));
   const stopRequested = yield* Deferred.make<void>();
   const fiber = yield* Effect.forkChild(Effect.scoped(helpers.launch({ kind: "run", app: "test.app", screen: true, selfPause: INITIAL_SELF_PAUSE_STATE }, stopRequested)));
   yield* Effect.yieldNow;
-  const probe = net.probes.at(-1)!;
+  const probe = probes.at(-1)!;
   return { fiber, probe };
 });
 
@@ -80,11 +73,11 @@ const spawnedCommand = Effect.fnUntraced(function* (options: HelperLaunchOptions
     yield* Deferred.succeed(spawned, command);
     return yield* Effect.never;
   })));
-  const helpers = yield* Helpers.pipe(Effect.provide(Helpers.layer({ command: "server-helper", args: ["fixed-arg"] }).pipe(Layer.provide(spawner))));
+  const helpers = yield* Helpers.pipe(Effect.provide(Helpers.layer({ command: "server-helper", args: ["fixed-arg"] }).pipe(Layer.provide(spawner))), Effect.provideService(CreatePortProbe, createFakeProbe));
   const stopRequested = yield* Deferred.make<void>();
   const fiber = yield* Effect.forkChild(Effect.scoped(helpers.launch(options, stopRequested)));
   yield* Effect.yieldNow;
-  net.probes.at(-1)!.assign();
+  probes.at(-1)!.assign();
   return yield* Effect.raceFirst(Deferred.await(spawned), Effect.andThen(Fiber.join(fiber), Effect.die("spawn の観測前に launch が完了した"))).pipe(Effect.ensuring(Fiber.interrupt(fiber)));
 });
 
