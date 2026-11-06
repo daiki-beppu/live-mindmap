@@ -1,5 +1,3 @@
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Context, Effect, Layer, Schema } from "effect";
 import { createServer as createViteServer } from "vite";
@@ -22,21 +20,14 @@ export const withCapturePage = Effect.fnUntraced(function* <A, E, R>(
   fn: (page: Page) => Effect.Effect<A, E, R>,
 ) {
   const playwright = yield* Playwright;
-  const cacheDir = yield* Effect.acquireRelease(
-    Effect.tryPromise({ try: () => mkdtemp(join(tmpdir(), "live-mindmap-capture-")), catch: failed }),
-    (dir) =>
-      Effect.tryPromise(() => rm(dir, { recursive: true, force: true })).pipe(
-        Effect.ignore({ log: "Debug", message: "撮影の一時キャッシュを消せない" }),
-      ),
-  );
   const vite = yield* Effect.acquireRelease(
     Effect.tryPromise({
       try: () =>
         createViteServer({
           root: WEB_ROOT,
           configFile: join(WEB_ROOT, "vite.config.ts"),
-          // Why: 設定の違う Vite は共有の .vite/deps を作り直す。このページは ws: false で 504 から戻れないので、撮影ごとに専用のキャッシュを持つ。
-          cacheDir,
+          // Why: 設定の違う Vite は共有の .vite/deps を作り直す。このページは ws: false で 504 から戻れないので、撮影専用にする。ハッシュは NODE_ENV で変わるので名前に入れる。
+          cacheDir: join(WEB_ROOT, `node_modules/.vite-capture-${process.env.NODE_ENV ?? "development"}`),
           logLevel: "silent",
           clearScreen: false,
           server: { host: "127.0.0.1", port: 0, hmr: false, ws: false },
