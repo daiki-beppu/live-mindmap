@@ -1,6 +1,6 @@
 import { helperChecks } from "./fixtures/helperCheck.ts";
 import { describe, expect, it } from "@effect/vitest";
-import { expectTypeOf } from "vitest";
+import { afterEach, beforeEach, expectTypeOf, vi } from "vitest";
 import { Effect, Layer, Result, Stream, type Scope } from "effect";
 import { DiffUpdater } from "../src/core/index.ts";
 import { Helpers, HelperCheckFailure, type HelperCheck } from "../src/helpers.ts";
@@ -55,6 +55,33 @@ const nonClaudeRows = [
 ] as const satisfies ReadonlyArray<{ readonly route: "openai-compatible" | "chatgpt" | "apple"; readonly plan: UpdatePlan }>;
 
 describe("開始前の確かめ", () => {
+  beforeEach(() => vi.stubEnv("ANTHROPIC_API_KEY", "synthetic-key"));
+  afterEach(() => vi.unstubAllEnvs());
+
+  it.effect.each([undefined, ""])("Claude の鍵 %s は認証を試さず警告だけを返す", (key) => Effect.gen(function* () {
+    vi.stubEnv("ANTHROPIC_API_KEY", key);
+    const checks = yield* StartupChecks;
+    const report = yield* checks.report(mapRows[0]);
+    expect(report).toMatchObject({ ready: true, warnings: [expect.stringContaining("ANTHROPIC_API_KEY")] });
+    expect(yield* checks.prepare(mapRows[0])).toMatchObject({ warnings: [] });
+  }).pipe(Effect.provide(checksLayer())));
+
+  it.effect.each(nonClaudeRows)("$route は鍵なしでも鍵警告を返さない", ({ route }) => Effect.gen(function* () {
+    vi.stubEnv("ANTHROPIC_API_KEY", undefined);
+    expect(yield* (yield* StartupChecks).report({ entry: "start", route, screen: false }))
+      .toMatchObject({ ready: true, warnings: [] });
+  }).pipe(Effect.provide(checksLayer())));
+
+  it.effect("Claude の鍵警告は既存の依存警告を消さない", () => Effect.gen(function* () {
+    vi.stubEnv("ANTHROPIC_API_KEY", undefined);
+    const checks = yield* StartupChecks;
+    const prepared = yield* checks.prepare(mapRows[0]);
+    expect(prepared.warnings).toEqual(["警告: chromium（Chromium、約 211MB） がありません。入れるには: pnpm cli install chromium"]);
+    expect(yield* checks.report(mapRows[0])).toMatchObject({ ready: true, warnings: expect.arrayContaining([
+      ...prepared.warnings, expect.stringContaining("ANTHROPIC_API_KEY"),
+    ]) });
+  }).pipe(Effect.provide(checksLayer({ chromium: "missing" }))));
+
   it.effect("入口ごとの入力と準備結果を型で区別する", () => Effect.gen(function* () {
     const checks = yield* StartupChecks;
     // @ts-expect-error recorded は共有画面の入力を受け取らない
@@ -113,6 +140,7 @@ describe("開始前の確かめ", () => {
     const checks = yield* StartupChecks;
     const report = yield* checks.report(input);
     expect(report.ready).toBe(true);
+    expect(report).toHaveProperty("warnings", []);
     expect(yield* checks.prepare(input)).toMatchObject({ warnings: [] });
   }).pipe(Effect.provide(checksLayer())));
 
@@ -200,6 +228,7 @@ describe("開始前の確かめ", () => {
     expect(yield* checks.report(input)).toMatchObject({ ready: true, items: expect.arrayContaining([{ name: "screen-capture", need: "optional", state: "absent" }]) });
     const result = yield* (entry === "start" ? checks.prepare({ ...input, entry, plan }) : checks.prepare({ ...input, entry }));
     expect(result.warnings).toEqual(["画面収録の許可がありません。共有画面は読まず、音声だけで始めます"]);
+    expect(yield* checks.report(input)).toHaveProperty("warnings", result.warnings);
   }).pipe(Effect.provide(checksLayer({}, { ...readyHelper, screenCapture: false }))));
 
   it.effect.each([
@@ -208,6 +237,10 @@ describe("開始前の確かめ", () => {
   ] as const)("マイク $microphone は start と resume を止めない", ({ microphone, warning }) => Effect.gen(function* () {
     const checks = yield* StartupChecks;
     expect((yield* checks.prepare(mapRows[0])).warnings).toEqual([warning]);
+    expect(yield* checks.report(mapRows[0])).toMatchObject({
+      ready: true, warnings: [warning],
+      items: expect.arrayContaining([{ name: "microphone", need: "optional", state: "absent" }]),
+    });
     expect(yield* checks.prepare({ entry: "resume", route: "claude", screen: false })).toEqual({ warnings: [warning] });
   }).pipe(Effect.provide(checksLayer({}, { ...readyHelper, microphone }))));
 
@@ -236,10 +269,12 @@ describe("開始前の確かめ", () => {
   }).pipe(Effect.provide(checksLayer({}, { ...readyHelper, microphone: "denied", screenCapture: false }))));
 
   it.effect("noMap は管理依存がなくても helper と speech-ja だけで通る", () => Effect.gen(function* () {
+    vi.stubEnv("ANTHROPIC_API_KEY", undefined);
     const checks = yield* StartupChecks;
     const input = { entry: "recorded", noMap: true } as const;
     expect(yield* checks.report(input)).toMatchObject({ ready: true, items: [expect.objectContaining({ name: "helper" }), expect.objectContaining({ name: "speech-ja" })] });
     expect(yield* checks.prepare(input)).toEqual({ warnings: [] });
+    expect(yield* checks.report(input)).toHaveProperty("warnings", []);
   }).pipe(Effect.provide(checksLayer({ claude: "missing", chromium: "missing" }))));
 
   it.effect.each([false, true])("recorded noMap=%s は speech-ja がなければ止まる", (noMap) => Effect.gen(function* () {
@@ -250,7 +285,10 @@ describe("開始前の確かめ", () => {
   }).pipe(Effect.provide(checksLayer({}, { ...readyHelper, speechJa: { status: "supported", installedLocales: [] } }))));
 
   it.effect.each([...mapRows, { entry: "resume", route: "claude", screen: false }] as const)("$entry の Chromium 不足は警告して通る", (input) => Effect.gen(function* () {
-    expect((yield* (yield* StartupChecks).prepare(input)).warnings).toEqual(["警告: chromium（Chromium、約 211MB） がありません。入れるには: pnpm cli install chromium"]);
+    const checks = yield* StartupChecks;
+    const prepared = yield* checks.prepare(input);
+    expect(prepared.warnings).toEqual(["警告: chromium（Chromium、約 211MB） がありません。入れるには: pnpm cli install chromium"]);
+    expect(yield* checks.report(input)).toHaveProperty("warnings", prepared.warnings);
   }).pipe(Effect.provide(checksLayer({ chromium: "missing" }))));
 
   it.effect("Chromium の版違いは警告して通る", () => Effect.gen(function* () {
@@ -259,6 +297,7 @@ describe("開始前の確かめ", () => {
     expect((yield* checks.prepare(mapRows[0])).warnings).toEqual([
       `警告: chromium（Chromium、約 211MB） が版違いです（入っている版 0.0.0、固定版 ${chromiumManifest.dependencies["playwright-core"]}）。そろえるには: pnpm cli update chromium`,
     ]);
+    expect(yield* checks.report(mapRows[0])).toHaveProperty("warnings", (yield* checks.prepare(mapRows[0])).warnings);
   }).pipe(Effect.provide(checksLayer({ chromium: "outdated" }))));
 
   it.effect("必須 claude の版違いは ready と準備成功が一致し、版付きの警告になる", () => Effect.gen(function* () {
@@ -267,6 +306,7 @@ describe("開始前の確かめ", () => {
     expect((yield* checks.prepare(mapRows[0])).warnings).toEqual([
       `警告: claude（Claude Agent SDK、約 224MB） が版違いです（入っている版 0.0.0、固定版 ${claudeManifest.dependencies["@anthropic-ai/claude-agent-sdk"]}）。そろえるには: pnpm cli update claude`,
     ]);
+    expect(yield* checks.report(mapRows[0])).toHaveProperty("warnings", (yield* checks.prepare(mapRows[0])).warnings);
   }).pipe(Effect.provide(checksLayer({ claude: "outdated" }))));
 
   it.effect.each(mapRows)("$entry の notice は依存警告と権限警告の後ろに一度だけ付く", (input) => Effect.gen(function* () {

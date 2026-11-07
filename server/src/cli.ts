@@ -962,7 +962,7 @@ const checkCommand = Command.make(
       if (entry === "share") {
         const checked = yield* requestServer(yield* portConfig, ServerRoutes.depsCheck, { query: { names: "cloudflared" } });
         const items = checked.map((item) => ({ ...item, need: "required" as const, install: `pnpm cli install ${item.name}` }));
-        return { ready: missingItems(items).length === 0, items };
+        return { ready: missingItems(items).length === 0, items, warnings: [] };
       }
       if (entry === "resume") return yield* requestServer(yield* portConfig, ServerRoutes.check, { query: { for: "resume" } });
       if (entry === "recorded" && noMap) return yield* requestServer(yield* portConfig, ServerRoutes.check, { query: { for: entry, noMap: "true" } });

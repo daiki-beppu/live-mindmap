@@ -378,7 +378,7 @@ describe("ライブの開始前の確かめ", () => {
     const checked = yield* cli(r.root, r.server.port, ["check", "--for", "start"], "claude");
     expect(checked.code).toBe(3);
     expect(checked.stderr).toBe("");
-    expect(JSON.parse(checked.stdout)).toEqual({ ready: false, items: [
+    expect(JSON.parse(checked.stdout)).toEqual({ ready: false, warnings: expect.any(Array), items: [
       { name: "chromium", need: "optional", state: "ready", size: 211_000_000, install: "pnpm cli install chromium" },
       { name: "claude", need: "required", state: "missing", size: 224_000_000, install: "pnpm cli install claude" },
       ...readyHelperItems,

@@ -67,7 +67,13 @@ export class StartupChecks extends Context.Service<StartupChecks, { readonly rep
     });
     function report(input: Play): Effect.Effect<typeof CheckReport.Type, ManagedDepsFailed>;
     function report(input: Input): Effect.Effect<typeof CheckReport.Type, ManagedDepsFailed, Helpers>;
-    function report(input: Input): Effect.Effect<typeof CheckReport.Type, ManagedDepsFailed> | Effect.Effect<typeof CheckReport.Type, ManagedDepsFailed, Helpers> { return Effect.map(check(input), (checked) => checked.report); }
+    function report(input: Input): Effect.Effect<typeof CheckReport.Type, ManagedDepsFailed> | Effect.Effect<typeof CheckReport.Type, ManagedDepsFailed, Helpers> {
+      return Effect.map(check(input), (checked) => ({
+        ...checked.report,
+        warnings: [...checked.warnings, ...(input.route === "claude" && !process.env.ANTHROPIC_API_KEY
+          ? ["警告: ANTHROPIC_API_KEY が見つかりません。実際の認証は Claude SDK が決定します"] : [])],
+      }));
+    }
     function prepare(input: Play & { readonly plan: UpdatePlan }): Effect.Effect<Prepared, Failure, Scope.Scope>;
     function prepare(input: PrepareMap): Effect.Effect<Prepared, Failure, Helpers | Scope.Scope>;
     function prepare(input: PrepareOnly): Effect.Effect<Warnings, Failure, Helpers>;
