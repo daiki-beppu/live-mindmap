@@ -364,7 +364,7 @@ describe("振り分け: 共有画面", () => {
       const content = q.messages[0]!.message.content;
       expect(Array.isArray(content)).toBe(true);
       if (typeof content === "string") throw new Error("共有画面のブロックが無い");
-      return content.filter((b) => b.type === "image").map((b) => b.source.type === "base64" ? b.source.data : undefined);
+      return content.flatMap((b) => b.type === "image" ? [b.source.type === "base64" ? b.source.data : undefined] : []);
     };
     const encoded = (starts: number[]) => starts.map((start) => Buffer.from([start]).toString("base64"));
     expect(imageData(queries[0]!)).toEqual(encoded([10, 20]));
