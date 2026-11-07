@@ -6,7 +6,8 @@ import { ManagedDeps } from "../src/managedDeps.ts";
 import { readyManagedDeps } from "./fixtures/readyManagedDeps.ts";
 import { unusedApple } from "./fixtures/appleIntelligence.ts";
 import { defaultClaude } from "../src/modelSelection.ts";
-import { DiffUpdatePaused, type DiffUpdateFrame, DiffUpdater, type Op } from "../src/core/index.ts";
+import { DIFF_UPDATE_RETRY_MS, DiffUpdatePaused, type DiffUpdateFrame, DiffUpdater, type Op } from "../src/core/index.ts";
+import { DiffUpdateStopped, type DiffUpdateLifecycle } from "../src/core/diffUpdate.ts";
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -633,21 +634,37 @@ describe("セッションの開始・終了の処理中の保護（要件8・tes
 });
 
 describe("HTTP の失敗応答（要件8〜11）", () => {
+  const cliStatus = Effect.fnUntraced(function* (r: { sessionsDir: string; server: { port: number } }) {
+    const result = yield* runCliEntry(["status"], Layer.mergeAll(
+      NodeServices.layer, unusedApple, forbiddenManagedDeps, NodeHttpClient.layerUndici,
+      fakeExportServices(), fakeScreenJpeg().layer,
+      ConfigProvider.layer(ConfigProvider.fromEnvRecord({
+        HOME: join(dirname(r.sessionsDir), "home"), LIVE_MINDMAP_CONFIG: join(dirname(r.sessionsDir), "absent.config.json"),
+        LIVE_MINDMAP_SESSIONS: r.sessionsDir, LIVE_MINDMAP_PORT: String(r.server.port),
+        LIVE_MINDMAP_MODEL: "", LIVE_MINDMAP_JUDGE: "off",
+      })),
+    ));
+    expect(result.code).toBe(0);
+    return result.stdout;
+  });
+
   it.effect("同じライブセッションの一時停止・再開・終了が接続中と再接続の画面へ届く", () => Effect.gen(function* () {
     let calls = 0;
-    const r = yield* resourceWithFakeHelpers([{ events: [
-      { type: "speaker-off", start: 0, reason: "モデルなし" }, // 相手の発言は話者の確定を待つので、話者分離を使えない helper にして待たせない（Issue #1021）
-      { type: "remark", track: "相手", start: 0, end: 1, text: "最初の発言" },
-      { type: "remark", track: "相手", start: 1, end: 2, text: "次の発言" },
-    ] }], { updaterLayer: () => updaterLayer(() => Effect.suspend(() => {
+    const r = yield* resourceWithFakeHelpers([{}], { updaterLayer: () => updaterLayer(() => Effect.suspend(() => {
       calls++;
-      return calls === 1 ? Effect.fail(new DiffUpdatePaused({ reason: "ChatGPT の利用上限", message: "合成の利用上限" })) : Effect.succeed({ ops: [] });
+      return calls <= 2 ? Effect.fail(new DiffUpdatePaused({ reason: "ChatGPT の利用上限", message: "合成の利用上限", retryAt: 120_000 })) : Effect.succeed({ ops: [] });
     })) });
     const firstScope = yield* Effect.acquireRelease(Scope.make(), (scope) => Scope.close(scope, Exit.void));
     const first = yield* connect(r.server.port, "/ws", undefined).pipe(Scope.provide(firstScope));
     const frames = (all: unknown[]) => all.filter((f): f is DiffUpdateFrame => typeof f === "object" && f !== null && "type" in f && f.type === "diff-update");
     const wait = (all: unknown[], state: DiffUpdateFrame["state"]) => Effect.tryPromise(() => vi.waitFor(() => expect(frames(all).at(-1)?.state).toEqual(state)));
     expect((yield* Effect.tryPromise(() => r.request("POST", "/session/start", '{"app":"us.zoom.xos","audio":false}', undefined))).status).toBe(200);
+    expect.soft(yield* cliStatus(r)).toMatch(/差分更新[^\n]*動いている/);
+    for (const event of [
+      { type: "speaker-off", start: 0, reason: "モデルなし" }, // 相手の発言は話者の確定を待つので、話者分離を使えない helper にして待たせない（Issue #1021）
+      { type: "remark", track: "相手", start: 0, end: 1, text: "最初の発言" },
+      { type: "remark", track: "相手", start: 1, end: 2, text: "次の発言" },
+    ]) yield* r.emit(event);
     const paused = { status: "paused", reason: "ChatGPT の利用上限" } as const;
     yield* wait(first.frames, paused);
     expect(frames(first.frames).map((f) => f.state)).toEqual([{ status: "running" }, paused]);
@@ -659,15 +676,112 @@ describe("HTTP の失敗応答（要件8〜11）", () => {
     yield* Scope.close(firstScope, Exit.void);
     const reconnected = yield* connect(r.server.port, "/ws", undefined);
     yield* wait(reconnected.frames, paused);
-    yield* TestClock.adjust(300_000);
-    yield* wait(reconnected.frames, { status: "running" });
+    const pausedStatus = yield* cliStatus(r);
+    expect.soft(pausedStatus).toMatch(/差分更新[^\n]*一時停止/);
+    expect.soft(pausedStatus).toContain("ChatGPT の利用上限");
+    expect.soft(pausedStatus.split("\n").find((line) => line.includes("最後の失敗"))).toEqual(expect.stringContaining("合成の利用上限"));
+    expect.soft(pausedStatus).toContain("1970-01-01T00:02:00.000Z");
+    expect.soft(pausedStatus.split("\n")[0]).toBe("動いている");
+    yield* TestClock.adjust(120_000);
+    yield* Effect.tryPromise(() => vi.waitFor(() => expect(frames(reconnected.frames)).toHaveLength(2)));
     expect(calls).toBe(2);
+    const retryStatus = yield* cliStatus(r);
+    expect.soft(retryStatus).toContain("1970-01-01T00:07:00.000Z");
+    expect.soft(retryStatus).not.toContain("1970-01-01T00:02:00.000Z");
+    yield* TestClock.adjust(DIFF_UPDATE_RETRY_MS);
+    yield* wait(reconnected.frames, { status: "running" });
+    expect(calls).toBe(3);
+    const resumedStatus = yield* cliStatus(r);
+    expect.soft(resumedStatus).toMatch(/差分更新[^\n]*動いている/);
+    expect.soft(resumedStatus).not.toContain("1970-01-01T00:07:00.000Z");
     expect((yield* Effect.tryPromise(() => r.request("POST", "/session/stop", undefined, undefined))).status).toBe(200);
     yield* wait(reconnected.frames, null);
     const after = yield* connect(r.server.port, "/ws", undefined);
     yield* wait(after.frames, null);
     expect(frames(after.frames)).toEqual([{ type: "diff-update", state: null }]);
   }));
+
+  it.live("cli status は通常の差分更新失敗を更新し、HTTP と CLI の失敗文面に秘密を含めない", () => Effect.gen(function* () {
+    let calls = 0;
+    const secrets = ["synthetic-key-Alpha1980Secret-Bravo1980Secret", "synthetic-bearer-Charlie1980Secret-Delta1980Secret", "synthetic-password-Echo1980Secret-Foxtrot1980Secret"];
+    const messages = [
+      `認証に失敗しました api_key=${secrets[0]} Authorization: Bearer ${secrets[1]} password=${secrets[2]}`,
+      "接続が切れました",
+    ];
+    const claude = layerClaude(defaultClaude.model).pipe(Layer.provide(Layer.succeed(AgentSdk, AgentSdk.of({
+      query: () => { throw new Error(messages[calls++]); },
+    }))));
+    const r = yield* resourceWithFakeHelpers([{}], { updaterLayer: () => Layer.effect(DiffUpdater, Effect.map(DiffUpdater, (updater) => DiffUpdater.of({
+      ...updater,
+      update: (input) => Effect.suspend((): ReturnType<DiffUpdater["Service"]["update"]> => calls < messages.length
+        ? updater.update(input)
+        : Effect.sync(() => { calls++; return { ops: [] }; })),
+    }))).pipe(Layer.provide(claude)) });
+    expect((yield* Effect.tryPromise(() => r.request("POST", "/session/start", '{"app":"us.zoom.xos","audio":false}', undefined))).status).toBe(200);
+    const viewer = yield* connect(r.server.port, "/ws", undefined);
+    yield* r.emit({ type: "speaker-off", start: 0, reason: "モデルなし" });
+    for (let n = 0; n < 3; n++) {
+      yield* r.emit({ type: "remark", track: "相手", start: n * 2, end: n * 2 + 1, text: `合成の発言${n}` });
+      yield* Effect.tryPromise(() => vi.waitFor(() => expect(viewer.frames.filter((f) =>
+        typeof f === "object" && f !== null && "type" in f && f.type === "diff-update",
+      )).toHaveLength(n + 2)));
+      const response = yield* Effect.tryPromise(() => r.request("GET", "/session/status", undefined, undefined));
+      expect(response.status).toBe(200);
+      const body: unknown = yield* Effect.tryPromise(() => response.json());
+      const out = yield* cliStatus(r);
+      const lastFailure = out.split("\n").find((line) => line.includes("最後の失敗"));
+      const explanation = n === 0 ? "認証に失敗しました" : "接続が切れました";
+      expect.soft(lastFailure).toEqual(expect.stringContaining(explanation));
+      expect.soft(JSON.stringify(body)).toContain(explanation);
+      expect.soft(out).toMatch(/差分更新[^\n]*動いている/);
+      expect(out.split("\n")[0]).toBe("動いている");
+      expect.soft(out).toContain("起動し直した回数: 0");
+      if (n > 0) expect.soft(lastFailure).not.toContain("認証に失敗しました");
+      for (const value of [JSON.stringify(body), lastFailure, out]) {
+        const normalized = String(value).toLowerCase().replace(/[^a-z0-9]/g, "");
+        for (const secret of secrets) {
+          for (const part of secret.split("-").slice(2)) expect.soft(normalized).not.toContain(part.toLowerCase());
+        }
+      }
+    }
+    expect(calls).toBe(3);
+    expect((yield* Effect.tryPromise(() => r.request("POST", "/session/stop", undefined, undefined))).status).toBe(200);
+    expect(yield* cliStatus(r)).toBe("セッションなし\n閲覧の共有: 無し\n");
+    expect((yield* Effect.tryPromise(() => r.request("POST", "/session/start", '{"app":"us.zoom.xos","audio":false}', undefined))).status).toBe(200);
+    expect.soft(yield* cliStatus(r)).not.toContain("接続が切れました");
+  }));
+
+  for (const source of ["更新呼び出し", "発言待ち中の停止通知"] as const) {
+    it.live(`cli status は${source}の失敗文面と差分更新の停止を出し、取り込みは動き続ける`, () => Effect.gen(function* () {
+      const notifications = yield* Queue.unbounded<DiffUpdateLifecycle>();
+      const failure = new DiffUpdateStopped({ message: "合成の再起動上限に達しました" });
+      let calls = 0;
+      const r = yield* resourceWithFakeHelpers([{}], { updaterLayer: () => Layer.succeed(DiffUpdater, DiffUpdater.of({
+        lifecycle: Stream.fromQueue(notifications),
+        update: () => Effect.suspend(() => { calls++; return Effect.fail(failure); }),
+      })) });
+      expect((yield* Effect.tryPromise(() => r.request("POST", "/session/start", '{"app":"us.zoom.xos","audio":false}', undefined))).status).toBe(200);
+      const viewer = yield* connect(r.server.port, "/ws", undefined);
+      const waitState = (status: string) => Effect.tryPromise(() => vi.waitFor(() => expect(viewer.frames).toContainEqual({ type: "diff-update", state: { status } })));
+      yield* waitState("running");
+      expect.soft(yield* cliStatus(r)).toMatch(/差分更新[^\n]*動いている/);
+      if (source === "発言待ち中の停止通知") {
+        yield* Queue.offer(notifications, { status: "restarting" });
+        yield* waitState("restarting");
+        expect.soft(yield* cliStatus(r)).toMatch(/差分更新[^\n]*動いている/);
+        yield* Queue.offer(notifications, failure);
+      } else {
+        yield* r.emit({ type: "speaker-off", start: 0, reason: "モデルなし" });
+        yield* r.emit({ type: "remark", track: "相手", start: 0, end: 1, text: "合成の発言" });
+      }
+      yield* waitState("stopped");
+      const out = yield* cliStatus(r);
+      expect.soft(out).toMatch(/差分更新[^\n]*止まった/);
+      expect.soft(out.split("\n").find((line) => line.includes("最後の失敗"))).toEqual(expect.stringContaining(failure.message));
+      expect(out.split("\n")[0]).toBe("動いている");
+      expect(calls).toBe(source === "更新呼び出し" ? 1 : 0);
+    }));
+  }
   // 偽の Helpers の Layer（新しい入口、CT-ENTRY-LAYERS）を使う。fake-helper.ts から attempts・listenDelayMs を
   // 削った後（CT-FAKE-TRIM）は、この 2 本を実物の子プロセスで再現できない（要件92）。期待値は変えない。
   // 1 回目（start の初回起動）は接続してから予期せず終わる（続けて失敗した回に数える）。2・3 回目の失敗で諦める

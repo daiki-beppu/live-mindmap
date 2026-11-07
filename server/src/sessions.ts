@@ -567,13 +567,17 @@ export class Sessions extends Context.Service<Sessions, {
 
       const status: Effect.Effect<IntakeStatusReport> = Effect.gen(function* () {
         const current = yield* Ref.get(state);
-        if (current.kind === "recorded") return { status: "running", dir: current.recorded.dir, restarts: 0 };
+        if (current.kind === "recorded") {
+          const diffUpdate = yield* current.recorded.sink.diffUpdateStatus;
+          return { status: "running", dir: current.recorded.dir, restarts: 0, ...(diffUpdate === undefined ? {} : { diffUpdate }) };
+        }
         if (current.kind === "starting" || current.kind === "stopping") return { status: "transition" };
         if (current.kind !== "live") return { status: "none" };
         const { live } = current;
         const lastInterruptedAt = yield* Ref.get(live.lastInterruptedAt);
         const failure = yield* live.sink.writeError;
         const meetingTab = yield* live.meetingTabNotice.status;
+        const diffUpdate = yield* live.sink.diffUpdateStatus;
         return {
           status: yield* Ref.get(live.intake),
           dir: live.dir,
@@ -581,6 +585,7 @@ export class Sessions extends Context.Service<Sessions, {
           ...(lastInterruptedAt === undefined ? {} : { lastInterruptedAt }),
           ...(failure === undefined ? {} : { stoppedReason: failure.message }),
           ...(meetingTab === undefined ? {} : { meetingTab }),
+          ...(diffUpdate === undefined ? {} : { diffUpdate }),
         };
       });
 
