@@ -1,5 +1,5 @@
 import { Popover } from "@foldkit/ui";
-import { Option, Schema } from "effect";
+import { Option, Schema, Struct } from "effect";
 import { Update } from "foldkit";
 import type { Html, HtmlBuilder } from "foldkit/html";
 import { modifyFields } from "foldkit/struct";
@@ -19,19 +19,7 @@ import { Message } from "./message.ts";
 
 const Session = Schema.Struct({
   mapSurface: MapSurface.Stored,
-  sessionLayout: Schema.Struct({
-    captionsHidden: SessionLayout.Model.fields.captionsHidden,
-    intake: SessionLayout.Model.fields.intake,
-    intakeToast: SessionLayout.Model.fields.intakeToast,
-    screenToast: SessionLayout.Model.fields.screenToast,
-    tapToast: SessionLayout.Model.fields.tapToast,
-    discussionToast: SessionLayout.Model.fields.discussionToast,
-    viewingToast: SessionLayout.Model.fields.viewingToast,
-    diffUpdate: SessionLayout.Model.fields.diffUpdate,
-    selfPaused: SessionLayout.Model.fields.selfPaused,
-    local: SessionLayout.Model.fields.local,
-    nameEdit: SessionLayout.Model.fields.nameEdit,
-  }),
+  sessionLayout: SessionLayout.Model.mapFields(Struct.omit(["captions"])),
   keyList: Popover.Model,
 });
 
