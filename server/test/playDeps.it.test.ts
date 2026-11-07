@@ -73,7 +73,7 @@ describe("サーバーを使わない再生の開始前の確かめ", () => {
     const result = yield* localCli(root, ["check", "--for", "play"]);
     expect(result.code).toBe(3);
     expect(result.stderr).toBe("");
-    expect(JSON.parse(result.stdout)).toEqual({ ready: false, items: [
+    expect(JSON.parse(result.stdout)).toEqual({ ready: false, warnings: expect.any(Array), items: [
       { name: "chromium", need: "optional", state: "missing", size: 211_000_000, install: "pnpm cli install chromium" },
       { name: "claude", need: "required", state: "missing", size: 224_000_000, install: "pnpm cli install claude" },
     ] });

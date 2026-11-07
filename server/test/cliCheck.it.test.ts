@@ -9,7 +9,7 @@ import { runCliEntry } from "./fixtures/cliEntry.ts";
 import { forbiddenManagedDeps } from "./fixtures/forbiddenManagedDeps.ts";
 import { unusedApple } from "./fixtures/appleIntelligence.ts";
 import { fakeScreenJpeg } from "./fixtures/screenJpeg.ts";
-import { vi } from "vitest";
+import { afterEach, beforeEach, vi } from "vitest";
 import { Helpers, HelperCheckFailure, type HelperCheck } from "../src/helpers.ts";
 import { CheckReport } from "../src/managedDepsProtocol.ts";
 import { helperChecks, readyHelperItems } from "./fixtures/helperCheck.ts";
@@ -24,13 +24,16 @@ type CheckItem = DepItem;
 const states = ["ready", "missing", "outdated", "absent"] as const;
 const chromium = (need: CheckItem["need"], state: CheckItem["state"]): CheckItem => ({ name: "chromium", need, state });
 const claudeMissing = { name: "claude", need: "required", state: "missing" } as const;
-const responseFor = (ready: boolean, item: CheckItem) => ({ ready, items: [{ ...item, size: item.name === "claude" ? 224_000_000 : 211_000_000, install: `pnpm cli install ${item.name}` }, ...readyHelperItems] });
+const responseFor = (ready: boolean, item: CheckItem) => ({ ready, warnings: expect.any(Array), items: [{ ...item, size: item.name === "claude" ? 224_000_000 : 211_000_000, install: `pnpm cli install ${item.name}` }, ...readyHelperItems] });
+
+beforeEach(() => vi.stubEnv("ANTHROPIC_API_KEY", "synthetic-server-key"));
+afterEach(() => vi.unstubAllEnvs());
 
 const fakeDeps = (result: Effect.Effect<ReadonlyArray<CheckItem>, ManagedDepsFailed>) => {
   const check = vi.fn((_names: ReadonlyArray<string>) => result);
   const install = vi.fn((_names: ReadonlyArray<string>) => Stream.die("check は導入しない"));
   const load = vi.fn((_name: string) => Effect.die("check は読み込まない"));
-  return { service: ManagedDeps.of({ executable: () => Effect.die("実行ファイル取得は対象外"), check, install, update: () => Stream.die("更新は対象外"), load }), check, install };
+  return { service: ManagedDeps.of({ executable: () => Effect.die("実行ファイル取得は対象外"), check, install, update: () => Stream.die("更新は対象外"), load }), check, install, load };
 };
 
 const serverWith = Effect.fnUntraced(function* (dir: string, deps: ManagedDeps["Service"], helperState?: HelperCheck | HelperCheckFailure) {
@@ -95,7 +98,7 @@ describe.each(["HTTP", "CLI"] as const)("recorded の開始前の確かめ（%s�
       expect(result.stderr).toBe("");
       report = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(CheckReport))(result.stdout);
     }
-    expect(report).toEqual({ ready: testCase.ready, items: [
+    expect(report).toEqual({ ready: testCase.ready, warnings: testCase.noMap ? [] : ["警告: chromium（Chromium、約 211MB） がありません。入れるには: pnpm cli install chromium"], items: [
       ...(testCase.noMap ? [] : [
         { name: "chromium", need: "optional", state: "missing", size: 211_000_000, install: "pnpm cli install chromium" },
         { name: "claude", need: testCase.claudeNeed, state: testCase.claudeState, size: 224_000_000, install: "pnpm cli install claude" },
@@ -117,7 +120,7 @@ it.live("HTTP recorded は不正な noMap を確認前に拒否する", () => Ef
   const server = yield* serverWith(dir, deps.service);
   const valid = yield* Effect.tryPromise(() => fetch(`http://127.0.0.1:${server.port}/check?for=recorded&noMap=true`));
   expect(valid.status).toBe(200);
-  expect(yield* Effect.tryPromise(() => valid.json())).toEqual({ ready: true, items: recordedHelperItems });
+  expect(yield* Effect.tryPromise(() => valid.json())).toEqual({ ready: true, warnings: [], items: recordedHelperItems });
   server.check.mockClear();
   const response = yield* Effect.tryPromise(() => fetch(`http://127.0.0.1:${server.port}/check?for=recorded&noMap=invalid`));
   expect(response.status).toBe(400);
@@ -126,6 +129,34 @@ it.live("HTTP recorded は不正な noMap を確認前に拒否する", () => Ef
 }).pipe(Effect.scoped));
 
 describe("開始せずに確かめる CLI check", () => {
+  it.live.each([
+    { key: undefined, state: "ready", ready: true, code: 0 },
+    { key: "synthetic-server-key", state: "ready", ready: true, code: 0 },
+    { key: undefined, state: "missing", ready: false, code: 3 },
+    { key: "synthetic-server-key", state: "missing", ready: false, code: 3 },
+  ] as const)("Claude のサーバー鍵 $key と依存 $state でも ready=$ready・exit $code を保つ", ({ key, state, ready, code }) => Effect.gen(function* () {
+    vi.stubEnv("ANTHROPIC_API_KEY", key);
+    const dir = yield* temporaryDeps;
+    const deps = fakeDeps(Effect.succeed([chromium("optional", "ready"), { ...claudeMissing, state }]));
+    const server = yield* serverWith(dir, deps.service);
+    const response = yield* Effect.tryPromise(() => fetch(`http://127.0.0.1:${server.port}/check?route=claude`));
+    expect(response.status).toBe(200);
+    const httpReport: unknown = yield* Effect.tryPromise(() => response.json());
+    expect(httpReport).toEqual({ ready, warnings: key === undefined ? [expect.stringContaining("ANTHROPIC_API_KEY")] : [], items: [
+      { name: "chromium", need: "optional", state: "ready", size: 211_000_000, install: "pnpm cli install chromium" },
+      { name: "claude", need: "required", state, size: 224_000_000, install: "pnpm cli install claude" },
+      ...readyHelperItems,
+    ] });
+    const result = yield* runCheck(dir, server.port);
+    expect(result.code).toBe(code);
+    expect(result.stderr).toBe("");
+    expect(yield* Schema.decodeUnknownEffect(Schema.fromJsonString(CheckReport))(result.stdout)).toEqual(httpReport);
+    expect(deps.load).not.toHaveBeenCalled();
+    expect(deps.install).not.toHaveBeenCalled();
+    expect(server.launch).not.toHaveBeenCalled();
+    expect(server.prepareUpdater).not.toHaveBeenCalled();
+  }).pipe(Effect.scoped));
+
   it.live("HTTP は不正なモデル経路を状態確認前に拒否する", () => Effect.gen(function* () {
     const dir = yield* temporaryDeps;
     const deps = fakeDeps(Effect.succeed([claudeMissing]));
@@ -140,7 +171,7 @@ describe("開始せずに確かめる CLI check", () => {
     const server = yield* serverWith(dir, deps.service);
     const response = yield* Effect.tryPromise(() => fetch(`http://127.0.0.1:${server.port}/check`));
     expect(response.status).toBe(200);
-    expect(yield* Effect.tryPromise(() => response.json())).toEqual({ ready: false, items: [
+    expect(yield* Effect.tryPromise(() => response.json())).toEqual({ ready: false, warnings: ["警告: chromium（Chromium、約 211MB） がありません。入れるには: pnpm cli install chromium"], items: [
       { name: "chromium", need: "optional", state: "missing", size: 211_000_000, install: "pnpm cli install chromium" },
       { name: "claude", need: "required", state: "missing", size: 224_000_000, install: "pnpm cli install claude" },
       ...readyHelperItems,
@@ -175,7 +206,7 @@ describe("開始せずに確かめる CLI check", () => {
     const server = yield* serverWith(dir, deps.service);
     const result = yield* runCheck(dir, server.port, model);
     expect(result.code).toBe(code);
-    expect(JSON.parse(result.stdout)).toEqual({ ready, items: [
+    expect(JSON.parse(result.stdout)).toEqual({ ready, warnings: ["警告: chromium（Chromium、約 211MB） がありません。入れるには: pnpm cli install chromium"], items: [
       { name: "chromium", need: "optional", state: "missing", size: 211_000_000, install: "pnpm cli install chromium" },
       { name: "claude", need, state, size: 224_000_000, install: "pnpm cli install claude" },
       ...readyHelperItems,

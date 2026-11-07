@@ -432,14 +432,16 @@ describe("ヘルパーの開始前の確かめ（Issue #709）", () => {
   }).pipe(Effect.scoped));
 
   it.live.each([
-    { argv: ["check"], microphone: "authorized", screenCapture: true, state: "ready" },
-    { argv: ["check", "--for", "start"], microphone: "denied", screenCapture: false, state: "absent" },
-    { argv: ["check"], microphone: "notDetermined", screenCapture: false, state: "absent" },
-  ] as const)("C5・C6: $argv は $microphone の許可をサーバーで確認して JSON に出す", ({ argv, microphone, screenCapture, state }) => Effect.gen(function* () {
+    { argv: ["check"], microphone: "authorized", screenCapture: true, state: "ready", warnings: [] },
+    { argv: ["check", "--for", "start"], microphone: "denied", screenCapture: false, state: "absent", warnings: ["マイクの許可がありません。自分の声が入りません", "画面収録の許可がありません。共有画面は読まず、音声だけで始めます"] },
+    { argv: ["check"], microphone: "notDetermined", screenCapture: false, state: "absent", warnings: ["マイクの許可が未決定です。開始時に許可のダイアログが出ます", "画面収録の許可がありません。共有画面は読まず、音声だけで始めます"] },
+  ] as const)("C5・C6: $argv は $microphone の許可をサーバーで確認して JSON に出す", ({ argv, microphone, screenCapture, state, warnings }) => Effect.gen(function* () {
+    vi.stubEnv("ANTHROPIC_API_KEY", "synthetic-key");
+    yield* Effect.addFinalizer(() => Effect.sync(() => vi.unstubAllEnvs()));
     const r = yield* resource(microphone, screenCapture);
     yield* runCli([...argv]).pipe(Effect.provide(r.deps.layer));
     const report = JSON.parse(r.deps.stdout.join(""));
-    expect(report).toEqual({ ready: true, items: [
+    expect(report).toEqual({ ready: true, warnings, items: [
       { name: "chromium", need: "optional", state: "ready", size: 211_000_000, install: "pnpm cli install chromium" },
       { name: "claude", need: "required", state: "ready", size: 224_000_000, install: "pnpm cli install claude" },
       { name: "helper", need: "required", state: "ready", install: "swift build -c release --package-path helper" },
