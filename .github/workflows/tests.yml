@@ -288,7 +288,7 @@ jobs:
           path: helper/.deps/webrtc-apm
           key: webrtc-apm-${{ runner.os }}-${{ hashFiles('helper/scripts/build-webrtc-apm.sh') }}
       - if: steps.apm.outputs.cache-hit != 'true' && steps.apm-restore.outputs.cache-hit != 'true'
-        uses: astral-sh/setup-uv@v10.2.0
+        uses: astral-sh/setup-uv@v10.3.3
         timeout-minutes: 5
         with:
           enable-cache: false
