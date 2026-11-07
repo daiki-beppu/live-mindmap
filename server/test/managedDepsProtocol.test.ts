@@ -4,17 +4,22 @@ import { CheckReport, InstallBody, InstallEvent, StartupRefusal, UpdateBody } fr
 import { ManagedDepsFailed } from "../src/managedDeps.ts";
 
 describe("管理依存の転送契約", () => {
+  it.effect.each([[], ["マイクの許可がありません。自分の声が入りません"]])("確認結果の警告 %s を JSON で往復できる", (warnings) => Effect.gen(function* () {
+    const report = { ready: true, items: [], warnings };
+    const json = yield* Schema.encodeEffect(Schema.fromJsonString(CheckReport))(report);
+    expect(yield* Schema.decodeUnknownEffect(Schema.fromJsonString(CheckReport))(json)).toEqual(report);
+  }));
   it.effect("711-1・711-4: 更新要求は管理依存だけを受け取り、確認結果は導入版を保持する", () => Effect.gen(function* () {
     const body = { names: ["chromium", "claude"] };
     expect(yield* Schema.decodeUnknownEffect(UpdateBody)(body)).toEqual(body);
     for (const names of [[], ["speech-ja"], ["cloudflared"], ["unknown"]]) {
       expect(Result.isFailure(yield* Effect.result(Schema.decodeUnknownEffect(UpdateBody)({ names })))).toBe(true);
     }
-    const report = { ready: false, items: [{ name: "claude", need: "required", state: "outdated", version: "0.0.0" }] };
+    const report = { ready: false, items: [{ name: "claude", need: "required", state: "outdated", version: "0.0.0" }], warnings: [] };
     expect(yield* Schema.decodeUnknownEffect(CheckReport)(report)).toEqual(report);
   }));
   it.effect("C3・C6: ビルドと許可は確認結果で転送できるが導入対象にはならない", () => Effect.gen(function* () {
-    const report = { ready: true, items: [
+    const report = { ready: true, warnings: [], items: [
       { name: "helper", need: "required", state: "ready", install: "swift build -c release --package-path helper" },
       { name: "microphone", need: "optional", state: "absent" },
       { name: "screen-capture", need: "optional", state: "ready" },
@@ -29,7 +34,7 @@ describe("管理依存の転送契約", () => {
     expect(yield* Schema.decodeUnknownEffect(InstallBody)(body)).toEqual(body);
     const items = [{ name: "speech-ja", need: "required", state: "ready", install: "pnpm cli install speech-ja" }];
     expect(yield* Schema.decodeUnknownEffect(InstallEvent)({ type: "result", items })).toEqual({ type: "result", items });
-    expect(yield* Schema.decodeUnknownEffect(CheckReport)({ ready: true, items })).toEqual({ ready: true, items });
+    expect(yield* Schema.decodeUnknownEffect(CheckReport)({ ready: true, items, warnings: [] })).toEqual({ ready: true, items, warnings: [] });
     const refusal = { _tag: "StartupDepsMissing", items: [{ ...items[0], state: "missing" }] };
     expect(yield* Schema.decodeUnknownEffect(StartupRefusal)(refusal)).toEqual(refusal);
   }));
@@ -44,7 +49,7 @@ describe("管理依存の転送契約", () => {
     const items = [{ name: "claude", need: "required", state: "ready", size: 224_000_000, install: "pnpm cli install claude" }];
     const event = { type: "result", items };
     expect(yield* Schema.decodeUnknownEffect(InstallEvent)(event)).toEqual(event);
-    const report = { ready: true, items };
+    const report = { ready: true, items, warnings: [] };
     expect(yield* Schema.decodeUnknownEffect(CheckReport)(report)).toEqual(report);
   }));
   it.effect("Chromium の要求と導入結果を受理する", () => Effect.gen(function* () {

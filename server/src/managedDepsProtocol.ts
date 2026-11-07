@@ -16,6 +16,7 @@ export const Item = Schema.Struct({
 export const CheckReport = Schema.Struct({
   ready: Schema.Boolean,
   items: Schema.Array(Item),
+  warnings: Schema.Array(Schema.String),
 });
 export const CheckFor = Schema.Literals(["start", "resume", "play", "recorded"]);
 export const ModelRoute = Schema.Literals(["claude", "openai-compatible", "chatgpt", "apple"]);
