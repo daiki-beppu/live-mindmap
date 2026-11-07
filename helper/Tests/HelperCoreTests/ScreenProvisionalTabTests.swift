@@ -438,8 +438,8 @@ struct ScreenProvisionalTerminationTests {
         #expect(events.last?.image == nil)
     }
 
-    @Test("覚え直した題名を不在イベントのJSONでサーバーへ渡す")
-    func nullEventCarriesRetargetedTitle() async throws {
+    @Test("覚え直した題名を保留画像と不在イベントのJSONでサーバーへ渡す")
+    func bufferedAndNullEventsCarryRetargetedTitle() async throws {
         let emitter = ScreenEventEmitter(bundleID: browser, writeStderr: { _ in })
         emitTab(emitter, at: 0, title: gmail, value: 100, image: "gmail")
         emitTab(emitter, at: 10.6, title: youtube, value: 100, image: "candidate")
@@ -448,11 +448,14 @@ struct ScreenProvisionalTerminationTests {
         emitTab(emitter, at: 61, title: gmail, value: 100, image: "forbidden")
         emitter.close()
         struct NoticeScreen: Decodable { let image: String?; let meetingTabTitle: String? }
+        var images: [NoticeScreen] = []
         var absent: [NoticeScreen] = []
         for await event in emitter.events {
             let json = try JSONDecoder().decode(NoticeScreen.self, from: Data(event.jsonString().utf8))
-            if json.image == nil { absent.append(json) }
+            if json.image == nil { absent.append(json) } else { images.append(json) }
         }
+        #expect(images.map { $0.image } == ["youtube"])
+        #expect(images.map { $0.meetingTabTitle } == [youtube])
         #expect(absent.count == 1)
         #expect(absent.last?.meetingTabTitle == youtube)
     }

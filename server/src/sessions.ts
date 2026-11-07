@@ -178,7 +178,7 @@ export class Sessions extends Context.Service<Sessions, {
               live.sink.screen({ start: event.start, image: event.image, lines: event.lines, ...(event.ocrFailed === true ? { ocrFailed: event.ocrFailed } : {}) }),
             );
           case "screen-off":
-            return Effect.andThen(live.meetingTabNotice.reset,
+            return Effect.andThen(live.meetingTabNotice.screenOff,
               Effect.andThen(live.sink.screenOff({ start: event.start, reason: event.reason }), showScreenNotice(live)));
           case "tap-silent":
             return Effect.andThen(
@@ -332,6 +332,7 @@ export class Sessions extends Context.Service<Sessions, {
         yield* Ref.set(live.running, yield* runLive(live, "auto"));
         yield* Effect.forkIn(Effect.gen(function* () {
           yield* sink.writeFailure;
+          yield* live.meetingTabNotice.stop;
           yield* controller.stop;
           yield* sink.stopRelays;
           const running = yield* Ref.get(live.running);
@@ -575,6 +576,7 @@ export class Sessions extends Context.Service<Sessions, {
         const { live } = current;
         const lastInterruptedAt = yield* Ref.get(live.lastInterruptedAt);
         const failure = yield* live.sink.writeError;
+        const meetingTab = yield* live.meetingTabNotice.status;
         const diffUpdate = yield* live.sink.diffUpdateStatus;
         return {
           status: yield* Ref.get(live.intake),
@@ -582,6 +584,7 @@ export class Sessions extends Context.Service<Sessions, {
           restarts: (yield* live.controller.stats).restarts,
           ...(lastInterruptedAt === undefined ? {} : { lastInterruptedAt }),
           ...(failure === undefined ? {} : { stoppedReason: failure.message }),
+          ...(meetingTab === undefined ? {} : { meetingTab }),
           ...(diffUpdate === undefined ? {} : { diffUpdate }),
         };
       });

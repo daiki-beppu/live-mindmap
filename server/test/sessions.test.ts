@@ -1,3 +1,4 @@
+import { formatIntakeStatus } from "../src/core/intake.ts";
 import { INITIAL_SELF_PAUSE_STATE } from "../src/core/selfPause.ts";
 import { StartupChecks, type StartupChecksDeps } from "../src/startupChecks.ts";
 import { defaultClaude } from "../src/modelSelection.ts";
@@ -1004,6 +1005,95 @@ describe("ブラウザの会議タブの端末通知", () => {
     });
     return { helpers, fake, screen, ...server };
   });
+
+  it.effect("status は画像の題名を表示し、不在60秒の通知と同時に変わり、復帰で知らせを消す", () => withStderr((stderr) => Effect.gen(function* () {
+    const { sessions, helpers, fake } = yield* boot([{}]);
+    yield* sessions.start(start({ app: "com.google.Chrome", title: "週次" }));
+    const status = Effect.map(sessions.status, formatIntakeStatus);
+    const initial = yield* status;
+    expect(initial.split("\n").filter((line) => line.startsWith("会議のタブ:"))).toEqual([]);
+    expect(initial).not.toMatch(/共有画面.*(?:取り込み中|取り込んでいます|取り込めています)/);
+    const send = Effect.fnUntraced(function* (image: string | null, at: number, title: string) {
+      const count = fake.screens.length;
+      helpers.send(0, { type: "screen", start: at, image, meetingTabTitle: title });
+      yield* TestClock.adjust(0);
+      expect(fake.screens).toHaveLength(count + 1);
+    });
+    yield* send("/9j/2Q==", 1, "Gmail - Inbox");
+    const receiving = yield* status;
+    expect(receiving.split("\n")).toContain("会議のタブ: Gmail - Inbox");
+    expect(receiving).toMatch(/共有画面.*(?:取り込み中|取り込んでいます|取り込めています)/);
+    expect(receiving).toContain("動いている");
+    expect(receiving).toContain("起動し直した回数: 0");
+    yield* send(null, 2, "Gmail - Inbox");
+    expect(yield* status).not.toContain("前面にありません");
+    yield* TestClock.adjust(30_000);
+    expect(yield* status).not.toContain("前面にありません");
+    yield* send(null, 2.5, "Gmail - Inbox");
+    yield* TestClock.adjust(29_999);
+    expect(yield* status).not.toContain("前面にありません");
+    expect(stderr).toEqual([]);
+    yield* TestClock.adjust(1);
+    expect(yield* status).toContain("前面にありません");
+    expect(stderr).toEqual(["会議のタブ（Gmail - Inbox）が前面にありません。共有画面を取り込めていません（マップは別のウィンドウで開いてください）\n"]);
+    yield* send("/9j/2Q==", 1, "過去のタブ");
+    expect(yield* status).toContain("会議のタブ: Gmail - Inbox");
+    expect(yield* status).toContain("前面にありません");
+    yield* send("/9j/2Q==", 3, "配信 - YouTube");
+    const returned = yield* status;
+    expect(returned.split("\n")).toContain("会議のタブ: 配信 - YouTube");
+    expect(returned).not.toContain("前面にありません");
+    expect(returned).toMatch(/共有画面.*(?:取り込み中|取り込んでいます|取り込めています)/);
+    expect(stderr.at(-1)).toBe(restored);
+  }).pipe(Effect.scoped)));
+
+  it.effect("screen-off 後の status は既知の題名を保ち、取り込み中と不在警告を出さない", () => withStderr(() => Effect.gen(function* () {
+    const { sessions, helpers, fake } = yield* boot([{}]);
+    yield* sessions.start(start({ app: "com.google.Chrome" }));
+    helpers.send(0, { type: "screen", start: 1, image: "/9j/2Q==", meetingTabTitle: "Gmail - Inbox" });
+    yield* TestClock.adjust(0);
+    expect(fake.screens).toHaveLength(1);
+    expect(formatIntakeStatus(yield* sessions.status)).toContain("会議のタブ: Gmail - Inbox");
+    helpers.send(0, { type: "screen-off", start: 2, reason: "許可なし" });
+    yield* TestClock.adjust(0);
+    expect(fake.screenOffs).toEqual([{ start: 2, reason: "許可なし" }]);
+    yield* TestClock.adjust(60_000);
+    const stopped = formatIntakeStatus(yield* sessions.status);
+    expect(stopped).toContain("会議のタブ: Gmail - Inbox");
+    expect(stopped).not.toMatch(/共有画面.*(?:取り込み中|取り込んでいます|取り込めています)/);
+    expect(stopped).not.toContain("前面にありません");
+  }).pipe(Effect.scoped)));
+
+  it.effect.each(["com.google.Chrome", "us.zoom.xos"])("%s の題名不明の画像から会議名を題名として作らない", (app) => Effect.gen(function* () {
+    const { sessions, screen, fake } = yield* boot([{}]);
+    yield* sessions.start(start({ app, title: "題名に使わない会議名" }));
+    yield* screen("/9j/2Q==", 1, 0);
+    expect(fake.screens).toHaveLength(1);
+    const lines = formatIntakeStatus(yield* sessions.status).split("\n");
+    expect(lines).toContain("動いている");
+    expect(lines.filter((line) => line.startsWith("会議のタブ:"))).toEqual([]);
+  }).pipe(Effect.scoped));
+
+  it.effect("status の旧題名はヘルパー再起動で消え、同じセッションで覚え直す", () => withStderr(() => Effect.gen(function* () {
+    const { sessions, helpers, fake } = yield* boot([
+      { unexpectedExit: { afterMs: 1_000, exit: { code: 1, signal: null } } }, {},
+    ]);
+    yield* sessions.start(start({ app: "com.google.Chrome" }));
+    helpers.send(0, { type: "screen", start: 100, image: "/9j/2Q==", meetingTabTitle: "Gmail - Inbox" });
+    yield* TestClock.adjust(0);
+    expect(fake.screens).toHaveLength(1);
+    expect(formatIntakeStatus(yield* sessions.status)).toContain("会議のタブ: Gmail - Inbox");
+    yield* TestClock.adjust(1_000);
+    expect(helpers.calls).toHaveLength(2);
+    const restarted = formatIntakeStatus(yield* sessions.status);
+    expect(restarted).toContain("起動し直した回数: 1");
+    expect(restarted.split("\n").filter((line) => line.startsWith("会議のタブ:"))).toEqual([]);
+    expect(restarted).not.toMatch(/共有画面.*(?:取り込み中|取り込んでいます|取り込めています)/);
+    helpers.send(1, { type: "screen", start: 1, image: "/9j/2Q==", meetingTabTitle: "配信 - YouTube" });
+    yield* TestClock.adjust(0);
+    expect(fake.screens).toHaveLength(2);
+    expect(formatIntakeStatus(yield* sessions.status)).toContain("会議のタブ: 配信 - YouTube");
+  }).pipe(Effect.scoped)));
 
   it.effect.each([0, 60])("受信60秒の画像start=%sでは過去画像だけを通知から除き、保存には渡す", (imageStart) => withStderr((stderr) => Effect.gen(function* () {
     const { sessions, helpers, fake, screen } = yield* boot([{}]);

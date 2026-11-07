@@ -53,12 +53,14 @@ type AttemptScript = {
   unexpectedExit?: { afterMs: number; exit: HelperExitInfo }; // 自発的な予期せぬ終了
   exitAfterStop?: HelperExitInfo; // stop が呼ばれたときの終わり方（既定 SIGTERM）
   events?: unknown[]; // 接続した直後にヘルパーが流すイベント（JSON にして events の Stream に載せる）
+  stopEvents?: unknown[];
 };
 
 const makeFakeHelpers = (attempts: AttemptScript[], permission: { microphone: "authorized" | "denied" | "notDetermined"; screenCapture: boolean } = { microphone: "authorized", screenCapture: true }) => {
   const calls: HelperLaunchOptions[] = [];
   const queues: Queue.Queue<unknown, Cause.Done>[] = [];
   const stopped: number[] = [];
+  const consumed: string[] = [];
   const sent: boolean[] = []; // server から helper へ送られた休止の指示（paused の値を届いた順に）
   const check = ({ screen }: { readonly screen: boolean }) => Effect.sync(() => {
     return { microphone: permission.microphone, ...(screen ? { screenCapture: permission.screenCapture } : {}), speechJa: { status: "installed" as const, installedLocales: ["ja-JP"] } };
@@ -91,18 +93,19 @@ const makeFakeHelpers = (attempts: AttemptScript[], permission: { microphone: "a
         const already = yield* Ref.getAndSet(stoppedRef, true);
         if (already) return;
         stopped.push(index);
+        for (const event of script.stopEvents ?? []) yield* Queue.offer(queue, JSON.stringify(event));
         yield* Queue.end(queue);
         yield* Deferred.succeed(exitDeferred, script.exitAfterStop ?? { code: null, signal: "SIGTERM" });
       });
       yield* Effect.addFinalizer(() => Effect.ignore(stop));
-      return { events: Stream.fromQueue(queue) as Stream.Stream<string>, stop, exit: Deferred.await(exitDeferred), stderrTail: Effect.succeed(script.stderrTail ?? []), send: (instruction: { type: string; paused: boolean }) => Effect.sync(() => { if (instruction.type === "self-pause") sent.push(instruction.paused); }) };
+      return { events: (Stream.fromQueue(queue) as Stream.Stream<string>).pipe(Stream.tap((event) => Effect.sync(() => { consumed.push(event); }))), stop, exit: Deferred.await(exitDeferred), stderrTail: Effect.succeed(script.stderrTail ?? []), send: (instruction: { type: string; paused: boolean }) => Effect.sync(() => { if (instruction.type === "self-pause") sent.push(instruction.paused); }) };
     });
   const service = { apps: Effect.succeed(apps), check, creationDate: () => Effect.succeed(null), launch };
   const emit = (event: unknown) => Effect.suspend(() => {
     const queue = queues.at(-1);
     return queue === undefined ? Effect.die("ヘルパーが起動していません") : Queue.offer(queue, JSON.stringify(event));
   });
-  return { helpers: Helpers.of({ ...service, installSpeechJa: Stream.die("このテストでは日本語モデルを導入しない") }), calls, sent, stopped, emit };
+  return { helpers: Helpers.of({ ...service, installSpeechJa: Stream.die("このテストでは日本語モデルを導入しない") }), calls, sent, stopped, consumed, emit };
 };
 
 const resourceWithFakeHelpers = Effect.fnUntraced(function* (attempts: AttemptScript[], options: { managedDeps?: Layer.Layer<ManagedDeps>; updaterLayer?: () => Layer.Layer<DiffUpdater>; permission?: { microphone: "authorized" | "denied" | "notDetermined"; screenCapture: boolean }; viewing?: ServerLayers["viewing"]; writeOutStarted?: Deferred.Deferred<void> } & Pick<ExportServicesOptions, "capture" | "build" | "mix" | "fileSystem" | "readings"> = {}) {
@@ -131,7 +134,7 @@ const resourceWithFakeHelpers = Effect.fnUntraced(function* (attempts: AttemptSc
     { helpers: Layer.succeed(Helpers)(fakeHelpers.helpers), startupChecks, sessionSinks: sessionSinksLayer, managedDeps: options.managedDeps ?? readyManagedDeps, ...(options.viewing === undefined ? {} : { viewing: options.viewing }) },
   );
   return {
-    server, calls: fakeHelpers.calls, sent: fakeHelpers.sent, stopped: fakeHelpers.stopped, emit: fakeHelpers.emit, sessionsDir,
+    server, calls: fakeHelpers.calls, sent: fakeHelpers.sent, stopped: fakeHelpers.stopped, consumed: fakeHelpers.consumed, emit: fakeHelpers.emit, sessionsDir,
     request: (method: string, path: string, body: string | undefined, origin: string | undefined) => fetch(
       `http://127.0.0.1:${server.port}${path}`,
       { method, headers: { "content-type": "application/json", ...(origin === undefined ? {} : { origin }) }, ...(body === undefined ? {} : { body }) },
@@ -140,8 +143,8 @@ const resourceWithFakeHelpers = Effect.fnUntraced(function* (attempts: AttemptSc
 });
 
 describe("セッションのディスク失敗の HTTP・CLI 応答", () => {
-  const resource = Effect.fnUntraced(function* (exports: Pick<ExportServicesOptions, "capture" | "build" | "mix" | "fileSystem" | "readings"> & { updaterLayer?: () => Layer.Layer<DiffUpdater>; writeOutStarted?: Deferred.Deferred<void> } = {}) {
-    const r = yield* resourceWithFakeHelpers([{}], exports);
+  const resource = Effect.fnUntraced(function* (exports: Pick<ExportServicesOptions, "capture" | "build" | "mix" | "fileSystem" | "readings"> & { updaterLayer?: () => Layer.Layer<DiffUpdater>; writeOutStarted?: Deferred.Deferred<void>; stopEvents?: unknown[] } = {}) {
+    const r = yield* resourceWithFakeHelpers([{ stopEvents: exports.stopEvents }], exports);
     const responses: { status: number; body: unknown }[] = [];
     const observedClient = Layer.effect(HttpClient.HttpClient, Effect.map(HttpClient.HttpClient, (client) =>
       HttpClient.tap(client, (response) => Effect.gen(function* () {
@@ -235,12 +238,13 @@ describe("セッションのディスク失敗の HTTP・CLI 応答", () => {
         })).pipe(Layer.provide(NodeFileSystem.layer));
         const updating = yield* Deferred.make<void>();
         const release = yield* Deferred.make<void>();
-        const r = yield* resource({ fileSystem: files, updaterLayer: () => updaterLayer(() => Effect.gen(function* () {
+        const closingScreen = { type: "screen", start: 11, image: "/9j/2Q==", meetingTabTitle: "終了時のタブ" };
+        const r = yield* resource({ fileSystem: files, stopEvents: asynchronous ? [closingScreen] : [], updaterLayer: () => updaterLayer(() => Effect.gen(function* () {
           yield* Deferred.succeed(updating, undefined);
           if (asynchronous) yield* Deferred.await(release);
           return { ops: [] };
         })) });
-        const started = yield* r.cli(["start", "--app", "us.zoom.xos", "--no-audio", "--no-screen"]);
+        const started = yield* r.cli(["start", "--app", "com.google.Chrome", "--no-audio"]);
         expect(started.code).toBe(0);
         const dir = started.stdout.trim();
         const path = join(dir, file);
@@ -248,6 +252,17 @@ describe("セッションのディスク失敗の HTTP・CLI 応答", () => {
         expect(yield* Effect.tryPromise(async () => (await status()).json())).toMatchObject({ status: "running", dir });
         expect(r.calls).toHaveLength(1);
         expect(r.stopped).toEqual([]);
+        yield* r.emit({ type: "screen", start: 1, image: "/9j/2Q==", meetingTabTitle: "Gmail - Inbox" });
+        yield* Effect.tryPromise(() => vi.waitFor(async () => {
+          const rows = (await readFile(join(dir, LOG_FILE), "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+          expect(rows).toContainEqual(expect.objectContaining({ type: "screen", start: 1 }));
+        }));
+        const capturing = yield* Effect.tryPromise(async () => (await status()).json());
+        expect(capturing).toMatchObject({ status: "running", dir, restarts: 0, meetingTab: { title: "Gmail - Inbox", status: "capturing" } });
+        const before = yield* r.cli(["status"]);
+        expect(before.code).toBe(0);
+        expect(before.stdout.split("\n")).toContain("会議のタブ: Gmail - Inbox");
+        expect(before.stdout.split("\n")).toContain("共有画面: 取り込み中");
         const savedBefore = yield* Effect.tryPromise(() => readFile(path, "utf8"));
         expect(savedBefore.length).toBeGreaterThan(0);
 
@@ -264,18 +279,24 @@ describe("セッションのディスク失敗の HTTP・CLI 応答", () => {
         }
         deniedPath = path;
         if (asynchronous) yield* Deferred.succeed(release, undefined);
-        else yield* r.emit({ type: "screen-off", start: 10, reason: "許可なし" });
+        else yield* r.emit({ type: "screen", start: 10, image: "/9j/2Q==", meetingTabTitle: "Gmail - Inbox" });
 
         yield* Effect.tryPromise(() => vi.waitFor(async () => {
           expect(failed).toContain(path);
-          expect(failedEvents[0]).toBe(asynchronous ? "diff" : "screen-off");
-          expect(await (await status()).json()).toMatchObject({ status: "stopped", dir, restarts: 0 });
+          expect(failedEvents[0]).toBe(asynchronous ? "diff" : "screen");
+          const stopped = await (await status()).json();
+          expect(stopped).toMatchObject({ status: "stopped", dir, restarts: 0, stoppedReason: expect.stringContaining(path) });
           expect(r.stopped).toEqual([0]);
+          if (asynchronous) expect(r.consumed).toContain(JSON.stringify(closingScreen));
+          expect(stopped).not.toHaveProperty("meetingTab");
         }));
         const reported = yield* r.cli(["status"]);
         expect(reported.code).toBe(0);
         const lines = reported.stdout.trimEnd().split("\n");
         expect(lines[0]).toBe("止まった");
+        expect(lines).toContain(`セッションのフォルダ: ${dir}`);
+        expect(lines).toContain("起動し直した回数: 0");
+        expect(lines).not.toContain("共有画面: 取り込み中");
         const reason = lines.find((line) => line.startsWith("止まった理由: "));
         expect(reason).toContain(path);
         expect(reason).toContain("EACCES: 合成の書込拒否");
@@ -910,7 +931,7 @@ describe("新しい入口（偽の Helpers・SessionSinks を受け取れるサ�
     }));
 
   // base の server.heavy.test.ts「cli status が…」の配線部分（cli.ts の status → GET /session/status → formatIntakeStatus → 標準出力）の移動先
-  it.live("cli status が、セッションなし・動いている・stop 後の状態を、サーバーの応答から標準出力へ値として出す", () =>
+  it.live("cli status が、会議タブの題名をHTTP経由で出し、既存の状態とstop後の出力を保つ", () =>
     Effect.gen(function* () {
       const r = yield* resourceWithFakeHelpers([{}]);
       // 接続先ポートと保存先は ConfigProvider、標準出力は Console で渡す（cli.ts の入口と同じ Service）
@@ -933,13 +954,25 @@ describe("新しい入口（偽の Helpers・SessionSinks を受け取れるサ�
         return runCli(["status"]).pipe(Effect.provide(cliLayer), Effect.map(() => out.join("")));
       });
       expect(yield* status()).toBe("セッションなし\n閲覧の共有: 無し\n");
-      expect((yield* Effect.tryPromise(() => r.request("POST", "/session/start", '{"app":"us.zoom.xos","title":"週次","audio":false}', undefined))).status).toBe(200);
+      expect((yield* Effect.tryPromise(() => r.request("POST", "/session/start", '{"app":"com.google.Chrome","title":"週次","audio":false}', undefined))).status).toBe(200);
       const [dir] = (yield* Effect.tryPromise(() => readdir(r.sessionsDir, { withFileTypes: true }))).filter((entry) => entry.isDirectory()).map((entry) => entry.name); // 語彙の溜まりのファイルは除く
       const running = yield* status();
       expect(running).toContain("動いている");
       expect(running).toContain(dir!);
       expect(running).toContain("起動し直した回数: 0");
       expect(running).not.toContain("最後の途切れの時刻");
+      expect(running.split("\n").filter((line) => line.startsWith("会議のタブ:"))).toEqual([]);
+      yield* r.emit({ type: "screen", start: 1, image: "/9j/2Q==", meetingTabTitle: "Gmail - Inbox" });
+      yield* Effect.tryPromise(() => vi.waitFor(async () => {
+        const log = await readFile(join(r.sessionsDir, dir!, "log.jsonl"), "utf8");
+        expect(log).toContain('"type":"screen"');
+      }));
+      const withTab = yield* status();
+      expect(withTab.split("\n")).toContain("会議のタブ: Gmail - Inbox");
+      expect(withTab).toContain("動いている");
+      expect(withTab).toContain(dir!);
+      expect(withTab).toContain("起動し直した回数: 0");
+      expect(withTab).toContain("閲覧の共有: 無し");
       expect((yield* Effect.tryPromise(() => r.request("POST", "/session/stop", undefined, undefined))).status).toBe(200);
       // 通常の stop の後は none に戻る。「止まった」（諦めた状態）の文面は intake.test.ts、状態の値は sessions.test.ts が観測する
       expect(yield* status()).toBe("セッションなし\n閲覧の共有: 無し\n");
@@ -1199,7 +1232,7 @@ describe("ライブのセッションの共有画面（偽のヘルパー + 偽�
       const claude = layerClaude(defaultClaude.model).pipe(Layer.provide(Layer.succeed(AgentSdk, AgentSdk.of({ query: fakeQuery(sent) }))));
       const r = yield* resourceWithFakeHelpers([{
         events: [
-          { type: "screen", start: 1, image: Buffer.from(jpeg).toString("base64") },
+          { type: "screen", start: 1, image: Buffer.from(jpeg).toString("base64"), meetingTabTitle: "Gmail - Inbox" },
           { type: "speaker-off", start: 0, reason: "モデルなし" },
           { type: "remark", track: "相手", start: 0, end: 5, text: "今日は採用の進め方を決めます" },
           { type: "remark", track: "相手", start: 5, end: 9, text: "面接を何回にするかですね" },
@@ -1217,6 +1250,14 @@ describe("ライブのセッションの共有画面（偽のヘルパー + 偽�
       expect(lines.filter((l) => l.type === "screen").map(({ type, start, image }) => ({ type, start, image }))).toEqual([
         { type: "screen", start: 1, image: "0001.0.jpg" },
       ]);
+
+      for (const event of lines) expect(event).not.toHaveProperty("meetingTabTitle");
+      for (const file of ["map.md", "map.json", "map.drawnix"]) {
+        const exported = yield* Effect.tryPromise(() => readFile(join(dir, file), "utf8"));
+        expect(exported.length).toBeGreaterThan(0);
+        expect(exported).not.toContain("Gmail - Inbox");
+        expect(exported).not.toContain("meetingTabTitle");
+      }
 
       // screens/: ヘルパーが流したバイト列のまま
       expect(yield* Effect.tryPromise(() => readdir(join(dir, "screens")))).toEqual(["0001.0.jpg"]);
