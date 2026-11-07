@@ -70,6 +70,8 @@ CI は PR・main push・Nightly・Weekly の段に分かれる。Nightly・Weekl
 
 SDK または `playwright-core` の固定版を更新するときは、[Claude の更新手順](server/managed-deps/claude/README.md) または [Chromium の更新手順](server/managed-deps/chromium/README.md) を読む。
 
+Renovate の PR を仕上げるときは [`docs/agents/dependency-updates.md`](docs/agents/dependency-updates.md) を読む。Renovate の PR では、回した段と結果を PR 本文ではなく、1 行目が `## 依存の仕上げ` の PR のコメントに書いてよい。
+
 Linux のクラウドのセッション（Cursor・Claude cloud・Devin）では、[クラウドのセッション](#クラウドのセッション) の「検証」に従う。
 
 Run before a PR, from the repo root (inside `server/` or `web/`, `pnpm typecheck` skips fallow, and CI fails on it): `bash helper/scripts/build-webrtc-apm.sh` (needs `uv`; a no-op once built), `bash helper/scripts/fetch-speaker-models.sh` (fetches the speaker-diarization models once, needs network on the first run; a no-op once fetched; the helper never fetches them during a session), `pnpm typecheck` (ends with the root `pnpm fallow`: `.fallowrc.json`, 未使用・重複・複雑度。1 件でも落ちる), `pnpm test` while implementing (unit tests of server, web and helper), `pnpm test:it` when done (light integration tests of all three). Run heavy ITs you added or changed by file, e.g. `pnpm --filter @live-mindmap/server exec vitest run test/foo.heavy.test.ts`, and leave the full set to CI. State the layers you ran and their results in the PR body. Before merging, also follow `CODING_STANDARDS.md`. Merge with `gh pr merge --squash --auto` instead of waiting on CI; if the PR then shows `DIRTY`, rebase onto `origin/main` and push; it stays unmerged until you do. A `BEHIND` PR merges once the required `check` passes (ADR 0026).
