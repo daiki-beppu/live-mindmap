@@ -22,7 +22,7 @@
     "@effect/tsgo": "0.56.0",
     "@foldkit/oxlint-plugin": "0.15.3",
     "@foldkit/vite-plugin": "0.27.0",
-    "oxlint": "^1.87.0",
+    "oxlint": "^1.91.0",
     "typescript": "^7.0.2",
     "vite": "^8.3.5",
     "vitest": "^5.1.0"
