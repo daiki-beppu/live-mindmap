@@ -1,5 +1,5 @@
 {
-  "$schema": "https://raw.githubusercontent.com/fallow-rs/fallow/v3.33.1/schema.json",
+  "$schema": "https://raw.githubusercontent.com/fallow-rs/fallow/v3.39.0/schema.json",
   "entry": [
     "server/bench/**/*.ts",
     "e2e/e2e.config.ts",
@@ -12,8 +12,7 @@
     "server/test/fixtures/managedDepsRunnerHooks.mjs"
   ],
   "ignorePatterns": [
-    "helper/**",
-    "web/scripts/css-migration/**"
+    "helper/**"
   ],
   "ignoreExportsUsedInFile": true,
   "ignoreDependencies": [
