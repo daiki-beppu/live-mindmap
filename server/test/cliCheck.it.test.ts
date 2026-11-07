@@ -126,6 +126,35 @@ it.live("HTTP recorded は不正な noMap を確認前に拒否する", () => Ef
 }).pipe(Effect.scoped));
 
 describe("開始せずに確かめる CLI check", () => {
+  it.live.each([
+    { state: "missing", ready: false, code: 3 },
+    { state: "ready", ready: true, code: 0 },
+  ] as const)("check --for share は cloudflared $state を必須として返し exit $code になる", ({ state, ready, code }) => Effect.gen(function* () {
+    const dir = yield* temporaryDeps;
+    const deps = fakeDeps(Effect.succeed([{ name: "cloudflared", need: "optional", state }]));
+    const server = yield* serverWith(dir, deps.service, new HelperCheckFailure({ message: "共有の確認に helper は不要" }));
+    const result = yield* runCheck(dir, server.port, "unknown-model", ["--for", "share"]);
+    expect(result.code, result.stderr).toBe(code);
+    expect(result.stderr).toBe("");
+    const report = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(CheckReport))(result.stdout);
+    expect(report).toEqual({ ready, items: [
+      { name: "cloudflared", need: "required", state, install: "pnpm cli install cloudflared" },
+    ] });
+    expect(deps.check).toHaveBeenCalledExactlyOnceWith(["cloudflared"]);
+    expect(deps.install).not.toHaveBeenCalled();
+    expect(server.launch).not.toHaveBeenCalled();
+    expect(server.check).not.toHaveBeenCalled();
+    expect(server.prepareUpdater).not.toHaveBeenCalled();
+  }).pipe(Effect.scoped));
+
+  it.live("check --help は --for share を案内する", () => Effect.gen(function* () {
+    const dir = yield* temporaryDeps;
+    const result = yield* runCheck(dir, 0, null, ["--help"]);
+    expect(result.code).toBe(0);
+    expect(result.stderr).toBe("");
+    expect(result.stdout).toContain("--for share");
+  }).pipe(Effect.scoped));
+
   it.live("HTTP は不正なモデル経路を状態確認前に拒否する", () => Effect.gen(function* () {
     const dir = yield* temporaryDeps;
     const deps = fakeDeps(Effect.succeed([claudeMissing]));
