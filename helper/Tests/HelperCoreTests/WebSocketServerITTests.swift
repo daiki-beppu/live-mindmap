@@ -56,7 +56,7 @@ private func emitClosingScreens(to emitter: ScreenEventEmitter) throws -> [Strin
         }
     }
     emitter.close()
-    return try [0.0, 1, 16, 31].map { try HelperEvent.screen(start: $0, image: closingScreenImage, lines: ["Gmail OCR"]).jsonString() }
+    return try [0.0, 1, 16, 31].map { try HelperEvent.screen(start: $0, image: closingScreenImage, lines: ["Gmail OCR"], meetingTabTitle: "Gmail").jsonString() }
 }
 
 private enum SlowReaderEnding: Equatable {
@@ -380,10 +380,10 @@ struct WebSocketServerITTests {
         }
         emitter.close()
         await relay.value
-        let meet = HelperEvent.screen(start: 1, image: "meet", lines: ["meet OCR"])
+        let meet = HelperEvent.screen(start: 1, image: "meet", lines: ["meet OCR"], meetingTabTitle: "Gmail")
         #expect(try await receiveText(first) == meet.jsonString())
-        #expect(try await receiveText(first) == HelperEvent.screen(start: 0, image: "gmail", lines: ["gmail OCR"]).jsonString())
-        let latest = returnsToGmail ? HelperEvent.screen(start: 60, image: "gmail-return", lines: ["gmail-return OCR"]) : meet
+        #expect(try await receiveText(first) == HelperEvent.screen(start: 0, image: "gmail", lines: ["gmail OCR"], meetingTabTitle: "Gmail").jsonString())
+        let latest = returnsToGmail ? HelperEvent.screen(start: 60, image: "gmail-return", lines: ["gmail-return OCR"], meetingTabTitle: "Gmail") : meet
         if returnsToGmail { #expect(try await receiveText(first) == latest.jsonString()) }
         let late = URLSession.shared.webSocketTask(with: url)
         late.resume()

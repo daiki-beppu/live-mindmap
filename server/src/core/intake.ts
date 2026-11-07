@@ -77,6 +77,10 @@ export const IntakeStatusReport = Schema.Struct({
   restarts: Schema.optionalKey(Schema.Finite),
   lastInterruptedAt: Schema.optionalKey(Schema.String),
   stoppedReason: Schema.optionalKey(Schema.String),
+  meetingTab: Schema.optionalKey(Schema.Struct({
+    title: Schema.optionalKey(Schema.String),
+    status: Schema.Literals(["unknown", "capturing", "waiting", "notified", "off"]),
+  })),
 });
 export type IntakeStatusReport = typeof IntakeStatusReport["Type"];
 
@@ -94,5 +98,17 @@ export function formatIntakeStatus(report: IntakeStatusReport): string {
   if (report.dir !== undefined) lines.push(`セッションのフォルダ: ${report.dir}`);
   if (report.restarts !== undefined) lines.push(`起動し直した回数: ${report.restarts}`);
   if (report.lastInterruptedAt !== undefined) lines.push(`最後の途切れの時刻: ${report.lastInterruptedAt}`);
+  if (report.meetingTab !== undefined) {
+    const tab = report.meetingTab;
+    if (tab.title !== undefined) lines.push(`会議のタブ: ${tab.title}`);
+    const screenWords: Record<typeof tab.status, string> = {
+      unknown: "未取得",
+      capturing: "取り込み中",
+      waiting: "画像を待っています",
+      notified: "会議のタブが前面にありません。取り込めていません",
+      off: "取り込み停止",
+    };
+    lines.push(`共有画面: ${screenWords[tab.status]}`);
+  }
   return lines.join("\n") + "\n";
 }

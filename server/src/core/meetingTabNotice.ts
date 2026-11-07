@@ -1,4 +1,5 @@
 import { Effect, Fiber, Ref, Scope, Semaphore } from "effect";
+import type { IntakeStatusReport } from "./intake.ts";
 
 const MEETING_TAB_NOTICE_DELAY_MS = 60_000;
 const MISSING_MEETING_TAB = "会議のタブが前面にありません。共有画面を取り込めていません（マップは別のウィンドウで開いてください）";
@@ -9,16 +10,17 @@ export const isScreenBrowser = (app: string): boolean => [
   "company.thebrowser.Browser", "com.brave.Browser", "org.mozilla.firefox",
 ].includes(app);
 
-type NoticeState =
-  | { kind: "idle" | "notified" | "closed" }
-  | { kind: "waiting"; token: symbol; fiber: Fiber.Fiber<void> };
+type NoticeState = { title: string | undefined } & (
+  | { kind: "unknown" | "capturing" | "notified" | "off" | "closed" }
+  | { kind: "waiting"; token: symbol; fiber: Fiber.Fiber<void> }
+);
 
 export const makeMeetingTabNotice = Effect.fnUntraced(function* (options: {
   enabled: boolean;
   notify: (text: string) => Effect.Effect<void>;
 }) {
   const scope = yield* Effect.scope;
-  const state = yield* Ref.make<NoticeState>({ kind: options.enabled ? "idle" : "closed" });
+  const state = yield* Ref.make<NoticeState>({ kind: options.enabled ? "unknown" : "closed", title: undefined });
   const latestStart = yield* Ref.make<number | undefined>(undefined);
   const lock = yield* Semaphore.make(1);
 
@@ -28,10 +30,10 @@ export const makeMeetingTabNotice = Effect.fnUntraced(function* (options: {
       Effect.uninterruptible,
     );
 
-  const clear = (kind: "idle" | "closed") =>
+  const clear = (kind: "unknown" | "off" | "closed") =>
     transition(Effect.gen(function* () {
       const current = yield* Ref.get(state);
-      if (current.kind !== "closed") yield* Ref.set(state, { kind });
+      if (current.kind !== "closed") yield* Ref.set(state, { kind, title: kind === "off" ? current.title : undefined });
       yield* Ref.set(latestStart, undefined);
       return current.kind === "waiting" ? current.fiber : undefined;
     }));
@@ -48,27 +50,36 @@ export const makeMeetingTabNotice = Effect.fnUntraced(function* (options: {
       if (previousStart !== undefined && start < previousStart) return;
       yield* Ref.set(latestStart, start);
       if (hasImage) {
-        yield* Ref.set(state, { kind: "idle" });
+        yield* Ref.set(state, { kind: "capturing", title: meetingTabTitle });
         if (current.kind === "notified") yield* options.notify(RESTORED_MEETING_TAB);
         return current.kind === "waiting" ? current.fiber : undefined;
       }
-      if (current.kind !== "idle") return;
+      if (current.kind === "waiting" || current.kind === "notified") {
+        yield* Ref.set(state, { ...current, title: meetingTabTitle });
+        return;
+      }
       const token = Symbol();
       const timer = Effect.gen(function* () {
         yield* Effect.sleep(MEETING_TAB_NOTICE_DELAY_MS);
         yield* lock.withPermit(Effect.gen(function* () {
           const latest = yield* Ref.get(state);
           if (latest.kind !== "waiting" || latest.token !== token) return;
-          yield* Ref.set(state, { kind: "notified" });
+          yield* Ref.set(state, { kind: "notified", title: latest.title });
           yield* options.notify(meetingTabTitle === undefined ? MISSING_MEETING_TAB
             : `会議のタブ（${meetingTabTitle}）が前面にありません。共有画面を取り込めていません（マップは別のウィンドウで開いてください）`);
         }).pipe(Effect.uninterruptible));
       });
       const fiber = yield* Effect.forkIn(Effect.interruptible(timer), scope);
-      yield* Ref.set(state, { kind: "waiting", token, fiber });
+      yield* Ref.set(state, { kind: "waiting", title: meetingTabTitle, token, fiber });
+    }));
+
+  const status: Effect.Effect<IntakeStatusReport["meetingTab"]> = lock.withPermit(Effect.map(Ref.get(state), (current) =>
+    current.kind === "closed" ? undefined : {
+      status: current.kind,
+      ...(current.title === undefined ? {} : { title: current.title }),
     }));
 
   const stop = clear("closed");
   yield* Scope.addFinalizer(scope, stop);
-  return { screen, reset: clear("idle"), stop };
+  return { screen, status, reset: clear("unknown"), screenOff: clear("off"), stop };
 });
