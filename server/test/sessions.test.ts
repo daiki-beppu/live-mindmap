@@ -186,6 +186,10 @@ describe("現在のセッションの状態による操作の許可", () => {
     { operation: "setSelfPause", state: "recorded", expected: "NotForRecordedSession" },
     { operation: "liveSession", state: "recorded", expected: "Success" },
     { operation: "setSpeakerName", state: "recorded", expected: "Success" },
+    { operation: "reserveDeps", state: "idle", expected: "Success" },
+    { operation: "reserveDeps", state: "starting", expected: "SessionTransition" },
+    { operation: "reserveDeps", state: "stopping", expected: "SessionTransition" },
+    { operation: "reserveDeps", state: "recorded", expected: "SessionBusy" },
   ] as const)("$state の $operation は $expected を返す", ({ operation, state, expected }) => Effect.gen(function* () {
     const launchEntered = yield* Deferred.make<void>();
     const releaseLaunch = yield* Deferred.make<void>();
@@ -218,6 +222,7 @@ describe("現在のセッションの状態による操作の許可", () => {
           return;
         }
         case "setSpeakerName": return yield* sessions.setSpeakerName({ label: "相手 A", name: "山田" });
+        case "reserveDeps": return yield* Effect.scoped(sessions.reserveDeps);
       }
     });
 
@@ -1322,15 +1327,14 @@ describe("依存導入の予約", () => {
     const { sessions } = yield* bootSessions(Layer.succeed(Helpers, helper.helpers), Layer.succeed(SessionSinks, fake.sinks));
     const scopes = [yield* Scope.make(), yield* Scope.make()];
     for (const scope of scopes) yield* sessions.reserveDeps.pipe(Scope.provide(scope));
-    expect(Exit.isFailure(yield* Effect.exit(sessions.start(start())))).toBe(true);
+    expect(yield* Effect.flip(sessions.start(start()))).toMatchObject({ _tag: "SessionTransition" });
     expect(helper.calls).toHaveLength(0);
     yield* Scope.close(scopes[0]!, Exit.void);
-    expect(Exit.isFailure(yield* Effect.exit(sessions.start(start())))).toBe(true);
+    expect(yield* Effect.flip(sessions.start(start()))).toMatchObject({ _tag: "SessionTransition" });
     yield* Scope.close(scopes[1]!, Exit.void);
     yield* sessions.start(start());
     expect(helper.calls).toHaveLength(1);
-    const refused = yield* Effect.scoped(Effect.exit(sessions.reserveDeps));
-    expect(Exit.isFailure(refused)).toBe(true);
+    expect(yield* Effect.scoped(Effect.flip(sessions.reserveDeps))).toMatchObject({ _tag: "SessionBusy" });
     yield* sessions.stop;
     yield* Effect.scoped(sessions.reserveDeps);
   }).pipe(Effect.scoped));
@@ -1352,7 +1356,7 @@ describe("依存導入の予約", () => {
       yield* Deferred.await(entered);
       const interrupting = yield* Fiber.interrupt(installation).pipe(Effect.forkChild);
       yield* Deferred.await(cleaning);
-      expect(Exit.isFailure(yield* Effect.exit(sessions.start(start())))).toBe(true);
+      expect(yield* Effect.flip(sessions.start(start()))).toMatchObject({ _tag: "SessionTransition" });
       expect(helper.calls).toHaveLength(0);
       return interrupting;
     }).pipe(Effect.ensuring(Deferred.succeed(release, undefined)));
