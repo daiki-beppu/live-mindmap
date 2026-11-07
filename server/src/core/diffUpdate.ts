@@ -8,6 +8,13 @@ export const DiffUpdateState = Schema.Union([
   Schema.Struct({ status: Schema.Literal("stopped") }),
 ]);
 export type DiffUpdateState = typeof DiffUpdateState["Type"];
+const failureFields = { lastFailure: Schema.optionalKey(Schema.String) };
+export const DiffUpdateStatusReport = Schema.Union([
+  Schema.Struct({ status: Schema.Literal("running"), ...failureFields }),
+  Schema.Struct({ status: Schema.Literal("paused"), reason: DiffUpdateReason, nextRetryAt: Schema.Finite, ...failureFields }),
+  Schema.Struct({ status: Schema.Literal("stopped"), ...failureFields }),
+]);
+export type DiffUpdateStatusReport = typeof DiffUpdateStatusReport["Type"];
 export const DiffUpdateFrame = Schema.Struct({ type: Schema.Literal("diff-update"), state: Schema.NullOr(DiffUpdateState) });
 export type DiffUpdateFrame = typeof DiffUpdateFrame["Type"];
 

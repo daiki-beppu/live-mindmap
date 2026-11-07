@@ -98,6 +98,18 @@ const THREE: Script = { duration: 20, remarks: [
 ] };
 
 describe("cli recorded --no-map", () => {
+  it.live("文字だけの録画中の status は取り込みを報告し、差分更新情報は省く", () => Effect.gen(function* () {
+    const r = yield* resource({ ...THREE, hold: true });
+    const running = yield* Effect.forkChild(r.cli(["recorded", r.file, "--no-map"]));
+    yield* Effect.promise(() => vi.waitFor(async () => {
+      const response = await fetch(`http://127.0.0.1:${r.server.port}/session/status`);
+      const report: unknown = await response.json();
+      expect(report).toMatchObject({ status: "running" });
+      expect(report).not.toHaveProperty("diffUpdate");
+    }));
+    yield* Fiber.interrupt(running);
+    expect(r.prepareUpdater).not.toHaveBeenCalled();
+  }).pipe(Effect.scoped));
   it.live("モデルの準備と呼び出しなしで全発言を保存し、フォルダだけを出力する", () => Effect.gen(function* () {
     const r = yield* resource(THREE);
     yield* r.cli(["recorded", r.file, "--no-map"]);

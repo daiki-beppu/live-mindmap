@@ -235,6 +235,17 @@ describe("tailLines（標準エラーの末尾）", () => {
 
 // cli status の標準出力（段 3 以前は server.heavy.test.ts が CLI 経由で固定していた文面。値の組み立ては Sessions.status が担い、文面はここで固定する）
 describe("formatIntakeStatus（cli status の標準出力）", () => {
+  it("取り込みと別に一時停止の理由・次回時刻・最後の失敗を出す", () => {
+    const out = formatIntakeStatus({ status: "running", diffUpdate: { status: "paused", reason: "Claude の利用上限", nextRetryAt: 120_000, lastFailure: "利用上限に達しました" } });
+    expect(out).toBe("動いている\n差分更新: 一時停止\n一時停止の理由: Claude の利用上限\n次に試す時刻: 1970-01-01T00:02:00.000Z\n最後の失敗: 利用上限に達しました\n");
+  });
+
+  it.each(["running", "stopped"] as const)("差分更新が %s のときも最後の失敗を読める", (status) => {
+    const out = formatIntakeStatus({ status: "running", diffUpdate: { status, lastFailure: "接続に失敗しました" } });
+    expect(out).toContain(`差分更新: ${status === "running" ? "動いている" : "止まった"}`);
+    expect(out).toContain("最後の失敗: 接続に失敗しました");
+    expect(out).not.toContain("次に試す時刻");
+  });
   it("セッションなしは状態の一言だけ", () => {
     expect(formatIntakeStatus({ status: "none" })).toBe("セッションなし\n");
   });
