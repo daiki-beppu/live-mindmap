@@ -144,15 +144,18 @@ export class Sessions extends Context.Service<Sessions, {
         });
       }
 
+      type Idle = Extract<State, { kind: "idle" }>;
+      const claimIdle = (admit: (idle: Idle) => State | undefined): Effect.Effect<void, SessionFailure> =>
+        Effect.flatten(Ref.modify(state, (value): [Effect.Effect<void, SessionFailure>, State] => {
+          const next = value.kind === "idle" ? admit(value) : undefined;
+          return next !== undefined
+            ? [Effect.void, next]
+            : [Effect.fail(value.kind === "live" || value.kind === "recorded" ? new SessionBusy() : new SessionTransition()), value];
+        }));
+
       const reserveDeps = Effect.acquireRelease(
-        Effect.gen(function* () {
-          const refusal = yield* Ref.modify(state, (current): [Option.Option<SessionFailure>, State] =>
-            current.kind === "idle"
-              ? [Option.none(), { kind: "idle", installations: current.installations + 1 }]
-              : [Option.some(current.kind === "live" || current.kind === "recorded" ? new SessionBusy() : new SessionTransition()), current]);
-          if (Option.isSome(refusal)) return yield* refusal.value;
-        }),
-        () => Ref.update(state, (current): State => current.kind === "idle" ? { kind: "idle", installations: current.installations - 1 } : current),
+        claimIdle((idle) => ({ kind: "idle", installations: idle.installations + 1 })),
+        () => Ref.update(state, (value): State => value.kind === "idle" ? { kind: "idle", installations: value.installations - 1 } : value),
       );
 
       const note = (text: string) => Console.error(withoutFinalNewline(text));
@@ -249,14 +252,7 @@ export class Sessions extends Context.Service<Sessions, {
         }),
       });
 
-      const claimStart = Effect.gen(function* () {
-        const refusal = yield* Ref.modify(state, (current): [Option.Option<SessionFailure>, State] =>
-          current.kind === "idle" && current.installations === 0
-            ? [Option.none(), { kind: "starting" }]
-            : [Option.some(current.kind === "live" || current.kind === "recorded" ? new SessionBusy() : new SessionTransition()), current],
-        );
-        if (Option.isSome(refusal)) return yield* refusal.value;
-      });
+      const claimStart = claimIdle((idle) => idle.installations === 0 ? { kind: "starting" } : undefined);
 
       const openSession = <A>(body: (scope: Scope.Closeable, send: SendFrame) => Effect.Effect<{
         active: Active;
