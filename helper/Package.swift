@@ -19,8 +19,8 @@ let package = Package(
         .executable(name: "live-mindmap-apple", targets: ["live-mindmap-apple"]),
     ],
     dependencies: [
-        // Sortformer（話者分離。Issue #1020）を含むコミットに固定する。v0.9.1 のタグには入っていない。
-        .package(url: "https://github.com/FluidInference/FluidAudio.git", revision: "ea63ac36fcadb8a6611d0f58a8e4a0e7dd4381e2"),
+        // 版が変わると話者分離の結果が変わり得るので範囲にせず固定し、上げるときは speakerAccuracy を測る（#1838）。
+        .package(url: "https://github.com/FluidInference/FluidAudio.git", exact: "0.17.6"),
     ],
     targets: [
         // 純粋なロジック（イベントの形・アプリの選択）と、Core Audio / SpeechAnalyzer / WebSocket の実装
