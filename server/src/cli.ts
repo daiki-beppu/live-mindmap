@@ -10,6 +10,7 @@ import { MapCapture } from "./capture.ts";
 import { Playwright } from "./playwright.ts";
 import { cloudflareAccountIdConfig, cloudflareApiTokenConfig, depsDirConfig, portConfig, sessionsDirConfig, shareAllowConfig } from "./config.ts";
 import { ManagedDeps } from "./managedDeps.ts";
+import { missingItems } from "./startupItems.ts";
 import { StdoutIsTty, withoutFinalNewline } from "./consoleText.ts";
 import { loginChatgpt } from "./chatgptAuth.ts";
 import { logoutChatgpt, ChatgptUnavailable } from "./chatgptAuthStore.ts";
@@ -952,12 +953,17 @@ const evaluate = Command.make(
 const checkCommand = Command.make(
   "check",
   {
-    for: Flag.Literals("for", ["start", "resume", "play", "recorded"]).pipe(Flag.withDefault("start"), Flag.withDescription("確認する入口（既定 start）")),
+    for: Flag.Literals("for", ["start", "resume", "play", "recorded", "share"]).pipe(Flag.withDefault("start"), Flag.withDescription("確認する入口（既定 start）")),
     noScreen: Flag.Boolean("no-screen").pipe(Flag.withDefault(false)),
     noMap: Flag.Boolean("no-map").pipe(Flag.withDefault(false), Flag.withDescription("recorded のマップを作らない行を確認する（helper・speech-ja のみ）")),
   },
   Effect.fn("check")(function* ({ for: entry, noScreen, noMap }) {
     const report = yield* Effect.gen(function* () {
+      if (entry === "share") {
+        const checked = yield* requestServer(yield* portConfig, ServerRoutes.depsCheck, { query: { names: "cloudflared" } });
+        const items = checked.map((item) => ({ ...item, need: "required" as const, install: `pnpm cli install ${item.name}` }));
+        return { ready: missingItems(items).length === 0, items, warnings: [] };
+      }
       if (entry === "resume") return yield* requestServer(yield* portConfig, ServerRoutes.check, { query: { for: "resume" } });
       if (entry === "recorded" && noMap) return yield* requestServer(yield* portConfig, ServerRoutes.check, { query: { for: entry, noMap: "true" } });
       const model = yield* resolveModelCandidate({});
@@ -966,11 +972,12 @@ const checkCommand = Command.make(
       return yield* requestServer(yield* portConfig, ServerRoutes.check, { query: { for: entry, route: model.route, screen: String(!noScreen) } });
     });
     yield* write(JSON.stringify(report));
-    if (report.items.some((item) => item.need === "required" && item.state !== "ready" && item.state !== "outdated")) return yield* new RequiredDepsMissing();
+    if (missingItems(report.items).length > 0) return yield* new RequiredDepsMissing();
   }),
 ).pipe(Command.withDescription(
-  "開始せず依存を JSON で確認する。--for start|resume|play|recorded（既定 start）。play はサーバーを使わず、resume は開始時モデルを使う。"
+  "開始せず依存を JSON で確認する。--for start|resume|play|recorded|share（既定 start）。play はサーバーを使わず、resume は開始時モデルを使う。"
     + "recorded は既定でマップあり、--no-map で helper・speech-ja だけを確認する。recorded の確認には常駐サーバーが必要。"
+    + "--for share は cloudflared を必須として確認する。共有の確認には常駐サーバーが必要。"
     + "管理依存は入れる前に利用者に確認する",
 ));
 
