@@ -20,6 +20,6 @@
     "typecheck:linux": "pnpm --filter @live-mindmap/server --filter @live-mindmap/web --filter @live-mindmap/e2e typecheck && pnpm fallow"
   },
   "devDependencies": {
-    "fallow": "3.33.1"
+    "fallow": "3.39.0"
   }
 }
