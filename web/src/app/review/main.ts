@@ -1,5 +1,5 @@
 import { Menu, Popover, Slider, Tooltip } from "@foldkit/ui";
-import { Option, Schema } from "effect";
+import { Option, Schema, Struct } from "effect";
 import { Update } from "foldkit";
 import type { Html, HtmlBuilder } from "foldkit/html";
 import { modifyFields } from "foldkit/struct";
@@ -41,16 +41,7 @@ export const Model = Schema.Struct({
   maybeSeekPointer: Schema.Option(Schema.Finite),
   isPressingSlider: Schema.Boolean,
   captionsHidden: Schema.Boolean,
-  sessionLayout: Schema.Struct({
-    intake: SessionLayout.Model.fields.intake,
-    intakeToast: SessionLayout.Model.fields.intakeToast,
-    screenToast: SessionLayout.Model.fields.screenToast,
-    tapToast: SessionLayout.Model.fields.tapToast,
-    discussionToast: SessionLayout.Model.fields.discussionToast,
-    viewingToast: SessionLayout.Model.fields.viewingToast,
-    diffUpdate: SessionLayout.Model.fields.diffUpdate,
-    local: SessionLayout.Model.fields.local,
-  }),
+  sessionLayout: SessionLayout.Model.mapFields(Struct.omit(["captions", "captionsHidden", "selfPaused", "nameEdit"])),
 });
 export type Model = typeof Model.Type;
 
