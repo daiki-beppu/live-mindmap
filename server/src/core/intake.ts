@@ -1,4 +1,5 @@
-import { Schema } from "effect";
+import { DateTime, Schema } from "effect";
+import { DiffUpdateStatusReport } from "./diffUpdate.ts";
 import type { SpeakerLogEvent } from "./live.ts";
 
 export const SessionIntakeStatus = Schema.Literals(["none", "running", "interrupted", "stopped"]);
@@ -77,6 +78,7 @@ export const IntakeStatusReport = Schema.Struct({
   restarts: Schema.optionalKey(Schema.Finite),
   lastInterruptedAt: Schema.optionalKey(Schema.String),
   stoppedReason: Schema.optionalKey(Schema.String),
+  diffUpdate: Schema.optionalKey(DiffUpdateStatusReport),
 });
 export type IntakeStatusReport = typeof IntakeStatusReport["Type"];
 
@@ -94,5 +96,14 @@ export function formatIntakeStatus(report: IntakeStatusReport): string {
   if (report.dir !== undefined) lines.push(`セッションのフォルダ: ${report.dir}`);
   if (report.restarts !== undefined) lines.push(`起動し直した回数: ${report.restarts}`);
   if (report.lastInterruptedAt !== undefined) lines.push(`最後の途切れの時刻: ${report.lastInterruptedAt}`);
+  if (report.diffUpdate !== undefined) {
+    const diff = report.diffUpdate;
+    lines.push(`差分更新: ${diff.status === "paused" ? "一時停止" : STATUS_WORDS[diff.status]}`);
+    if (diff.status === "paused") {
+      lines.push(`一時停止の理由: ${diff.reason}`);
+      lines.push(`次に試す時刻: ${DateTime.formatIso(DateTime.makeUnsafe(diff.nextRetryAt))}`);
+    }
+    if (diff.lastFailure !== undefined) lines.push(`最後の失敗: ${diff.lastFailure}`);
+  }
   return lines.join("\n") + "\n";
 }

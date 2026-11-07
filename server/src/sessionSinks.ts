@@ -13,6 +13,7 @@ import { makeSessionVocabulary, modelReadings } from "./sessionVocabulary.ts";
 import { recordedFeed, type RecordedFeed, type TrackEnds } from "./recordedFeed.ts";
 import { directFeed, makeRemarkFlow, type Ending, type Feed, type Inlet } from "./remarkFlow.ts";
 import type { Session } from "./core/index.ts";
+import type { DiffUpdateStatusReport } from "./core/diffUpdate.ts";
 import { ReviewBuild } from "./review.ts";
 import { SpeakerNameRejected } from "./sessionFailure.ts";
 import { errorMessage, fileReason } from "./truthFile.ts";
@@ -25,6 +26,7 @@ type Written = {
 };
 
 type SinkBase = {
+  diffUpdateStatus: Effect.Effect<DiffUpdateStatusReport | undefined>;
   writeFailure: Effect.Effect<SessionWriteFailed>;
   writeError: Effect.Effect<SessionWriteFailed | undefined>;
   dir: string;
@@ -137,6 +139,7 @@ export class SessionSinks extends Context.Service<SessionSinks, {
             }),
           });
           const sink: SinkBase = {
+            diffUpdateStatus: args.noMap === true ? Effect.succeed(undefined) : session.diffUpdateStatus,
             writeFailure, writeError,
             dir,
             partial: flow.partial,

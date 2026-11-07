@@ -473,6 +473,7 @@ describe("cli recorded <file>", () => {
     yield* runCli(["status"]).pipe(Effect.provide(during.layer));
     expect(during.stdout.join("")).toContain("動いている");
     expect(during.stdout.join("")).toContain(`セッションのフォルダ: ${dir}`);
+    expect(during.stdout.join("")).toContain("差分更新: 動いている");
 
     yield* Fiber.interrupt(running);
 

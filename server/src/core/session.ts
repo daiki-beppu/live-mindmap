@@ -1,4 +1,6 @@
 import type { SessionWriteFailed } from "./sessionWriteFailed.ts";
+import { diffFailureMessage } from "./diffFailureMessage.ts";
+import type { DiffUpdateStatusReport } from "./diffUpdate.ts";
 import { Cause, Clock, Context, DateTime, Effect, Exit, Fiber, Predicate, Ref, Result, Schema, Semaphore, Stream, type Scope } from "effect";
 import { DIFF_UPDATE_RETRY_MS, DiffUpdatePaused, DiffUpdatePausedEvent, DiffUpdateRetryEvent, DiffUpdateResumedEvent, DiffUpdateStateEvent, type DiffUpdateLifecycle, type DiffUpdateState } from "./diffUpdate.ts";
 import { createDiscussionNoticeState, DiscussionNoticeEvent, nextDiscussionNotice, observeDiscussion, recordDiscussionNotice, type DiscussionNoticeState } from "./discussionNotice.ts";
@@ -310,6 +312,7 @@ export type Session = {
   readonly snapshot: Effect.Effect<Snapshot>;
   readonly diffUpdate: Effect.Effect<DiffUpdateState>;
   readonly nextRetryAt: Effect.Effect<number | undefined>;
+  readonly diffUpdateStatus: Effect.Effect<DiffUpdateStatusReport>;
   readonly unreflectedRemarks: Effect.Effect<Remark[]>;
   readonly exportJson: Effect.Effect<JsonExport>;
 };
@@ -318,6 +321,7 @@ type Reservation = { readonly kind: "reserved"; readonly call: number };
 type InFlight = Reservation | { readonly kind: "running"; readonly call: number; readonly fiber: Fiber.Fiber<void, SessionWriteFailed> };
 
 type Runtime = {
+  readonly lastDiffFailure: string | undefined;
   readonly previousResponse: PreviousResponse | undefined;
   readonly retryEnabled: boolean;
   readonly nextRetryAt: number | undefined;
@@ -365,7 +369,7 @@ const openSession = Effect.fnUntraced(function* (initial: SessionState, screens:
   const scope = yield* Effect.scope;
   const targetLog = yield* SessionLog;
   const screenTransitions = yield* Semaphore.make(1);
-  const ref = yield* Ref.make<SessionState & Runtime>({ ...initial, previousResponse: undefined, retryEnabled: true, nextRetryAt: undefined, inFlight: undefined, nextCall: 0, reflecting: [], catchUpUntil: undefined, screenQueue: screens.queue, screenFiles: screens.files });
+  const ref = yield* Ref.make<SessionState & Runtime>({ ...initial, lastDiffFailure: undefined, previousResponse: undefined, retryEnabled: true, nextRetryAt: undefined, inFlight: undefined, nextCall: 0, reflecting: [], catchUpUntil: undefined, screenQueue: screens.queue, screenFiles: screens.files });
   const log: SessionLog["Service"] = {
     ...targetLog,
     write: (event) => targetLog.write(event).pipe(Effect.tapError(() =>
@@ -426,7 +430,10 @@ const openSession = Effect.fnUntraced(function* (initial: SessionState, screens:
     if (changed) yield* log.write({ type: "diff-update-state", state });
   });
   if (updater?.lifecycle) yield* Effect.forkIn(Stream.runForEach(updater.lifecycle, (notification) =>
-    setLifecycleState("status" in notification ? notification : { status: "stopped" }).pipe(Effect.uninterruptible),
+    Effect.gen(function* () {
+      if (!("status" in notification)) yield* Ref.update(ref, (s) => ({ ...s, lastDiffFailure: diffFailureMessage(notification.message) }));
+      yield* setLifecycleState("status" in notification ? notification : { status: "stopped" });
+    }).pipe(Effect.uninterruptible),
   ), scope, { startImmediately: true });
 
   type Taken = { readonly fresh: readonly Remark[]; readonly call: number };
@@ -532,6 +539,7 @@ const openSession = Effect.fnUntraced(function* (initial: SessionState, screens:
           Effect.catchCause((cause) => Effect.map(classifyUnlessInterrupt(cause), (failure) => ({ ...failure, call: undefined as CallTimes | undefined }))),
         );
         if (!outcome.ok) {
+          yield* Ref.update(ref, (s) => ({ ...s, lastDiffFailure: diffFailureMessage(outcome.error) }));
           if (outcome.stopped) {
             yield* Ref.update(ref, (s) => ({ ...s, reflecting: [], pending: [...fresh, ...s.pending], previousResponse: undefined }));
             yield* setLifecycleState({ status: "stopped" });
@@ -644,6 +652,12 @@ const openSession = Effect.fnUntraced(function* (initial: SessionState, screens:
     snapshot: Effect.map(Ref.get(ref), snapshotOf),
     diffUpdate: Effect.map(Ref.get(ref), (s) => s.diffUpdate),
     nextRetryAt: Effect.map(Ref.get(ref), (s) => s.nextRetryAt),
+    diffUpdateStatus: Effect.map(Ref.get(ref), (s): DiffUpdateStatusReport => {
+      const failure = s.lastDiffFailure === undefined ? {} : { lastFailure: s.lastDiffFailure };
+      return s.diffUpdate.status === "paused"
+        ? { ...s.diffUpdate, nextRetryAt: s.nextRetryAt!, ...failure }
+        : { status: s.diffUpdate.status === "stopped" ? "stopped" : "running", ...failure };
+    }),
     unreflectedRemarks: Effect.map(Ref.get(ref), (s) => [...s.reflecting, ...s.pending].map((r) => ({ ...r }))),
     nameSpeaker,
     exportJson: Effect.map(Ref.get(ref), (s) => toJsonExport(snapshotOf(s), [...s.remarks], speakerNameMap(s.speakerNames))),
