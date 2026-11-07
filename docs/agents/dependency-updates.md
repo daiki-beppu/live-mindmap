@@ -19,7 +19,7 @@ Renovate の PR を仕上げるエージェントが、グループから既存�
 - **AEC3**: 手順は正本なし、[Checks](../../AGENTS.md#checks)。直すのは `helper/scripts/build-webrtc-apm.sh` の `COMMIT=`。Evals は [表](#evals) の AEC3 の行と、[AGENTS.md の Evals](../../AGENTS.md#evals) の `measure-bootstrap.sh`。人の手は要らない。
 - **ツールチェーン**: 手順は正本なし、[Checks](../../AGENTS.md#checks)。README の決まりは [AGENTS.md の README](../../AGENTS.md#readme)。直すのは `.nvmrc`、`.github/workflows/tests.yml` の `node-version`、ルートの `package.json` の `packageManager`、`README.ja.md` と `README.md` の Node の版。Evals は回さない。人の手は要らない。
 - **major**: 手順は正本なし、[Checks](../../AGENTS.md#checks)。ライブラリのグループの行も読む。直すのはライブラリのグループの行と、互換を壊した変更の指摘。Evals はライブラリのグループの行。人の手はライブラリのグループの行に従う。
-- **`lockFileMaintenance`**: 手順は正本なし、[Checks](../../AGENTS.md#checks)。直すのは `pnpm-lock.yaml` だけ。Evals は回さない。人の手は要らない。
+- **`lockFileMaintenance`**: 手順は正本なし、[Checks](../../AGENTS.md#checks)。直すのは `pnpm-lock.yaml` と、推移依存の更新で新しく出た型・fallow の指摘。Evals は回さない。人の手は要らない。
 - **managed-deps の npm**: 手順は [Claude](../../server/managed-deps/claude/README.md#固定版を更新する) と [Chromium](../../server/managed-deps/chromium/README.md#固定版を更新する) の手順 2。直すのは `server/managed-deps/claude/` と `server/managed-deps/chromium/` の `package.json` の `packageManager` と `package-lock.json`、両 README の npm の版。Evals は回さない。人の手は要らない。
 
 ## Evals
