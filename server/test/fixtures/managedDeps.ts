@@ -3,7 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { NodeServices } from "@effect/platform-node";
 import { Effect, Layer, Stream } from "effect";
-import { ManagedDeps } from "../../src/managedDeps.ts";
+import { depsDirConfig } from "../../src/config.ts";
+import { ManagedDeps, ManagedDepsFailed } from "../../src/managedDeps.ts";
 
 export const temporaryDeps = Effect.acquireRelease(
   Effect.tryPromise(() => mkdtemp(join(tmpdir(), "live-mindmap-managed-deps-"))),
@@ -75,6 +76,13 @@ export const install = Effect.fnUntraced(function* () {
 });
 
 export const check = Effect.gen(function* () { return yield* (yield* ManagedDeps).check(["chromium"]); });
+
+export const readyChromiumDeps = Layer.effect(ManagedDeps)(Effect.gen(function* () {
+  if ((yield* check).some((item) => item.state !== "ready")) {
+    return yield* new ManagedDepsFailed({ message: "Chromium がありません。pnpm cli install chromium で入る（LIVE_MINDMAP_DEPS で置き場所を変更できます）" });
+  }
+  return yield* ManagedDeps;
+})).pipe(Layer.provide(Layer.unwrap(Effect.map(depsDirConfig, (root) => managedLayer(root)))));
 
 export const calls = async (dir: string) => (await readFile(join(dir, "calls.jsonl"), "utf8")).trim().split("\n").map((line) => JSON.parse(line));
 
