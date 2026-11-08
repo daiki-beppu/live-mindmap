@@ -7,7 +7,7 @@ const repoRoot = join(import.meta.dirname, "..", "..");
 const read = (...path: string[]) => readFileSync(join(repoRoot, ...path), "utf8");
 
 const SKILLS = ["audit-program", "foldkit", "generate-program"] as const;
-const TAG = "foldkit@0.167.0";
+const TAG = "foldkit@0.170.0";
 
 describe("公式の skill の置き場（Claude Code 用と Codex 用）", () => {
   it.each(SKILLS)("%s の実体が .agents/skills に、SKILL.md と一緒にある", (name) => {
