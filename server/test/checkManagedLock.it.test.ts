@@ -11,6 +11,7 @@ describe("管理依存の固定版チェック", () => {
     const name = "@anthropic-ai/claude-agent-sdk";
     const pkg = JSON.parse(readFileSync(join(serverRoot, "package.json"), "utf8"));
     expect(pkg.dependencies[name]).toBeUndefined();
+    // renovate: datasource=npm depName=@anthropic-ai/claude-agent-sdk
     expect(pkg.devDependencies[name]).toBe("0.3.318");
     const manifest = JSON.parse(readFileSync(join(serverRoot, "managed-deps/claude/package.json"), "utf8"));
     const lock = JSON.parse(readFileSync(join(serverRoot, "managed-deps/claude/package-lock.json"), "utf8"));
@@ -41,6 +42,7 @@ describe("管理依存の固定版チェック", () => {
       const manifest = JSON.parse(readFileSync(join(dir, "managed-deps/chromium/package.json"), "utf8"));
       const fixed = manifest.dependencies["playwright-core"];
       pkg.devDependencies["playwright-core"] = fixed;
+      // renovate: datasource=npm depName=@anthropic-ai/claude-agent-sdk
       const sdkVersion = "0.3.318";
       pkg.devDependencies["@anthropic-ai/claude-agent-sdk"] = sdkVersion;
       mkdirSync(join(dir, "managed-deps/claude"), { recursive: true });
