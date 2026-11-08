@@ -1,14 +1,14 @@
 {
   "schemaVersion": "trace-1",
-  "createdAt": "2026-10-08T15:03:04.434Z",
+  "createdAt": "2026-11-08T03:27:38.880Z",
   "payload": {
     "actions": [
       {
         "name": "tap",
-        "summary": "tap button \"来月の新機能の進め方を相談したいです\"",
+        "summary": "tap button \"まず優先順位を決めましょう\"",
         "target": {
           "role": "button",
-          "name": "来月の新機能の進め方を相談したいです"
+          "name": "まず優先順位を決めましょう"
         }
       }
     ],
@@ -24,7 +24,11 @@
       "callIndex": 0,
       "agent": "default"
     },
-    "summary": "選択対象のマップノード「来月の新機能の進め方を相談したいです」は現在押下・フォーカス状態で、根拠欄にも対応する要点が表示されています。",
+    "recordedBy": {
+      "provider": "chatgpt.responses",
+      "model": "gpt-6-luna"
+    },
+    "summary": "マップのノード「まず優先順位を決めましょう」を選択しました。根拠欄に該当発言（00:04〜00:07、自分）が表示されています。",
     "startPath": "/",
     "endPath": "/",
     "endAnchors": [
@@ -32,8 +36,11 @@
         "text": "相手"
       },
       {
+        "text": "自分"
+      },
+      {
         "role": "button",
-        "name": "来月の新機能の進め方を相談したいです",
+        "name": "まず優先順位を決めましょう",
         "states": [
           "pressed"
         ]
@@ -41,13 +48,26 @@
     ],
     "goneAnchors": [
       {
+        "text": "相手 B"
+      },
+      {
         "text": "ノードを選ぶと、根拠の発言が出ます"
       },
       {
         "role": "button",
-        "name": "来月の新機能の進め方を相談したいです"
+        "name": "まず優先順位を決めましょう"
       }
     ],
-    "endWaitMs": 26974
+    "endWaitMs": 12881,
+    "keyedBy": {
+      "cacheSchema": "trace-1",
+      "policyVersion": "conservative/6",
+      "project": "52767ac911672dd10353bd42fd6da8e9bbcdf98386ac40672b24219826179a24",
+      "platform": "web",
+      "engineName": "web",
+      "engineSpiVersion": 1,
+      "appIdentity": "f9f49ed79c2662c7f6e0522da33af26cd0588919fce8b674530ba7c83e5d217c",
+      "agentContextDigest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
   }
 }

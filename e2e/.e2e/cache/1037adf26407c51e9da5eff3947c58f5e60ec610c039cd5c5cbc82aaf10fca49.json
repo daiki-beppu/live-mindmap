@@ -1,6 +1,6 @@
 {
   "schemaVersion": "trace-1",
-  "createdAt": "2026-10-19T23:43:24.491Z",
+  "createdAt": "2026-11-08T03:27:38.739Z",
   "payload": {
     "actions": [
       {
@@ -27,18 +27,22 @@
     },
     "recordedFor": {
       "testId": "tests/review/review.e2e.ts::%E8%A6%8B%E8%BF%94%E3%81%97%3A%20%E6%99%82%E5%88%BB%E3%82%92%E5%85%88%E9%A0%AD%E3%81%B8%E5%8B%95%E3%81%8B%E3%81%99%E3%81%A8%E3%80%81%E7%B5%82%E3%82%8F%E3%82%8A%E3%81%A7%E6%8F%83%E3%81%A3%E3%81%A6%E3%81%84%E3%81%9F%E3%83%8E%E3%83%BC%E3%83%89%E3%81%8C%E3%83%AB%E3%83%BC%E3%…",
-      "targetId": "web-full",
+      "targetId": "web",
       "instructionDigest": "fb74c4bae2ddf2f4fc9a8fe476d6dc6ca941bf0efea080957b2fc1f86c56bc12",
       "paramsDigest": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
       "callIndex": 0,
       "agent": "default"
     },
-    "summary": "「時刻」スライダーはフォーカス済みで、表示時刻が先頭の 0:00:00 です。指定された「反映」ボタンは使用していません。",
+    "recordedBy": {
+      "provider": "chatgpt.responses",
+      "model": "gpt-6-luna"
+    },
+    "summary": "「時刻」スライダーにフォーカスして Home を押し、時刻が 0:00:00 になったことを確認しました。変化リストおよびノード表示が消え、ルートだけの状態になっています。「反映 1 つ戻る」は使用していません。",
     "startPath": "/session-files/review/map.html",
     "endPath": "/session-files/review/map.html",
     "endAnchors": [
       {
-        "text": "0:00:00"
+        "text": "0:00:00 / 0:01:00"
       }
     ],
     "goneAnchors": [
@@ -69,6 +73,16 @@
         "name": "要点2"
       }
     ],
-    "endWaitMs": 28101
+    "endWaitMs": 13035,
+    "keyedBy": {
+      "cacheSchema": "trace-1",
+      "policyVersion": "conservative/6",
+      "project": "52767ac911672dd10353bd42fd6da8e9bbcdf98386ac40672b24219826179a24",
+      "platform": "web",
+      "engineName": "web",
+      "engineSpiVersion": 1,
+      "appIdentity": "f9f49ed79c2662c7f6e0522da33af26cd0588919fce8b674530ba7c83e5d217c",
+      "agentContextDigest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
   }
 }
