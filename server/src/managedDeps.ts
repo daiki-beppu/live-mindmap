@@ -274,7 +274,7 @@ const make = Effect.fnUntraced(function* (options: ManagedDepsOptions) {
       const record = yield* readJson(join(entity, "node_modules/playwright-core/browsers.json"), BrowserRecord);
       const shell = record.browsers.find((browser) => browser.name === "chromium-headless-shell");
       if (shell === undefined) return yield* new ManagedDepsFailed({ message: "headless shell の revision がありません" });
-      // 固定版 1.63.0 の browsers.json に shell の override は無い。将来の版変更はこの対応も見直す。
+      // shell の revisionOverrides（platform ごとの別 revision）は解決していない。付いた版では導入を止める。
       if (shell.revisionOverrides !== undefined) return yield* new ManagedDepsFailed({ message: "未対応の headless shell revision override です" });
       const directory = join(browsers, `chromium_headless_shell-${shell.revision}`);
       return { directory, marker: join(directory, MARKER) };
