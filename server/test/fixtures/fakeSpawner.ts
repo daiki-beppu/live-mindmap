@@ -1,9 +1,18 @@
-import { Effect, Layer, PlatformError, Sink, Stream } from "effect";
+import { Effect, Layer, PlatformError, Redacted, Sink, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 export type FakeProcess =
   | { readonly code: number; readonly stdout?: string; readonly stderr?: string }
   | { readonly spawnFailure: "NotFound" };
+
+const plain = (word: string | Redacted.Redacted<string>): string => (Redacted.isRedacted(word) ? Redacted.value(word) : word);
+
+export const plainArgs = (command: ChildProcess.StandardCommand): ReadonlyArray<string> => command.args.map(plain);
+
+export const plainEnv = (command: ChildProcess.StandardCommand): Record<string, string | undefined> | undefined => {
+  const env = command.options.env;
+  return env === undefined ? undefined : Object.fromEntries(Object.entries(env).map(([key, value]) => [key, value === undefined ? undefined : plain(value)]));
+};
 
 const text = (value: string | undefined) => (value === undefined ? Stream.empty : Stream.succeed(new TextEncoder().encode(value)));
 

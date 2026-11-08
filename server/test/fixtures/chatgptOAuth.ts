@@ -5,6 +5,7 @@ import { HttpClient, HttpClientRequest } from "effect/http";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { vi } from "vitest";
 import { classification, completedSse } from "./chatgpt.ts";
+import { plainArgs } from "./fakeSpawner.ts";
 
 export type InvalidOAuth = "state" | "signature" | "issuer" | "audience" | "nonce" | "expired";
 type OAuthOptions = { invalid?: InvalidOAuth; holdCallback?: boolean; afterResponse?: (call: number) => void };
@@ -142,7 +143,7 @@ export const fakeChatgptOAuth = Effect.fnUntraced(function* (options: OAuthOptio
   const browser = Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, ChildProcessSpawner.make((command) => Effect.gen(function* () {
     if (command._tag !== "StandardCommand") throw new Error("ブラウザは単一コマンドで起動する必要があります");
     browserCommands.push(command);
-    const url = command.args.find((arg) => /^https?:\/\//.test(arg));
+    const url = plainArgs(command).find((arg) => /^https?:\/\//.test(arg));
     if (!url) throw new Error("認可 URL がありません");
     yield* Effect.promise(() => fetchOriginal(rewrite(url)));
     return ChildProcessSpawner.makeHandle({
