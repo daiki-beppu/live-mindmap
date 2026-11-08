@@ -1,4 +1,4 @@
-// contentFocus: true にすると、パネルはフォーカスを取らず、blur でも閉じない（マップを押しても一覧が閉じない今の挙動に合う）。
+// contentFocus: true にすると、パネルはフォーカスを取らず、フォーカスが離れても閉じない（マップを押しても一覧が閉じない今の挙動に合う）。
 // Popover はパネルの位置を trigger の button から決めるので、「?」のボタンは出さず、マップの右上に大きさのない button を置く（見た目と tab の順は変えない）
 import { Popover } from "@foldkit/ui";
 import type { Option } from "effect";

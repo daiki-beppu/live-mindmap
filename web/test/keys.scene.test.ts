@@ -102,7 +102,7 @@ describe("キーの一覧の Scene: 開いたままマップを動かせる（�
     );
   });
 
-  it("パネルに blur の受け口がない（blur で閉じない）。フォーカスを移さない一覧なので tabindex も無い", () => {
+  it("パネルにフォーカスが離れたときの受け口（blur・focusout）がない（離れても閉じない）。フォーカスを移さない一覧なので tabindex も無い", () => {
     scene(
       plainApp,
       given(measuredModel(plainContext, plainApp)),
@@ -111,6 +111,7 @@ describe("キーの一覧の Scene: 開いたままマップを動かせる（�
       tap((simulation) => {
         const panel = one(simulation.html, ".key-list");
         expect(panel.data?.on?.blur).toBeUndefined();
+        expect(panel.data?.on?.focusout).toBeUndefined();
         expect(attrOf(panel, "tabindex")).toBeUndefined();
       }),
       settle,

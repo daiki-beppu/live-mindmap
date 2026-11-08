@@ -13,15 +13,15 @@
     "typecheck": "tsc --noEmit && effect-tsgo diagnostics --project tsconfig.json && oxlint --no-error-on-unmatched-pattern src/app && node ../server/scripts/check-test-layers.ts && node scripts/check-css.ts"
   },
   "dependencies": {
-    "@effect/platform-browser": "4.0.6",
-    "@foldkit/ui": "0.167.0",
-    "effect": "4.0.6",
-    "foldkit": "0.167.0"
+    "@effect/platform-browser": "4.1.2",
+    "@foldkit/ui": "0.170.0",
+    "effect": "4.1.2",
+    "foldkit": "0.170.0"
   },
   "devDependencies": {
     "@effect/tsgo": "0.67.1",
-    "@foldkit/oxlint-plugin": "0.15.3",
-    "@foldkit/vite-plugin": "0.27.0",
+    "@foldkit/oxlint-plugin": "0.15.4",
+    "@foldkit/vite-plugin": "0.29.0",
     "oxlint": "^1.91.0",
     "typescript": "^7.0.2",
     "vite": "^8.3.5",
