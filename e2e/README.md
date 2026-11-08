@@ -39,7 +39,7 @@ pnpm --filter @live-mindmap/e2e test:e2e         # 全 target（web と web-full
 
 ## 記録の取り直し方
 
-記録が一致するステップは、モデルを呼ばずに再生する。記録はあるが再生できないステップ（画面の構造の変化など）は、`--strict-cache` で `REPLAY_STALE` になり止まる。モデルは呼ばない。test 名・target 名・`agent.act` の指示文・params を変えたステップは、記録と照合できず、`--strict-cache` でもモデルを呼んで実行される（`REPLAY_STALE` にはならない）。このため、名前・指示文・params を変えたら `REPLAY_STALE` を待たずに記録し直す。記録は ChatGPT のサブスクで取る。API キーは置かない（`.env` に `ANTHROPIC_API_KEY` なども置かない）。
+記録が一致するステップは、モデルを呼ばずに再生する。記録はあるが再生できないステップ（画面の構造の変化など）は、`--strict-cache` で `REPLAY_STALE` になり止まる。モデルは呼ばない。test 名・target 名・`agent.act` の指示文・params を変えたステップは、記録と照合できない。`--strict-cache` ではモデルを呼んで実行されるが、記録されない（`REPLAY_STALE` にもならない）。`--strict-cache` は記録を書きも消しもしない。このため、名前・指示文・params を変えたら、`REPLAY_STALE` を待たずに `--strict-cache` なしの `e2e run` で記録し直す。`e2e` の更新で記録の鍵が変わったときなど、全部を取り直すときは、先に `git rm -r e2e/.e2e/cache` で古い記録を消す。古い記録は自動では消えず、`--strict-cache` で `REPLAY_STALE` になる。記録は ChatGPT のサブスクで取る。API キーは置かない（`.env` に `ANTHROPIC_API_KEY` なども置かない）。
 
 ```sh
 pnpm --filter @live-mindmap/e2e exec e2e login openai   # 初回だけ。ブラウザで ChatGPT にサインインする
