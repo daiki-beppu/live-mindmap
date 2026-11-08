@@ -5,7 +5,7 @@
 set -euo pipefail
 
 REPO_URL="https://gitlab.freedesktop.org/pulseaudio/webrtc-audio-processing.git"
-# v2.1 の後で、#110 でビルドと効き目を確かめた版
+# master の先頭を Renovate が追う。上げた PR は deps:finish で docs/agents/dependency-updates.md の手順に回す
 COMMIT="d0569cfa50c1858ee279d77b3fc8870be6902441"
 
 HELPER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

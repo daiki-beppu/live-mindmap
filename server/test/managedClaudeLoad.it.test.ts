@@ -6,6 +6,7 @@ import { Effect, Result } from "effect";
 import { ManagedDeps, ManagedDepsFailed } from "../src/managedDeps.ts";
 import { managedLayer, temporaryDeps } from "./fixtures/managedDeps.ts";
 
+// renovate: datasource=npm depName=@anthropic-ai/claude-agent-sdk
 const sdkVersion = "0.3.318";
 const entity = async (root: string, version: string, outside: boolean) => {
   const dir = join(root, "claude", "entity");

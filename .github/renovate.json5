@@ -13,9 +13,28 @@
   // 既定は「自動マージしない・deps:finish を付ける」。ここから外れるのは下の自動マージの規則だけで、
   // そこでは automerge と labels を同じ規則で変える。束ねた PR は全員が自動マージのときだけ自動マージされ、
   // ラベルは全員の和になるので、PR の単位でも「自動マージしない ⇔ deps:finish」が保たれる。
-  // 規則の無い manager（AEC3 の regex など）は何も書かなくてもこちら側に入る
+  // 自動マージの規則に当たらない manager（AEC3 やテストの版の regex など）は何も書かなくてもこちら側に入る
   automerge: false,
   labels: ['deps:finish'],
+  // config:recommended の既定から test の 3 つを外し、テストに書いた版の印を custom.regex に読ませる
+  ignorePaths: ['**/node_modules/**', '**/bower_components/**', '**/vendor/**', '**/examples/**', '**/__fixtures__/**'],
+  customManagers: [
+    // テストに書いた版。`// renovate: datasource=… depName=…` の次の行の最初の "…" を読む。
+    // depName が同じなので、package.json と同じグループのブランチで書き換わる
+    {
+      customType: 'regex',
+      managerFilePatterns: ['/(^|/)test/.+\\.ts$/'],
+      matchStrings: ['// renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)\\n[^"\\n]*"(?<currentValue>[^"]+)"'],
+    },
+    {
+      customType: 'regex',
+      managerFilePatterns: ['/^helper/scripts/build-webrtc-apm\\.sh$/'],
+      matchStrings: ['REPO_URL="(?<packageName>[^"]+)"\\n(?:#[^\\n]*\\n)*COMMIT="(?<currentDigest>[0-9a-f]{40})"'],
+      depNameTemplate: 'AEC3',
+      datasourceTemplate: 'git-refs',
+      currentValueTemplate: 'master',
+    },
+  ],
   prBodyNotes: ['検証の段: CI の必須 check（変更パスの振り分けで、この系統の段が全件走る）'],
   lockFileMaintenance: {
     enabled: true,
@@ -68,6 +87,12 @@
     {
       matchPackageNames: ['e2e', '@e2e-dev/*'],
       groupName: 'e2e',
+    },
+
+    // git-refs には公開日時が無く、minimumReleaseAge を残すと AEC3 は更新が出ない
+    {
+      matchDepNames: ['AEC3'],
+      minimumReleaseAge: null,
     },
 
     // FluidAudio はほぼ毎週出る。上げるたびに speakerAccuracy を回すので月 1 回にまとめる
