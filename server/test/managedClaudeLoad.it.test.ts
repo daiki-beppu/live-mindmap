@@ -6,7 +6,7 @@ import { Effect, Result } from "effect";
 import { ManagedDeps, ManagedDepsFailed } from "../src/managedDeps.ts";
 import { managedLayer, temporaryDeps } from "./fixtures/managedDeps.ts";
 
-const sdkVersion = "0.3.288";
+const sdkVersion = "0.3.318";
 const entity = async (root: string, version: string, outside: boolean) => {
   const dir = join(root, "claude", "entity");
   const pkg = join(dir, "node_modules/@anthropic-ai/claude-agent-sdk");

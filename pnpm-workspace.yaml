@@ -5,6 +5,9 @@ packages:
   - e2e
 # bootstrap runs install alongside AEC3 and Swift resolution.
 verifyDepsBeforeRun: false
+# server は @anthropic-ai/sdk を import せず、agent SDK の sdk.d.ts の型にだけ使う。実行時の管理導入は npm ci --omit=peer なので入らない。型と Renovate の追跡のためにここで固定する
+overrides:
+  '@anthropic-ai/sdk': 1.5.0
 ignoredOptionalDependencies:
   - '@anthropic-ai/claude-agent-sdk-*'
 # lock の再生成で入る推移依存には Renovate の待ちが効かないため、pnpm でも公開から 3 日（分で指定）たった版だけを解決する。明示すると strict になり、若い版しか合わないときは入れずに止まる

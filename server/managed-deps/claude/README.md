@@ -13,7 +13,7 @@
 test "$(npm --version)" = 11.19.1 && npm install --prefix server/managed-deps/claude --package-lock-only --ignore-scripts
 ```
 
-3. `server/package.json` の型用 `devDependencies["@anthropic-ai/claude-agent-sdk"]` を同じ完全固定版にし、`pnpm-lock.yaml` と開発環境も更新する。`<更新先の固定版>` は手順1と同じ版に置き換える。`server/test/checkManagedLock.it.test.ts` の SDK 固定版期待値・fixture と、`server/test/managedClaudeLoad.it.test.ts` の `sdkVersion` も手順1と同じ完全固定版に合わせる。
+3. `server/package.json` の型用 `devDependencies["@anthropic-ai/claude-agent-sdk"]` を同じ完全固定版にし、`pnpm-lock.yaml` と開発環境も更新する。`<更新先の固定版>` は手順1と同じ版に置き換える。`server/test/checkManagedLock.it.test.ts` の SDK 固定版期待値・fixture と、`server/test/managedClaudeLoad.it.test.ts` の `sdkVersion` も手順1と同じ完全固定版に合わせる。peer の `@anthropic-ai/sdk` は `pnpm-workspace.yaml` の `overrides` で固定しているので、公開から 3 日たった最新版へ一緒に上げる。
 
 ```sh
 pnpm --filter @live-mindmap/server add --save-dev --save-exact @anthropic-ai/claude-agent-sdk@<更新先の固定版>
