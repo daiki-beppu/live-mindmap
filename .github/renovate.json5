@@ -1,0 +1,80 @@
+// 依存の更新の決まりは仕様 #1838。仕上げの手順は docs/agents/dependency-updates.md をグループ名で引く。
+// lock の再生成の Node は root の .nvmrc から Renovate が読む。constraints.node は置かない（.nvmrc と二重になり、
+// renovate-config の manager がその値を別の更新として拾う）。
+{
+  $schema: 'https://docs.renovatebot.com/renovate-schema.json',
+  extends: ['config:recommended'],
+  timezone: 'Asia/Tokyo',
+  // 平日の takt の PR と衝突させず、マージされた更新を週末の Nightly・Weekly に見せる
+  schedule: ['* * * * 6'],
+  minimumReleaseAge: '3 days',
+  osvVulnerabilityAlerts: true,
+  automergeStrategy: 'squash',
+  // 既定は「自動マージしない・deps:finish を付ける」。ここから外れるのは下の自動マージの規則だけで、
+  // そこでは automerge と labels を同じ規則で変える。束ねた PR は全員が自動マージのときだけ自動マージされ、
+  // ラベルは全員の和になるので、PR の単位でも「自動マージしない ⇔ deps:finish」が保たれる。
+  // 規則の無い manager（AEC3 の regex など）は何も書かなくてもこちら側に入る
+  automerge: false,
+  labels: ['deps:finish'],
+  prBodyNotes: ['検証の段: CI の必須 check（変更パスの振り分けで、この系統の段が全件走る）'],
+  lockFileMaintenance: {
+    enabled: true,
+    // Renovate の cron は日と曜日を AND で見るので、これは毎月最初の土曜
+    schedule: ['* * 1-7 * 6'],
+  },
+  packageRules: [
+    // 自動マージの規則。npm は lock の版ではなく package.json に書いた範囲で決める。
+    // exact pin・0.x・major は、名前を挙げなくてもどれにも当たらない
+    {
+      matchManagers: ['npm'],
+      matchCurrentValue: '/^\\^[1-9]/',
+      matchUpdateTypes: ['patch', 'minor'],
+      automerge: true,
+      labels: [],
+      groupName: 'npm 非 major',
+      // 指定しないとブランチ名から「非」が落ちて renovate/npm-major になる
+      groupSlug: 'npm-non-major',
+    },
+    {
+      matchManagers: ['github-actions'],
+      matchDepTypes: ['action'],
+      matchUpdateTypes: ['patch', 'minor'],
+      automerge: true,
+      labels: [],
+      groupName: 'actions 非 major',
+      groupSlug: 'actions-non-major',
+    },
+    // pnpm を上げると lock を書き直す道具が変わる。npm 非 major の束に入れると、pnpm の不具合で束ごと止まる
+    {
+      matchManagers: ['npm'],
+      matchFileNames: ['package.json'],
+      matchDepTypes: ['packageManager'],
+      matchDepNames: ['pnpm'],
+      matchUpdateTypes: ['patch', 'minor'],
+      automerge: true,
+      labels: [],
+    },
+
+    // 一緒に上げないと壊れる仲間。自動マージの規則より後に置き、後の groupName が勝つことで
+    // 仲間の片方が npm 非 major の束に入らないようにする
+    {
+      matchPackageNames: ['effect', '@effect/*', 'foldkit', '@foldkit/*'],
+      groupName: 'effect-foldkit',
+    },
+    {
+      matchPackageNames: ['@anthropic-ai/claude-agent-sdk'],
+      groupName: 'claude-agent-sdk',
+    },
+    {
+      matchPackageNames: ['e2e', '@e2e-dev/*'],
+      groupName: 'e2e',
+    },
+
+    // FluidAudio はほぼ毎週出る。上げるたびに speakerAccuracy を回すので月 1 回にまとめる
+    {
+      matchManagers: ['swift'],
+      matchDepNames: ['FluidInference/FluidAudio'],
+      schedule: ['* * 1-7 * 6'],
+    },
+  ],
+}
