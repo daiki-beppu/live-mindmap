@@ -62,7 +62,7 @@
       groupName: 'effect-foldkit',
     },
     {
-      matchPackageNames: ['@anthropic-ai/claude-agent-sdk'],
+      matchPackageNames: ['@anthropic-ai/claude-agent-sdk', '@anthropic-ai/sdk'],
       groupName: 'claude-agent-sdk',
     },
     {
