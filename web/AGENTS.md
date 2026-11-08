@@ -8,7 +8,7 @@ Foldkit のコードは、公式の skill と llms.txt に従って書く。こ�
 
 ## 公式の skill
 
-- 写した版は、`github.com/foldkit/foldkit` のタグ `foldkit@0.167.0`（コミット `74071173b1253e9efeec050a31ca86df1931ce5a`）の `skills/`。出どころは `skills-lock.json` にも残る。
+- 写した版は、`github.com/foldkit/foldkit` のタグ `foldkit@0.170.0`（コミット `a471adb24d750ab9e8d8312edad53ff6f26d961b`）の `skills/`。出どころは `skills-lock.json` にも残る。
 - skill の中身は書き換えない。食い違いは、この文書の側で読み替える。
 - 読み替え 1（subtree）: skill `foldkit` は、参照用に foldkit のソースを `repos/foldkit/` に subtree で置くよう書いている。この repo は subtree を置かない。ソースは入れた `node_modules` のものを読む（`web/node_modules/foldkit/` と `web/node_modules/@foldkit/ui/`）。
 - 読み替え 2（CSS）: skill `generate-program` は Tailwind を前提にしている。web は Tailwind を使わず、素の CSS と `:root` の CSS 変数で書く（ADR 0028）。
@@ -64,7 +64,7 @@ Foldkit の公式の規約に従う。公式の AGENTS.md のうちアプリ向�
 
 ## 版
 
-- web も `effect` を server と同じ版で exact に持つ。Foldkit の peer（4.0.0 の exact）は、`pnpm-workspace.yaml` の `peerDependencyRules.allowedVersions` で許す。束ねられる effect は 1 つにする。
+- web も `effect` を server と同じ版で exact に持つ。Foldkit の peer はこの版を含むので、`peerDependencyRules.allowedVersions` の許可は置いていない。束ねられる effect は 1 つにする。
 - `foldkit`・`@foldkit/ui`・`@foldkit/vite-plugin`・`@foldkit/oxlint-plugin` は exact で固定する。上げるのは、要る修正があるときか Effect を上げるときだけ。
 
 ### 版の上げ方

@@ -6,6 +6,7 @@ import { ChildProcessSpawner, type ChildProcess } from "effect/process";
 import { TestClock } from "effect/testing";
 import { WebSocketServer } from "ws";
 import { HELPER_CONTROL_TOKEN_ENV, HELPER_STOP_TIMEOUT_MS, Helpers } from "../src/helpers.ts";
+import { plainArgs, plainEnv } from "./fixtures/fakeSpawner.ts";
 
 // 接続の再試行は 10ms から始めて 2 倍ずつ伸び、200ms で頭打ちになる指数の Schedule（CT-RESTART-DECISION）。
 // 子プロセスだけを偽物にし、ヘルパーが待ち受けるはずのポートに「接続を数えて切る」サーバーを置いて、再試行の間隔を TestClock で観測する
@@ -15,7 +16,7 @@ const countingSpawner = (counter: { connections: number; spawned?: ChildProcess.
   Layer.succeed(ChildProcessSpawner.ChildProcessSpawner)(
     ChildProcessSpawner.make((command: ChildProcess.Command) =>
       Effect.gen(function* () {
-        const args = (command as ChildProcess.StandardCommand).args;
+        const args = plainArgs(command as ChildProcess.StandardCommand);
         counter.spawned?.push(command as ChildProcess.StandardCommand);
         const port = Number(args[args.indexOf("--port") + 1]);
         const server = yield* Effect.acquireRelease(
@@ -123,7 +124,7 @@ describe("Helpers の起動の引数・停止・中断（base server.heavy.test.
       const fiber = yield* Effect.forkChild(Effect.scoped(helpers.launch({ kind: "run", app: "test.app", screen: true, selfPause: INITIAL_SELF_PAUSE_STATE, audio: { dir: "/x", attempt: 1 } }, yield* Deferred.make<void>())));
       for (let i = 0; i < 100 && counter.connections < 1; i++) yield* realDelay(20);
 
-      const args = counter.spawned[0]!.args;
+      const args = plainArgs(counter.spawned[0]!);
       const port = Number(args[args.indexOf("--port") + 1]);
       expect(port).toBeGreaterThan(0);
       expect(port).not.toBe(8765);
@@ -165,8 +166,8 @@ const wsSpawner = (received: string[], envs: Array<Record<string, string | undef
   Layer.succeed(ChildProcessSpawner.ChildProcessSpawner)(
     ChildProcessSpawner.make((command: ChildProcess.Command) =>
       Effect.gen(function* () {
-        const args = (command as ChildProcess.StandardCommand).args;
-        envs.push((command as ChildProcess.StandardCommand).options.env);
+        const args = plainArgs(command as ChildProcess.StandardCommand);
+        envs.push(plainEnv(command as ChildProcess.StandardCommand));
         const port = Number(args[args.indexOf("--port") + 1]);
         yield* Effect.acquireRelease(
           Effect.sync(() => {

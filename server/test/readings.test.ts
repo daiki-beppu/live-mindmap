@@ -2,6 +2,7 @@ import { describe, expect, it } from "@effect/vitest";
 import { Effect, Layer, PlatformError, Result, Scope, Sink, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { Readings, ReadingsFailed } from "../src/readings.ts";
+import { plainArgs } from "./fixtures/fakeSpawner.ts";
 
 const encode = (s: string) => new TextEncoder().encode(s);
 
@@ -30,7 +31,7 @@ describe("Readings.layer: ヘルパーの失敗を ReadingsFailed に変える",
   it.effect("終了コード 0 で標準出力が読める JSON なら、その配列を返す（ヘルパー名の後に readings と語を渡す）", () => Effect.gen(function* () {
     const commands: ReadonlyArray<string>[] = [];
     const readings = yield* readingsWith((command) => {
-      commands.push(command.args);
+      commands.push(plainArgs(command));
       return handle('[{"surface":"港南店","romaji":"kounanten"}]', "", 0);
     });
     expect(yield* readings.readings(["港南店"])).toEqual([{ surface: "港南店", romaji: "kounanten" }]);

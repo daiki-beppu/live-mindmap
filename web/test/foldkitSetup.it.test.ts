@@ -17,10 +17,10 @@ const EXACT_VERSION = /^\d+\.\d+\.\d+$/;
 
 describe("web の Foldkit 依存（exact 固定）", () => {
   it.each([
-    ["foldkit", "0.167.0"],
-    ["@foldkit/ui", "0.167.0"],
-    ["@foldkit/vite-plugin", "0.27.0"],
-    ["@foldkit/oxlint-plugin", "0.15.3"],
+    ["foldkit", "0.170.0"],
+    ["@foldkit/ui", "0.170.0"],
+    ["@foldkit/vite-plugin", "0.29.0"],
+    ["@foldkit/oxlint-plugin", "0.15.4"],
   ])("%s を %s で入れる", (name, version) => {
     expect(all[name]).toBe(version);
     expect(all[name]).toMatch(EXACT_VERSION);
@@ -30,43 +30,6 @@ describe("web の Foldkit 依存（exact 固定）", () => {
     expect(serverEffect).toMatch(EXACT_VERSION);
     expect(web.dependencies?.effect).toBe(serverEffect);
     expect(web.dependencies?.["@effect/platform-browser"]).toBe(serverEffect);
-  });
-});
-
-describe("Foldkit の peer（effect 4.0.0）の許可", () => {
-  const workspace = read(repoRoot, "pnpm-workspace.yaml");
-
-  it("peerDependencyRules.allowedVersions で 4 つの peer を server の effect の版に許す", () => {
-    const lines = workspace.split("\n").map((line) => line.trimEnd());
-    const rootIndex = lines.indexOf("peerDependencyRules:");
-    expect(rootIndex, "peerDependencyRules:").toBeGreaterThanOrEqual(0);
-    const afterRoot = lines.slice(rootIndex + 1);
-    const rootEnd = afterRoot.findIndex((line) => line !== "" && !/^\s/.test(line));
-    const rootBlock = rootEnd === -1 ? afterRoot : afterRoot.slice(0, rootEnd);
-    const allowedIndex = rootBlock.indexOf("  allowedVersions:");
-    expect(allowedIndex, "allowedVersions:").toBeGreaterThanOrEqual(0);
-    const afterAllowed = rootBlock.slice(allowedIndex + 1);
-    const childEnd = afterAllowed.findIndex((line) => !line.startsWith("    "));
-    const childLines = childEnd === -1 ? afterAllowed : afterAllowed.slice(0, childEnd);
-    const allowed: Record<string, string> = {};
-    for (const line of childLines) {
-      const match = /^(['"]?)(.+)\1:\s*(['"]?)([^'"\s]+)\3$/.exec(line.trim());
-      const key = match?.[2];
-      const value = match?.[4];
-      expect(key !== undefined && value !== undefined, line).toBe(true);
-      if (key !== undefined && value !== undefined) allowed[key] = value;
-    }
-    expect(allowed).toEqual({
-      "foldkit>effect": serverEffect,
-      "foldkit>@effect/platform-browser": serverEffect,
-      "@foldkit/ui>effect": serverEffect,
-      "@foldkit/vite-plugin>effect": serverEffect,
-    });
-  });
-
-  it("既存の packages と ignoredOptionalDependencies を残す", () => {
-    expect(workspace).toMatch(/^packages:/m);
-    expect(workspace).toContain("ignoredOptionalDependencies");
   });
 });
 
