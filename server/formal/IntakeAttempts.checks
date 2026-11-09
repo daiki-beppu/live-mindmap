@@ -1,0 +1,11 @@
+# 性質と、それを調べる構成（intake-live: start の取り込み、intake-recorded: 録画の取り込み）
+InvOneHelperAtATime intake-live intake-recorded
+InvNotCountedAfterStop intake-live intake-recorded
+InvStoppedOnlyWhenGaveUp intake-live intake-recorded
+InvSelfPauseFollowsUser intake-live
+InvReadingPauseFollowsUser intake-recorded
+PropReachedSettles intake-live
+PropEndAfterStop intake-live intake-recorded
+# 既知の発見（.agents/skills/verify-intake-attempts/SKILL.md の「既知の発見」）
+known InvSelfPauseFollowsUser
+known PropReachedSettles

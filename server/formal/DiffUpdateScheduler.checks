@@ -1,0 +1,8 @@
+# 性質と、それを調べる構成（cloud: 一時停止と再試行、apple: 子プロセスの再起動と停止）
+InvOneCallAtATime cloud apple
+InvNoStaleInFlight cloud apple
+InvRemarksConserved cloud apple
+InvQuietAfterFlush cloud apple
+PropStoppedStays apple
+PropFlushReturns cloud apple
+# 既知の発見は「known <性質>」の行で書く（.agents/skills/verify-diff-update-scheduler/SKILL.md の「既知の発見」）
