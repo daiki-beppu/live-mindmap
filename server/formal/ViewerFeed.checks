@@ -1,0 +1,8 @@
+# 性質と、それを調べる構成（viewer-single: 同じ種類を送る Fiber が 1 つずつ、viewer-resume: resume も intake を送る）
+InvViewersMatchRetained viewer-single
+InvEndFramesAfterClose viewer-single
+InvSendsSerializedPerKind viewer-resume
+InvNoSendAfterEnd viewer-resume
+# 既知の発見（.agents/skills/verify-viewer-feed/SKILL.md の「既知の発見」）
+known InvSendsSerializedPerKind
+known InvNoSendAfterEnd
