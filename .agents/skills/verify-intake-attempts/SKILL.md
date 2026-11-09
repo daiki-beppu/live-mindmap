@@ -38,9 +38,9 @@ description: 取り込みの再起動（server/src/intakeAttempts.ts の openInt
 
 ## 範囲
 
-最後に合わせたコミット: e9e21853（origin/main、2026-11-09）
+最後に合わせた PR: #2011（2026-11-09）
 
-このモデルを入れた PR がマージされたら、この行を「最後に合わせた PR: #<番号>（日付）」に書き換えます。main は squash マージなので、それ以降はコミットではなく PR の番号で記録します。PR の squash コミットは件名の末尾に `(#<番号>)` が付くので、`git log "$(git log -1 --format=%H --grep='(#<番号>)$' origin/main)"..origin/main -- <ファイル>` で後の変更を出せます（コミットのままのうちは `git log e9e21853..origin/main -- <ファイル>`）。次のファイルが変わっていたら、手順 2 から見直します。
+この PR が main に入った後に次のファイルが変わっていたら、手順 2 から見直します。PR の squash コミットは件名の末尾に `(#2011)` が付くので、`git log "$(git log -1 --format=%H --grep='(#2011)$' origin/main)"..origin/main -- <ファイル>` で後の変更を出せます。
 
 - `server/src/intakeAttempts.ts`: `openIntake` の中の `launch`・`connect`・`serve`・`run`（`finishAttempt`・`readConnected`・`readNext`・`body`）・返す `send`・`stop`
 - `server/src/core/intake.ts`: `decideIntakeRestart`・`isConfigurationChangeExit`・`MAX_CONSECUTIVE_FAILURES`・`MAX_CONFIGURATION_CHANGES`・`RESTART_WINDOW_MS`・`CONFIGURATION_CHANGE_WINDOW_MS`

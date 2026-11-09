@@ -65,12 +65,9 @@ description: 画面への配信（server/src/viewers.ts の send・forSession・
 
 ## 範囲
 
-最後に合わせたコミット: e9e21853（origin/main、2026-11-09）
+最後に合わせた PR: #2011（2026-11-09）
 
-このモデルを入れた PR が main に入ったら、上の行を「最後に合わせた PR: #<番号>（<日付>）」に書き換えます。main は squash マージなので、その後はコミットではなく PR の番号で記録します。次のファイルがその後に変わっていたら、手順 2 から見直します。
-
-- PR の番号で記録した後は、`git log "$(git log -1 --format=%H --grep='(#<番号>)$' origin/main)"..origin/main -- <ファイル>` で後の変更を出せます。PR の squash コミットは件名の末尾に `(#<番号>)` が付くからです。
-- コミットのままなら、`git log e9e21853..origin/main -- <ファイル>` で出せます。
+この PR が main に入った後に次のファイルが変わっていたら、手順 2 から見直します。PR の squash コミットは件名の末尾に `(#2011)` が付くので、`git log "$(git log -1 --format=%H --grep='(#2011)$' origin/main)"..origin/main -- <ファイル>` で後の変更を出せます。
 
 対象のファイル:
 
