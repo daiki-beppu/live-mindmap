@@ -1,9 +1,6 @@
 import AVFoundation
 import Foundation
 
-// 台本から、続けて話す会議の音声を合成する（`say` で行ごとに作り、時刻を決めて 1 本の wav に重ねる）。
-// 時刻の式は bench の gen.py と同じ: 先頭に無音を置き、各行は start = t、end = t + 長さ、次の t = t + 長さ + gap。
-
 let synthSampleRate = 16_000.0
 
 struct PlacedLine: Equatable {
@@ -11,7 +8,6 @@ struct PlacedLine: Equatable {
     var end: Double
 }
 
-/// 各行の start / end。`gaps[i]` は i 行目のあとの無音（負なら次の行が重なる）。start が 0 未満になる場合は 0 に置く。
 func placeLines(durations: [Double], gaps: [Double], leadingSilence: Double) -> [PlacedLine] {
     var t = leadingSilence
     var placed: [PlacedLine] = []
@@ -28,7 +24,6 @@ struct PlacedSamples {
     var samples: [Float]
 }
 
-/// 配置したサンプルを足し合わせる。足し合わせた最大振幅が 1 を超えるときは、切り詰めず全体を同じ比率で小さくする。
 func mixPlacedSamples(_ parts: [PlacedSamples]) -> [Float] {
     let length = parts.map { $0.startFrame + $0.samples.count }.max() ?? 0
     var mixed = [Float](repeating: 0, count: length)
@@ -43,12 +38,10 @@ func mixPlacedSamples(_ parts: [PlacedSamples]) -> [Float] {
     return mixed
 }
 
-// MARK: 台本
-
 struct Scenario: Decodable {
     var title: String
     var gap: Double
-    var lines: [[String]]  // [話者, 本文] か [話者, 本文, 種別（決定 / TODO）, 正解の文]
+    var lines: [[String]]
 }
 
 struct SynthesizedLine: Codable {
@@ -64,7 +57,7 @@ struct TruthEntry: Codable {
     var to: Double
 }
 
-private let voices = ["A": "Kyoko", "B": "Reed"]  // A = 相手、B = 自分
+private let voices = ["A": "Kyoko", "B": "Reed"]
 private let speechRate = "190"
 private let leadingSilence = 1.0
 private let trailingSilence = 3.0
@@ -83,7 +76,6 @@ enum SynthError: Error, CustomStringConvertible {
     }
 }
 
-/// `say` で 1 行を作り、mono 16 kHz の Float に変える。
 private func speak(_ text: String, voice: String, in dir: URL, index: Int) throws -> [Float] {
     let aiff = dir.appendingPathComponent("line\(index).aiff")
     let say = Process()
@@ -132,7 +124,6 @@ func writeWav(_ samples: [Float], to url: URL, sampleRate: Double = synthSampleR
     try file.write(from: buffer)
 }
 
-/// 1 つの台本を `<outDir>/<name>.wav` と、行の時刻 `<name>.lines.json`、正解 `<name>.truth.json` にする。
 func synthesize(name: String, scenario: Scenario, gapOverride: Double?, outDir: URL) throws {
     let gap = gapOverride ?? scenario.gap
     let work = FileManager.default.temporaryDirectory.appendingPathComponent("stt-bench-\(UUID().uuidString)")

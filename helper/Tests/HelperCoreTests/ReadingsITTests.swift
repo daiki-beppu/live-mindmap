@@ -2,9 +2,6 @@ import Foundation
 import Testing
 @testable import HelperCore
 
-// 語ごとのローマ字の読み（Issue #640）。実際の CFStringTokenizer（ja）を通す。
-// 期待値は実際のトークナイザの出力（macOS 上で確認した値）。
-
 @Suite("語ごとの読み（readings(of:)）", .timeLimit(.minutes(1)))
 struct ReadingsITTests {
     @Test("漢字の語にローマ字の読みが付き、語ごとに入力の順で返る")
@@ -19,7 +16,6 @@ struct ReadingsITTests {
 
     @Test("トークナイザが語を分けても、1 語の読みは語の読みをつないだ 1 つの値になる")
     func joinsTokens() {
-        // 「江南店」は 江南 / 店 の 2 語に区切られる
         #expect(readings(of: ["江南店"]) == [Reading(surface: "江南店", romaji: "kounanten")])
     }
 

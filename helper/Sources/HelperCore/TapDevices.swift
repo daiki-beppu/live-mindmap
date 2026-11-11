@@ -1,10 +1,8 @@
 import CoreAudio
 import Foundation
 
-/// タップが無音かどうかを判定するまでの時間。開始からこの時間、フレームのあるバッファが 1 つも届かなければ無音と見なす。
 public let tapSilentJudgementDelay: Duration = .seconds(10)
 
-/// 記録する機器 1 件。読めなかった部分は nil。
 public struct TapDevice: Sendable, Equatable {
     public var uid: String?
     public var name: String?
@@ -15,10 +13,8 @@ public struct TapDevice: Sendable, Equatable {
     }
 }
 
-/// 記録する対象プロセス 1 件。読めなかった値は nil。
 public struct TapProcessDevices: Sendable, Equatable {
     public var pid: Int32?
-    /// 出力スコープの `kAudioProcessPropertyDevices`。
     public var devices: [TapDevice]?
     public var isRunningOutput: Bool?
 
@@ -34,7 +30,6 @@ private func describe(_ device: TapDevice?) -> String {
     return "\(device.uid ?? "?")(\(device.name ?? "?"))"
 }
 
-/// 集約デバイスの主のサブデバイス・既定の出力・対象プロセスの出力先を 1 行にする。読めない値は `?`。Core Audio は呼ばない。
 public func tapDevicesLine(aggregateMain: TapDevice?, defaultOutput: TapDevice?, processes: [TapProcessDevices]) -> String {
     var parts = [
         "tap devices:",
@@ -83,8 +78,6 @@ private func processDevices(_ process: AudioObjectID) -> [TapDevice]? {
     return ids.prefix(Int(size) / MemoryLayout<AudioObjectID>.size).map { tapDevice(object: $0) ?? TapDevice(uid: nil, name: nil) }
 }
 
-/// いま読める値から、記録の 1 行を作る。読めない値は `?` にして、throw しない。
-/// `aggregateMainUID` は ProcessTap が集約デバイスの主のサブデバイスに使った UID（作る前や読めないときは nil）。
 public func currentTapDevices(targets: [AudioProcess], aggregateMainUID: String?) -> String {
     let defaultOutput = (try? audioProperty(
         AudioObjectID(kAudioObjectSystemObject), kAudioHardwarePropertyDefaultOutputDevice,

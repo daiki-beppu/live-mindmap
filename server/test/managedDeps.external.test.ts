@@ -29,7 +29,6 @@ describe("管理 Chromium の実導入", () => {
       fakeReadings().layer,
     ).pipe(Layer.provideMerge(NodeFileSystem.layer));
     const layers = realLayers(options, exportServices);
-    // 差分更新は偽物なので、Claude SDK の確かめは ready に見せる（Chromium は実物）
     const server = yield* startedServer(options, { ...layers, managedDeps: withFakeClaude(layers.managedDeps) });
     const result = yield* Effect.tryPromise(() => new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
       execFile("pnpm", ["cli", "install", "chromium"], {

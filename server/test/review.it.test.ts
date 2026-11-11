@@ -11,14 +11,11 @@ import { BrokenLogLine, reviewVariants, selfReviewVariants, writeReviews } from 
 import { embeddedAudio, fakeAudioMix, FAKE_MIX_BYTES } from "./fixtures/audioMix.ts";
 import { embeddedText, TEMPLATE } from "./fixtures/review.ts";
 
-// 書き出し（writeReviewPages）が、本物のファイルシステムで HTML・音声を書くこと。ビルドだけ偽物にする。埋め込み単体の確認は review.test.ts
-
 const temporaryDirectory = Effect.acquireRelease(
   Effect.tryPromise(() => mkdtemp(join(tmpdir(), "live-mindmap-review-test-"))),
   (path) => Effect.promise(() => rm(path, { recursive: true, force: true })),
 );
 
-// HTML の書き込み・mix の一時フォルダと、writeReviews が読むログには本物の FileSystem を使う
 const fakeBuild = (build: Effect.Effect<string, ReviewPageFailed>) =>
   <A, E, R>(self: Effect.Effect<A, E, R>) =>
     self.pipe(Effect.provideService(ReviewBuild, ReviewBuild.of({ build })), Effect.provide(NodeFileSystem.layer));
@@ -56,7 +53,7 @@ describe("review の書き出し", () => {
     );
 
     expect(skipped).toEqual([]);
-    expect(mix.calls).toEqual([]); // 音声を混ぜない版だけなら、mix は呼ばない
+    expect(mix.calls).toEqual([]);
     expect(paths).toEqual([join(dir, "map.html"), join(dir, "second.html")]);
     expect(builds).toBe(1);
     for (const path of paths) {
@@ -220,7 +217,7 @@ describe("reviewVariants（録音の有無で版の一覧を決める）", () =>
     const dir = yield* folder("log.jsonl", "map.html", "map-audio.html", "map.png", "export.json", "メモ.m4a", "相手.txt");
     mkdirSync(join(dir, "相手"));
     writeFileSync(join(dir, "相手", "x.m4a"), "x");
-    mkdirSync(join(dir, "自分.m4a")); // 名前が録音の形でも、フォルダは録音ではない
+    mkdirSync(join(dir, "自分.m4a"));
 
     expect(yield* reviewVariants(dir)).toEqual([PLAIN]);
     expect(yield* reviewVariants(yield* folder())).toEqual([PLAIN]);

@@ -315,7 +315,6 @@ describe("管理 Chromium の導入", () => {
       },
     };
     const layer = ManagedDeps.layer({ root, npm }).pipe(Layer.provide(Layer.mergeAll(NodeServices.layer, Layer.succeed(FileSystem.FileSystem, altered))));
-    // rename の失敗は defect として注入するため、cause で成功/失敗を観測する。
     const result = yield* install().pipe(Effect.provide(layer), Effect.exit);
     expect(result._tag).toBe("Failure");
     expect(reached).toBe(true);

@@ -8,11 +8,6 @@ import { describe, expect, it } from "@effect/vitest";
 import { Effect, Layer } from "effect";
 import { ScreenJpeg } from "../src/screenJpeg.ts";
 
-// 本物の ScreenJpeg（macOS の sips）が、PNG を 1280×720 に収まる JPEG にすること。
-// sips は macOS にしか無く、CI は ubuntu なので、macOS のときだけ走らせる（それ以外は skip）。
-// 縮める大きさの計算（fitSize）と、sips が失敗したときの ScreenJpegFailed への写像は screenJpeg.test.ts（偽の ChildProcessSpawner）。
-// CI で走るテストは偽の ScreenJpeg を使う（fixtures/screenJpeg.ts）。
-
 const chunk = (type: string, data: Buffer) => {
   const body = Buffer.concat([Buffer.from(type, "latin1"), data]);
   const length = Buffer.alloc(4);
@@ -22,12 +17,11 @@ const chunk = (type: string, data: Buffer) => {
   return Buffer.concat([length, body, crc]);
 };
 
-// 単色の RGB の PNG を作る
 function png(width: number, height: number): Buffer {
   const header = Buffer.alloc(13);
   header.writeUInt32BE(width, 0);
   header.writeUInt32BE(height, 4);
-  header.set([8, 2, 0, 0, 0], 8); // 8bit・RGB・標準の圧縮・フィルタ・インターレースなし
+  header.set([8, 2, 0, 0, 0], 8);
   const row = Buffer.concat([Buffer.from([0]), Buffer.alloc(width * 3, 0x80)]);
   const raw = Buffer.concat(Array.from({ length: height }, () => row));
   return Buffer.concat([
@@ -38,7 +32,6 @@ function png(width: number, height: number): Buffer {
   ]);
 }
 
-// JPEG の SOF マーカーから寸法を読む
 function jpegSize(data: Uint8Array): { width: number; height: number } {
   const view = Buffer.from(data);
   expect([view[0], view[1]]).toEqual([0xff, 0xd8]);
@@ -75,7 +68,6 @@ describe.skipIf(process.platform !== "darwin")("ScreenJpeg の実物の Layer（
       const size = jpegSize(bytes);
       expect(size.width).toBeLessThanOrEqual(1280);
       expect(size.height).toBeLessThanOrEqual(720);
-      // 縦横の比は保つ（丸めの 1 ピクセル分は許す）
       expect(Math.abs(size.width / size.height - 2560 / 1440)).toBeLessThan(0.02);
     }).pipe(Effect.scoped));
 });

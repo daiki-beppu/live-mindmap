@@ -25,7 +25,6 @@ const SPELLING_VARIANTS: ReadonlyArray<readonly [string, string]> = [
 
 function matchKey(romaji: string): string {
   let s = romaji.toLowerCase().normalize("NFD").replace(/\p{M}/gu, "");
-  // 小さいカナ: ~tsu を落とし、残る ~ を外す（ts→t の寄せより前に行う）
   s = s.replaceAll("~tsu", "").replaceAll("~", "");
   for (const [from, to] of SPELLING_VARIANTS) s = s.replaceAll(from, to);
   const out: string[] = [];

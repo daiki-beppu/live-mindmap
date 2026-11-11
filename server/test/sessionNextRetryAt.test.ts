@@ -4,14 +4,10 @@ import { TestClock } from "effect/testing";
 import { DIFF_UPDATE_RETRY_MS, DiffUpdatePaused, makeSession, type DiffInput, type Remark } from "../src/core/index.ts";
 import { settleUntil, silentLog, updaterLayer } from "./fixtures/sessionLayers.ts";
 
-// Issue #1092: 一時停止の間、進み具合に「次に試す時刻」を出すため、Session が次に試す時刻（エポックからのミリ秒）を読めるようにする。
-// 時刻の規則は今までと同じ: retryAt が先ならその時刻、無い・過ぎていれば DIFF_UPDATE_RETRY_MS 後、再試行でも戻らなければ DIFF_UPDATE_RETRY_MS ごと。
-
 const remark = (n: number): Remark => ({ id: `r${n}`, track: "相手", start: n, end: n + 1, text: `発言${n}。` });
 const reason = "ChatGPT の利用上限";
 const pausedWith = (retryAt?: number) => new DiffUpdatePaused({ reason, message: reason, ...(retryAt === undefined ? {} : { retryAt }) });
 
-// failures の i 番目の呼び出しは、その値で一時停止し、それより後の呼び出しは成功する。
 const session = Effect.fnUntraced(function* (failures: ReadonlyArray<DiffUpdatePaused>) {
   const calls: DiffInput[] = [];
   const made = yield* makeSession({ title: "定例" }).pipe(Effect.provide(Layer.merge(
@@ -79,7 +75,6 @@ describe("Session.nextRetryAt（一時停止の次に試す時刻）", () => {
     yield* settleUntil(() => calls.length > 1);
     yield* s.idle;
     expect(calls).toHaveLength(2);
-    // 古い時刻（first）のままではなく、再試行した時点（first）から 5 分後
     expect(yield* s.nextRetryAt).toBe(first + DIFF_UPDATE_RETRY_MS);
 
     yield* TestClock.adjust(DIFF_UPDATE_RETRY_MS);

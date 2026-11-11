@@ -19,7 +19,6 @@ export const createRecordedBacklog = Effect.fnUntraced(function* <A, E = never>(
   );
   return {
     offer: (item: A): Effect.Effect<void> => Effect.asVoid(Queue.offer(queue, item)),
-    // 最後の発言の呼び出しも一時停止しうるので、溜まりが空でも解けるまで待ってから終える
     finish: Effect.andThen(Queue.end(queue), Effect.andThen(Fiber.join(worker), hold === undefined ? Effect.void : Effect.raceFirst(hold, Deferred.await(discarded)))),
     discard: Effect.andThen(Ref.set(discarding, true), Effect.andThen(Deferred.succeed(discarded, undefined), Queue.end(queue))),
   };

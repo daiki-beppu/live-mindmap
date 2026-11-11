@@ -1,4 +1,3 @@
-// bench/sttReplay.ts の Command。Claude への接続（claude.ts）だけを偽物にし、再生・集計・出力・失敗は本物で通す
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "@effect/vitest";
@@ -125,14 +124,13 @@ describe("sttReplay の Command", () => {
     const { result, stdout, stderr } = yield* runCommand([writeInputs(dir)]);
     expect(result._tag).toBe("Success");
     const lines = stdout.split("\n");
-    expect(lines).toHaveLength(3); // 末尾の改行で最後が空
+    expect(lines).toHaveLength(3);
     expect(lines[0]).toMatch(/^話し終わり → ノード p50 -?\d+\.\d 秒 \/ p90 -?\d+\.\d 秒（1 件）$/);
     expect(lines[1]).toMatch(/^セッション: .+/);
     expect(lines[2]).toBe("");
     expect(stderr).toBe("");
     expect(calls.flat()).toEqual(["r1"]);
     expect(managed.load).toHaveBeenCalledExactlyOnceWith("claude");
-    // 出したパスは実在するセッションのフォルダで、再生のログが書かれている
     const sessionDir = lines[1]!.slice("セッション: ".length);
     expect(existsSync(join(sessionDir, "log.jsonl"))).toBe(true);
   }).pipe(Effect.scoped));
@@ -159,7 +157,7 @@ describe("sttReplay の Command", () => {
     const { result, stdout } = yield* runCommand([file, "--truth", truth, "--lines", lines]);
     expect(result._tag).toBe("Success");
     const out = stdout.split("\n");
-    expect(out[0]).toMatch(/（1 件）$/); // 覆う発言のない行（100〜101 秒）は数えない
+    expect(out[0]).toMatch(/（1 件）$/);
     expect(out[1]).toBe("再現率 決定 0/0 TODO 1/1");
     expect(out[2]).toMatch(/^セッション: /);
   }).pipe(Effect.scoped));
@@ -185,7 +183,7 @@ describe("sttReplay の Command", () => {
     expect(String(failure?.reason)).not.toBe("");
     expect(stdout).toBe("");
     expect(calls).toEqual([]);
-    expect(close).toHaveBeenCalledTimes(1); // 開いた差分更新は失敗でも閉じる
+    expect(close).toHaveBeenCalledTimes(1);
   }).pipe(Effect.scoped));
 
   it.effect("セッションのフォルダを一時領域に作れないときは、文字列ではなく ReplaySessionFailed（パス入り）で失敗し、何も出さず差分更新も呼ばない", () => Effect.gen(function* () {
@@ -199,7 +197,6 @@ describe("sttReplay の Command", () => {
     expect(String(failure?.reason)).not.toBe("");
     expect(stdout).toBe("");
     expect(calls).toEqual([]);
-    // 入口は stderr に「<パス>: 再生のセッションを作れないか、そのログを読めません（<理由>）」の 1 行を出す
     const reported = consoleCapture();
     yield* reportFailure(Cause.fail(failure)).pipe(Effect.provide(reported.layer));
     expect(reported.stdout).toEqual([]);
@@ -265,7 +262,6 @@ describe("sttReplay の Command", () => {
     expect(result._tag).toBe("Success");
   }).pipe(Effect.scoped));
 
-  // プロセスの入口（bench/sttReplay.ts の実行）が使う Command の、--help と位置引数の欠落。処理本体（SDK の確認）は走らない
   it.effect("--help は使い方を stdout に出して成功する（stderr は空。管理 SDK は確認しない）", () => Effect.gen(function* () {
     const { result, stdout, stderr } = yield* runCommand(["--help"]);
     expect(result._tag).toBe("Success");

@@ -12,15 +12,9 @@ import { FocusSpeakerNameInput, RequestSpeakerName } from "../src/app/sessionLay
 import { SlideCaptions } from "../src/app/sessionLayout/mount.ts";
 import { SPEAKER_NAME_COLORS } from "../src/app/sessionLayout/speakerName.ts";
 
-// セッションの画面の部品（Issue #820）の Scene。描いた view から入り、字幕・取り込みの知らせ・共有画面の知らせ・見る状態の知らせが
-// 今の画面（React の SessionView）と同じ位置・同じ要素・同じ文言で出ること、出入りで他の要素の並びが変わらないことを見る。
-// Scene は座標を持たないので「位置」は、`.layout` の直下の並びと、`.map`・`.captions`・`.side` の要素と class で確かめる（実際の座標は切り替えの段の heavy IT）。
-// 知らせは外（WebSocket のフレーム・見る状態の Model・C のキー）から届くので、Subscription.emit で流す。
-
 type VNode = Parameters<typeof textContent>[0];
 type Sim = SceneSimulation<ReturnType<typeof init>, Message>;
 
-// 表示面（#814）・右の列（#821）・キーの一覧（#822）の中身は、この部品の外。差し込み口に仮の要素を渡す（キーの一覧は閉じていれば null）
 const slots = (h: HtmlBuilder<Message>, keyList: boolean = false) => ({
   map: h.div([h.Class("map-surface")], []),
   keyList: keyList ? h.div([h.Class("key-list__anchor")], []) : null,
@@ -39,7 +33,6 @@ const SCREEN = "共有画面は使っていません（画面収録の許可が�
 const TAP = "相手の音声が届いていません（出力の機器を切り替えた後に起きることがあります。cli stop の後、cli start で始め直してください）";
 const PAUSED = { status: "paused", reason: "ChatGPT の利用上限" } as const;
 
-// ---- 描いた木を読む道具 ----
 const elements = (vnode: VNode): VNode[] => (vnode.children ?? []).filter((c): c is VNode => typeof c !== "string" && c.sel !== undefined);
 const classOf = (vnode: VNode): string => Option.getOrElse(attr(vnode, "class"), () => "");
 const hasClass = (vnode: VNode, name: string): boolean => classOf(vnode).split(" ").includes(name);
@@ -50,7 +43,6 @@ const outline = (html: VNode): string[] => elements(layoutOf(html)).map(named);
 const mapOutline = (html: VNode): string[] => elements(mapOf(html)).map(named);
 const directChild = (html: VNode, name: string): VNode | undefined => elements(layoutOf(html)).find((c) => hasClass(c, name));
 
-// マップ・字幕・右の列の「並びと class」。知らせの出入りで変わってはいけないもの
 const STABLE = ["map", "captions", "side"];
 const stableParts = (html: VNode) => ({
   layout: named(layoutOf(html)),
@@ -60,7 +52,6 @@ const stableParts = (html: VNode) => ({
   side: elements(Option.getOrThrow(find(".side")(html))).map(named),
 });
 
-// 出入りの動き（data-enter 等）・スワイプ・ホバーで時間を止めるハンドラ・インラインの style を持たない、素の要素であること
 const expectPlain = (vnode: VNode | undefined) => {
   expect(vnode).toBeDefined();
   const data = vnode!.data ?? {};
@@ -70,7 +61,6 @@ const expectPlain = (vnode: VNode | undefined) => {
   expect(names.filter((n) => n.startsWith("data-") || n === "style")).toEqual([]);
 };
 
-// ---- Toast の保留の Command を解く道具（Story と同じ）----
 const settle = (simulation: Sim): Sim => {
   const pending = simulation.commands.find((c) => c.name === "WaitForPaint" || c.name === "WaitForAnimationSettled");
   if (pending === undefined) return simulation;
@@ -87,7 +77,6 @@ const expire = (simulation: Sim): Sim => {
   return Command.resolve(Toast.WaitBeforeDismissal({ entryId, version, duration }), Toast.Message.CompletedWaitBeforeDismissal({ entryId, version }))(simulation);
 };
 
-// Scene は保留の Command を残したまま次の Message を流せない（story と同じ理由で、保留のタイマーは「何も起こさない結果」で閉じ、遅れて届く本物の時間切れは別に流す）
 const closeTimerQuietly = (simulation: Sim): Sim => {
   const { entryId, version, duration } = timers(simulation)[0]!.args as { entryId: string; version: number; duration: Duration.Duration };
   return Command.resolve(Toast.WaitBeforeDismissal({ entryId, version, duration }), Toast.Message.CompletedWaitBeforeDismissal({ entryId, version: version + 1000 }))(simulation);
@@ -181,7 +170,6 @@ describe("sessionLayout の Scene: 字幕", () => {
   });
 });
 
-// Issue #1022: 会議中の字幕（話者つきの吹き出し）。名前の欄は 1 つの部品（speakerName.ts）から作る
 describe("sessionLayout の Scene: 字幕の吹き出し", () => {
   const bubble = (id: string, extra: Partial<DisplayBubble> = {}): DisplayBubble => ({ id, side: "left", name: Option.some("相手 A"), label: Option.none(), nameState: "settled", colorIndex: 1, text: id, settledLength: (extra.text ?? id).length, ...extra });
   const withBubbles = (...bubbles: DisplayBubble[]) => ({ ...init(), captions: { _tag: "Bubbles" as const, bubbles } });
@@ -411,7 +399,6 @@ describe("sessionLayout の Scene: 取り込みの知らせ（今と同じ位置
         expect(Duration.toMillis(pending[0]!.args!.duration as Duration.Duration)).toBe(RESUMED_NOTICE_MS);
       }),
       expire,
-      // 時間切れの直後（消える動きの Command を解く前）に、要素が DOM から消えている
       expectScene(selector(".intake-notice")).toBeAbsent(),
       settle,
       expectScene(selector(".intake-notice")).toBeAbsent(),
@@ -832,7 +819,6 @@ describe("sessionLayout の Scene: 知らせが出る・消えるとき、マッ
   const expectUnchanged = tap<ReturnType<typeof init>, Message>((s) => {
     expect(stableParts(s.html)).toEqual(before);
   });
-  // 知らせが 0 件のときに、知らせのための包み要素が .layout の直下にも木のどこにも無い
   const expectNoWrapper = tap<ReturnType<typeof init>, Message>((s) => {
     expect(findAll('[role="region"]')(s.html)).toHaveLength(0);
     for (const child of elements(layoutOf(s.html))) {
@@ -871,7 +857,6 @@ describe("sessionLayout の Scene: 知らせが出る・消えるとき、マッ
     );
   });
 
-  // Issue #1069: 休止中は出し続ける一言。時間では消えず、出入りしてもマップ・字幕・右の列の並びと class は動かない
   it("自分の休止の一言: 出る前・出ている間・消えた後で、.map・.captions・.side の並びと class が同じ。包み要素も増えない", () => {
     scene(
       app,
@@ -926,7 +911,6 @@ describe("sessionLayout の Scene: 知らせが出る・消えるとき、マッ
     );
   });
 
-  // Issue #1071: 理由で文言が変わる。同じ画面の上で、手動 → 自動 → 手動 → 再開と続けて観測する
   it("自分の休止の一言: 理由が手動なら「M で再開」、自動なら「会議アプリがマイクを使っていない」。理由だけ変わっても要素は 1 つで、再開で消える", () => {
     scene(
       app,
@@ -1142,10 +1126,7 @@ describe("sessionLayout の Scene: キーの一覧の差し込み口（#826）",
   });
 });
 
-// Issue #1026: 名前の欄を押して、その欄の中で名前を入れる。確定したラベルの相手の欄（label が Some）だけが押せる。
-// 入力は同じ欄の中に出て、吹き出しの本文は変わらない（寸法は meeting.mount.heavy.test.ts が測る）
 describe("sessionLayout の Scene: 名前の欄の入力", () => {
-  // blur の step は relatedTarget の型を調べるのに Element を参照する（node の unit 環境には無い。review.controls.scene.test.ts と同じ）
   beforeEach(() => vi.stubGlobal("Element", class {}));
   afterEach(() => vi.unstubAllGlobals());
   const cell = (id: string, label: string | undefined, extra: Partial<DisplayBubble> = {}): DisplayBubble => ({
@@ -1154,7 +1135,6 @@ describe("sessionLayout の Scene: 名前の欄の入力", () => {
   const mineCell = (id: string): DisplayBubble => ({ id, side: "right", name: Option.none(), label: Option.none(), nameState: "settled", colorIndex: 0, text: id, settledLength: id.length });
   const withBubbles = (...bubbles: DisplayBubble[]) => ({ ...init(), captions: { _tag: "Bubbles" as const, bubbles } });
   const settled = Mount.resolve(SlideCaptions, Message.CompletedSlideCaptions());
-  // 欄を押すと出るフォーカスの Command（入力へフォーカスを移す。Model は変えない）
   const focused = Command.resolveAll([FocusSpeakerNameInput, Message.CompletedFocusSpeakerNameInput()]);
   const nameCells = (html: VNode) => findAll(".captions__name")(html);
   const requests = (s: Sim) => s.commands.filter((c) => c.name === "RequestSpeakerName").map((c) => c.args);
@@ -1212,7 +1192,7 @@ describe("sessionLayout の Scene: 名前の欄の入力", () => {
       tap((s) => {
         expect(requests(s)).toEqual([{ label: "相手 B", name: "田中" }]);
         expect(findAll(".captions input")(s.html)).toHaveLength(0);
-        expect(nameCells(s.html).map(textContent)).toEqual(["相手 B"]); // 名前が付いた表示は、サーバーから表が届いてから
+        expect(nameCells(s.html).map(textContent)).toEqual(["相手 B"]);
       }),
       Command.resolveAll([RequestSpeakerName, Message.CompletedRequestSpeakerName()]),
     );
@@ -1263,7 +1243,6 @@ describe("sessionLayout の Scene: 名前の欄の入力", () => {
     );
   });
 
-  // 押して「田」と入力したあと、字幕の更新 next を流す
   const typedThen = (next: DisplayBubble[]) => [
     click(selector("button.captions__name")),
     focused,

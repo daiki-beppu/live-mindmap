@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import { acceptTransferredModel, defaultClaude, listModels, selectModel } from "../src/modelSelection.ts";
 
 const configPath = "/test/config.json";
-// 問い合わせ境界が渡す正規化済みの状態。文面ではなく利用可否と理由を選択に渡す。
 const availableMac = { osVersion: "27.0", availability: { status: "available" } };
 const models = {
   fast: { route: "claude", model: "claude-haiku-5-5" },
@@ -14,7 +13,6 @@ const models = {
 const select = (flags: { model?: string; local?: boolean }, envModel: string | undefined, config: unknown) =>
   selectModel({ flags, envModel, config, configPath, macState: {} });
 
-// The result shape expresses the plan's success / one-line configuration error / two-line refusal.
 const refused = (result: ReturnType<typeof selectModel>) => {
   expect(result.ok).toBe(false);
   if (result.ok) throw new Error("モデル選択が拒否されませんでした");

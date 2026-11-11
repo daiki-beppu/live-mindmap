@@ -2,7 +2,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Cause, Exit } from "effect";
 import { exitNaturally } from "../src/exitNaturally.ts";
 
-// 入口（server.ts・cli.ts）が共有する終わり方: 終了コードを process.exitCode に入れるだけで、onExit（既定は process.exit）を呼ばない
 describe("exitNaturally", () => {
   let saved: typeof process.exitCode;
   beforeEach(() => {

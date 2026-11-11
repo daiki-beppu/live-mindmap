@@ -1,5 +1,3 @@
-// bench のスクリプトをプロセスとして走らせる。argv が入口まで届き、失敗が stderr の 1 行と exit 1 になることを、実際の経路で確かめる。
-// help・位置引数の欠落・正常出力・セッションのフォルダなしは、Command として benchCommand.it.test.ts・sttReplayCommand.it.test.ts が持つ
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "@effect/vitest";

@@ -12,8 +12,6 @@ import { ReviewBuild, writeReviewPages } from "../src/review.ts";
 import { fakeAudioMix } from "./fixtures/audioMix.ts";
 import { managedPlaywright } from "./fixtures/managedPlaywright.ts";
 
-// 合言葉で暗号化した外側のページを、実物の見返しのビルドと Chromium で開く（Issue #1251）。時間がかかる。
-// 事前に `pnpm cli install chromium` が要る。
 const TIMEOUT = 120_000;
 
 const events = [
@@ -75,7 +73,6 @@ describe("合言葉で暗号化した外側のページ", () => {
       expect(seen.afterWrong.nodes).toBe(0);
       expect(seen.afterWrong.body).toContain("合言葉が違います");
       expect(seen.nodes.join("\n")).toContain("採用");
-      // 開いた後の title はマップのアプリが書く（live-mindmap）。会議名は出ない
       expect(seen.title).not.toContain("定例");
     }).pipe(Effect.provide(managedPlaywright), Effect.scoped),
     TIMEOUT,

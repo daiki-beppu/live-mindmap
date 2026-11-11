@@ -1,5 +1,3 @@
-// Tunnel.check（Issue #835）。本物の Tunnel.layer を、管理ディレクトリ（一時ディレクトリ）の上で確かめる。
-// cloudflared は起動しない（ChildProcessSpawner は使われたら die する）。
 import { copyFile } from "node:fs/promises";
 import { join } from "node:path";
 import { NodeServices } from "@effect/platform-node";
@@ -33,7 +31,6 @@ describe("Tunnel.check（cloudflared の有無）", () => {
     if (Result.isFailure(result)) {
       expect(result.failure).toBeInstanceOf(CloudflaredMissing);
       expect(result.failure.message).toContain(INSTALL_HOW);
-      // 導入はセッション中には断られるので、先にセッションを終えることを示す
       expect(result.failure.message).toContain("cli stop でセッションを終えてから");
     }
     expect(spawned).toEqual([]);

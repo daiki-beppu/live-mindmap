@@ -5,9 +5,6 @@ import { embeddedAudio, FAKE_MIX_BYTES } from "./fixtures/audioMix.ts";
 import { embeddedText, TEMPLATE } from "./fixtures/review.ts";
 import { playBatches } from "./fixtures/batches.ts";
 
-// 書き出す HTML への埋め込み（ログ・ライセンス・音声）とスナップショットの組み立て。ファイルは使わない
-
-// 埋め込んだ <template> 要素の中身を、ブラウザが textContent で返すのと同じ文字列に戻す（タグの間の文字列を、実体参照を解いて返す）
 function licensesTemplate(html: string): { raw: string; decoded: string } {
   const match = new RegExp(`<template id="${REVIEW_LICENSES_ELEMENT_ID}">([\\s\\S]*?)</template>`).exec(html);
   if (!match) throw new Error("ライセンスの要素がありません");
@@ -17,8 +14,6 @@ function licensesTemplate(html: string): { raw: string; decoded: string } {
 
 const remark = (id: string, text: string, extra: Partial<Remark> = {}): Remark => ({ id, track: "相手", start: 0, end: 5, text, ...extra });
 
-// 発言と差分更新を通した本物のログ（at 付き JSONL 1 行ぶんの形）
-// 1 回目の呼び出しで議題、その呼び出し中に届いた 2 件目を渡す 2 回目の呼び出しでその下（確定した id n1）の論点を足す
 const realisticEvents = Effect.fn("realisticEvents")(function* () {
   const { session, events } = yield* playBatches(
     [[remark("r1", "採用の話をします")], [remark("r2", "面接は何回にしますか")]],
@@ -41,7 +36,6 @@ describe("embedReviewLog", () => {
     const text = embeddedText(html);
     expect(text).not.toContain("<");
     expect(JSON.parse(text)).toEqual(events);
-    // 発言の中の </script> で、要素が早く閉じない
     expect(html.match(/<script/g)).toHaveLength(1);
   });
 
@@ -80,11 +74,9 @@ describe("embedReviewLicenses", () => {
 
     expect(JSON.parse(embeddedText(html))).toEqual(events);
     expect(licensesTemplate(html).decoded).toBe(LICENSES);
-    // 文言の要素はログの要素より前、本物の </body> の前
     const templateAt = html.indexOf(`<template id="${REVIEW_LICENSES_ELEMENT_ID}">`);
     expect(templateAt).toBeGreaterThan(html.indexOf("<div id=\"root\"></div>"));
     expect(html.indexOf(`id="${REVIEW_LOG_ELEMENT_ID}"`)).toBeGreaterThan(html.indexOf("</template>"));
-    // テンプレートの JS の文字列は変わらず、</body> の数も増えない（文言の </body> は実体参照になっている）
     expect(html).toContain("const s = \"</body>\";</script></head>");
     expect(html.match(/<\/body>/g)).toHaveLength(2);
     expect(html.match(/<\/script>/g)).toHaveLength(2);
@@ -126,7 +118,6 @@ describe("embedReviewAudio", () => {
 });
 
 describe("reviewSnapshot", () => {
-  // web の入口（main.ts）が同期で呼ぶので、reviewSnapshot は Effect にせず同期の関数のまま保つ
   it.effect("ログの出来事から、元のセッションの最後の時点と同じマップ・「変わったこと」・根拠を同期で組み立てる", () =>
     Effect.gen(function* () {
       const { session, events } = yield* realisticEvents();
@@ -162,7 +153,6 @@ describe("reviewSnapshot", () => {
   });
 });
 
-// マップだけの版。発言・共有画面の文字は、ノードの text・会議名と部分一致しない値にしてある（not.toContain の判定が意味を持つように）
 const remarkRow = (id: string, track: "自分" | "相手", start: number, end: number, text: string, extra: Record<string, unknown> = {}) => ({
   at: "2026-10-07T00:00:00.000Z",
   type: "remark",
@@ -260,7 +250,6 @@ describe("mapOnlyReviewEvents（発言・共有画面の文字を抜いた出来
 
 
   describe("時刻を動かしたときのマップの組み上がり（接頭部ごとに reviewSnapshot が元のログと同じ）", () => {
-    // 成功・error つきの diff、screenCount つきの diff と screen 行、重複の印、未反映の発言、反映をまたぐ根拠を含む
     const log = (): unknown[] => [
       { at: "a", type: "start", title: "定例" },
       { at: "a", type: "screen", start: 1, image: "s1.jpg", lines: [SECRET_LINE] },
@@ -276,7 +265,6 @@ describe("mapOnlyReviewEvents（発言・共有画面の文字を抜いた出来
       remarkRow("r6", "相手", 32, 40, "最後の発言。"),
     ];
 
-    // 発言の本文だけが違う（マップだけの版は空）。それ以外は丸ごと同じ
     const comparable = (events: readonly unknown[]) => {
       const s = reviewSnapshot(events);
       return { ...s, remarks: s.remarks.map(({ text: _text, ...rest }) => rest) };

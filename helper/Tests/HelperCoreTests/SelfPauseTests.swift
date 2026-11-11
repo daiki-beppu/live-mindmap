@@ -2,9 +2,6 @@ import Foundation
 import Testing
 @testable import HelperCore
 
-// Issue #1069: server から helper への休止の指示（`{"type":"self-pause","paused":boolean,"token":string}`）の読み取りと認証、
-// 休止の境界（同じ状態の指示は何も変えない。取得時刻で休止中かを決める）。音の流れの側の振る舞いは RunAudioTests が確かめる。
-
 private let token = String(repeating: "a", count: 64)
 private func message(paused: Bool, token: String?) -> String {
     token.map { #"{"type":"self-pause","paused":\#(paused),"token":"\#($0)"}"# } ?? #"{"type":"self-pause","paused":\#(paused)}"#
@@ -62,7 +59,6 @@ struct SelfPauseTests {
         #expect(state.request(true, at: 20) == true)
         #expect(state.request(true, at: 30) == false)
         #expect(state.request(false, at: 40) == true)
-        // 同じ状態の指示は境界を足さない: 25 の時点では休止中、35 でも休止中（30 の指示は何も変えていない）、45 で再開
         #expect(state.resolve(at: 15) == (false, false))
         #expect(state.resolve(at: 35) == (true, true))
         #expect(state.resolve(at: 45) == (false, false))
@@ -95,8 +91,6 @@ struct SelfPauseTests {
     }
 }
 
-// Issue #1071: 指示の処理は認証と読み取りだけを受け持ち、受け付けた指示を順に監視へ渡す。
-// 同じ状態の指示を何も変えないことは規則（SelfPauseRuleTests）と監視（SelfPauseMonitorTests）が確かめる。
 @Suite("自分の休止の指示の処理と起動時の通知")
 struct SelfPauseServingTests {
     private final class Requests: @unchecked Sendable {

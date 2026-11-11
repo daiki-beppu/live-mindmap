@@ -12,9 +12,6 @@ import { ObserveAudio, ObserveSeekPointer } from "../src/app/review/mount.ts";
 import { foldView } from "../src/folding.ts";
 import { settle, TOOLTIPS_AUDIO, TOOLTIPS_PLAIN, tooltipMounts } from "./reviewHarness.ts";
 
-// 見返しの録音つきの時刻の同期（Issue #824）の Scene。<audio> の Mount を Mount.resolve で解き、受けた時刻のマップが表示面に出ることを見る。
-// 比べる相手は、既存の純粋な関数 foldView が、その時刻の Snapshot から返すノード（#823 の Scene と同じ）
-
 const remark = (id: string, end: number, text: string) => ({ at: "x", type: "remark", remark: { id, track: "相手", start: end - 5, end, text } });
 const add = (ref: string, parent: string, kind: string, text: string, evidence: string[]) => ({ op: "add", ref, parent, kind, text, evidence });
 const diff = (fresh: string[], ops: unknown[]) => ({ at: "x", type: "diff", input: { recent: [], fresh, nodeCount: 0 }, ops, dropped: [] });

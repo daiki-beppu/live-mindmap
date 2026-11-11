@@ -92,7 +92,6 @@ describe("共有画面の受け取りと呼び出しの結末の記録順", () =
     const receiving = yield* session.pushScreen(shot(10)).pipe(Effect.forkChild({ startImmediately: true }));
     yield* screenWrite.wait;
     yield* Deferred.succeed(reply, undefined);
-    // 全 Fiber が待ちに入ってから時計が進む。結末が画面の記録完了を待つ場合も、ここでは待ち合わせない。
     yield* TestClock.adjust(DIFF_UPDATE_RETRY_MS);
     yield* screenWrite.release;
     yield* Fiber.join(receiving);

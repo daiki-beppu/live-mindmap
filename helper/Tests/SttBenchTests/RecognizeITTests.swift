@@ -5,14 +5,11 @@ import HelperCore
 import Testing
 @testable import stt_bench
 
-// 認識結果が JSONL の 1 行（ResultLine）になるまでの受け渡し。音声認識は使わず、偽の Transcriber で流すので CI でも流す。
-
 private final class FakeTranscriber: Transcriber, @unchecked Sendable {
     let results: [TranscriptionResult]
     private let lock = NSLock()
     private var _offsets: [Double] = []
     private var _origin: UInt64 = 0
-    /// 渡された各バッファの hostTime − origin（秒）
     var offsets: [Double] { lock.withLock { _offsets } }
     var origin: UInt64 { lock.withLock { _origin } }
 
@@ -70,7 +67,6 @@ struct RecognizeITTests {
         #expect(lines.map(\.start) == [0.1, 0.2])
         #expect(lines.map(\.end) == [0.4, 0.9])
         #expect(lines.allSatisfy { $0.track == "相手" })
-        // 音声を実時間で流し切ったあとに結果が届くので、到着は音声の長さ以上で、順に増える
         #expect(lines[0].arrival >= 0.3)
         #expect(lines[1].arrival >= lines[0].arrival)
     }

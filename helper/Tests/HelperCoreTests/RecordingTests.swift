@@ -3,8 +3,6 @@ import CoreAudio
 import Testing
 @testable import HelperCore
 
-// トラックごとの録音（AAC・モノラル）。0 秒は発言の時刻の基準（origin）と同じ時点。
-
 
 private func hostTime(after origin: UInt64, nanos: UInt64) -> UInt64 {
     origin + AudioConvertNanosToHostTime(nanos)

@@ -32,7 +32,6 @@ const stopInstaller = async (worker: ReturnType<typeof processInstaller>) => {
   await worker.exit;
 };
 
-// プロセスをまたぐ lock の排他、SIGKILL の後に残る lock、プロセスグループの終了、pid の生存で結果が決まる契約。
 describe("管理 Chromium の導入（プロセスをまたぐ排他）", () => {
   it.live("偽ブラウザのPID書込が止まっている間は開始を通知せず、通知後はPIDを読み取れる", () => Effect.gen(function* () {
     const dir = yield* temporaryDeps;
@@ -323,7 +322,6 @@ try { fs.readSync(0, Buffer.alloc(1)); } catch {}
     const zombie = Number(String((yield* Effect.tryPromise(() => once(reaper.stdout!, "data")))[0]));
     yield* Effect.tryPromise(() => vi.waitFor(async () => expect(await isZombie(zombie)).toBe(true)));
     yield* Effect.tryPromise(() => writeFile(join(base, "install.lock.guard", "execution-zombie"), String(-zombie)));
-    // Effect が導入ランナーを止め終えた（後片付けが子孫を確かめ始める）後に、ゾンビの回収を許す。
     const release = reap ? yield* Effect.tryPromise(() => vi.waitFor(() => expect(() => process.kill(runner, 0)).toThrow(), { timeout: 10_000 }).then(() => { reaper.stdin!.end(); })).pipe(Effect.forkChild) : undefined;
     yield* Fiber.interrupt(fiber);
     if (release !== undefined) yield* Fiber.join(release);

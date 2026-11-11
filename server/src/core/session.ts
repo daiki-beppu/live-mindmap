@@ -109,7 +109,6 @@ export const SupplementEvent = Schema.Struct({
   error: Schema.optionalKey(Schema.String),
 });
 
-// log.jsonl の時刻の書き方。Clock ではなく実時刻（TestClock の下でも実際の時刻）。Effect を実行した時点で決める
 export const logTimestamp = (shiftMs = 0): string => DateTime.formatIso(DateTime.addDuration(DateTime.nowUnsafe(), shiftMs));
 export const VocabEvent = Schema.Struct({
   type: Schema.Literal("vocab"),
@@ -399,7 +398,6 @@ const openSession = Effect.fnUntraced(function* (initial: SessionState, screens:
     return result.event.op !== null;
   });
 
-  // screenTransitions の内側で状態更新とログの順序を揃える。
   const notifyDiscussion = Effect.gen(function* () {
     const event = yield* Ref.modify(ref, (s) => {
       const at = latestEnd(s.remarks);
@@ -622,7 +620,6 @@ const openSession = Effect.fnUntraced(function* (initial: SessionState, screens:
         const extra = { ...(original === undefined ? {} : { raw: original.raw, words: original.words }), ...(wordTimes === undefined ? {} : { wordTimes }) };
         const noContent = !r.duplicate && !hasContent(r.text);
         yield* log.write({ type: "remark", remark: r, ...(noContent ? { noContent: true } : {}), ...extra });
-        // 発言の受信は画面の保存待ちで止めない。ロック中なら、その所有者が終了時に最新状態を判定する。
         yield* screenTransitions.withPermitsIfAvailable(1)(notifyDiscussion).pipe(Effect.uninterruptible);
         if (r.duplicate || noContent) return;
         yield* Ref.update(ref, (s) => ({ ...s, pending: [...s.pending, r], catchUpUntil: s.diffUpdate.status === "paused" ? r.id : s.catchUpUntil }));

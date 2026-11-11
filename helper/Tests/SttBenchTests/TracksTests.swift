@@ -2,10 +2,6 @@ import Foundation
 import Testing
 @testable import stt_bench
 
-// Issue #1031: 合成会議を、進行役の行だけの 自分 トラックと、残りの 相手 トラックに分ける（stt-bench tracks）。
-// ここは純粋な部分だけ（時刻表の読み込み、行の振り分け、音声ファイル名、末尾の雑音の無音化、トラックの組み立て）。ファイルは読み書きしないので CI でも流す。
-// 本文は診断に出さない。
-
 @Suite("timeline.tsv の読み込み")
 struct TimelineRowsTests {
     @Test("話者・開始・終了・本文の 4 列を読み、# で始まる行（#MARK）と空行は飛ばす")
@@ -73,7 +69,6 @@ struct SplitRowsTests {
 struct LineFileNameTests {
     @Test("sha1(声 + 改行 + 文)の先頭 16 桁 + .wav（synth.mjs の fileOf と同じ）")
     func matchesSynthScript() {
-        // printf 'Puck\nこんにちは' | shasum の先頭 16 桁
         #expect(lineFileName(voice: "Puck", text: "こんにちは") == "4a41939d3dcd6194.wav")
     }
 
@@ -89,12 +84,10 @@ struct SilenceJunkTailTests {
 
     @Test("最後の 1 ms が大きいとき、その連なりを同じ長さの無音にし、手前の 10 ms を絞る（長さは変えない）")
     func silencesLoudTail() {
-        // 1000 サンプルの小さな音 + 末尾 96 サンプル（2 ms）の大きな雑音。雑音は 1000 から始まる
         let samples = [Float](repeating: 0.1, count: 1000) + [Float](repeating: 0.6, count: 96)
         let out = silenceJunkTail(samples, sampleRate: rate)
         #expect(out.count == samples.count)
         #expect(out[1000...].allSatisfy { $0 == 0 })
-        // 雑音の手前の 480 サンプル（10 ms）を直線的に絞る: 520 + j 番目は × (1 − (j+1)/480)
         #expect(abs(out[520] - 0.1 * (1 - 1.0 / 480)) < 1e-5)
         #expect(abs(out[759] - 0.05) < 1e-5)
         #expect(abs(out[999]) < 1e-5)
@@ -111,11 +104,9 @@ struct SilenceJunkTailTests {
 
     @Test("連なりは大きい窓が続く間だけ（途中に静かな窓があればそこで止める）")
     func stopsAtQuietWindow() {
-        // [静か 48][大きい 48][静か 48][大きい 48]: 末尾の 1 窓だけが雑音
         let samples = [Float](repeating: 0.1, count: 48) + [Float](repeating: 0.6, count: 48) + [Float](repeating: 0.1, count: 48) + [Float](repeating: 0.6, count: 48)
         let out = silenceJunkTail(samples, sampleRate: rate)
         #expect(out[144...].allSatisfy { $0 == 0 })
-        // 手前の静かな窓（96..<144）は無音にならず、絞られるだけ。その手前の大きな窓も無音にならない
         #expect(out[96] > 0)
         #expect(out[48..<96].allSatisfy { $0 > 0 })
         #expect(out.count == samples.count)

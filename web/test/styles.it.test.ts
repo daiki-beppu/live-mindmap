@@ -4,7 +4,6 @@ import { NARROW_QUERY } from "../src/app/startFlags.ts";
 
 const css = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
 
-// トークン参照で書かれた色も、画面で使う hex として確かめる。
 const rootBlock = css.match(/:root\s*\{([\s\S]*?)\n\}/)?.[1] ?? "";
 const colorTokens = new Map([...rootBlock.matchAll(/(--color-[\w-]+)\s*:\s*([^;]+);/g)].map((m) => [m[1]!, m[2]!.trim()] as const));
 const resolveColors = (value: string) => value.replace(/var\(\s*(--color-[\w-]+)\s*\)/g, (whole, name: string) => colorTokens.get(name) ?? whole);
@@ -14,9 +13,6 @@ const rule = (selector: string) => {
 };
 
 const WIDTH_FORMULA = /min\(\s*720px\s*,\s*calc\(\s*100vw\s*-\s*2\s*\*\s*316px\s*\)\s*\)/;
-
-// 寸法と位置は、CSS の置き場によらず実ブラウザの computed style で確かめる
-// （review.mount.heavy.test.ts・meeting.mount.heavy.test.ts）。
 
 describe("styles.css: 色のトークンと点滅", () => {
   it("今の色 12 種を、今の hex のまま --color-* の token にする", () => {
@@ -79,7 +75,6 @@ describe("styles.css: 字幕と知らせ", () => {
     const name = rule(".captions__cursor").match(/animation\s*:\s*([\w-]+)/)?.[1] ?? "";
     expect(name).not.toBe("");
     expect(css).toMatch(new RegExp(`@keyframes\\s+${name}\\b`));
-    // 参照先の keyframes が、可視状態を切り替える（点滅する）定義であること
     expect(css).toMatch(new RegExp(`@keyframes\\s+${name}\\b[^{]*\\{[^@]*visibility\\s*:\\s*hidden`));
   });
 
@@ -100,7 +95,7 @@ describe("styles.css: 字幕と知らせ", () => {
 
   it("共有画面を使っていない一文は、字幕と同じ幅の式で、影を付けず、fixed にしない", () => {
     const r = rule(".screen-notice");
-    expect(r).not.toBe(""); // 規則があること（否定のテストの前提）
+    expect(r).not.toBe("");
     expect(r).toMatch(new RegExp(`width\\s*:\\s*${WIDTH_FORMULA.source}`));
     expect(r).not.toMatch(/position\s*:\s*fixed/);
     expect(r).not.toMatch(/bottom\s*:/);

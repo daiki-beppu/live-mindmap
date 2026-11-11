@@ -4,13 +4,6 @@ import { applyOps, diffMaps, emptyMap, type Change, type MeetingMap, type Op } f
 const known = new Set(["r1", "r2", "r3", "r4", "r5"]);
 const step = (map: MeetingMap, ops: Op[]): MeetingMap => applyOps(map, ops, known, { round: 1, at: 0 }, new Map()).map;
 
-// 前のマップ:
-//   n1 議題 採用
-//     n2 論点 面接は何回か
-//       n3 案 3 回
-//   n4 課題 面接官が足りない
-//   n5 課題 面接の担当が偏る
-//     n6 案 若手も面接に入る
 const before = (): MeetingMap =>
   step(emptyMap("定例"), [
     { op: "add", ref: "t1", parent: "root", kind: "議題", text: "採用", evidence: ["r1"] },
@@ -21,7 +14,6 @@ const before = (): MeetingMap =>
     { op: "add", ref: "t6", parent: "t5", kind: "案", text: "若手も面接に入る", evidence: ["r3"] },
   ]);
 
-// 前のマップに ops を反映した結果（反映後のマップと統合の記録）との比較
 const changesOf = (ops: Op[], base: MeetingMap = before()): Change[] => diffMaps(base, applyOps(base, ops, known, { round: 1, at: 0 }, new Map()));
 
 describe("diffMaps: 反映の前後のマップと、反映で記録した統合から変わったことを導く", () => {
@@ -62,8 +54,8 @@ describe("diffMaps: 反映の前後のマップと、反映で記録した統合
 
   describe("更新: TODO の担当者（Issue #1023）", () => {
     const withTodos = (): MeetingMap => step(before(), [
-      { op: "add", ref: "a", parent: "n2", kind: "TODO", text: "担当なし", evidence: ["r1"] }, // n7
-      { op: "add", ref: "b", parent: "n2", kind: "TODO", text: "話者の担当", evidence: ["r1"], assigneeSpeaker: "相手 A" }, // n8
+      { op: "add", ref: "a", parent: "n2", kind: "TODO", text: "担当なし", evidence: ["r1"] },
+      { op: "add", ref: "b", parent: "n2", kind: "TODO", text: "話者の担当", evidence: ["r1"], assigneeSpeaker: "相手 A" },
     ]);
 
     it("担当の話者が変わると「更新」になる（本文も根拠も変わらなくても）", () => {
@@ -81,7 +73,7 @@ describe("diffMaps: 反映の前後のマップと、反映で記録した統合
   });
 
   it("更新: 案の出した人だけが違うマップの比較は、変わったことにしない（出した人は更新で変わらない）", () => {
-    const withPlan = step(before(), [{ op: "add", ref: "p", parent: "n2", kind: "案", text: "月 1", evidence: ["r2"], proposer: "相手 A" }]); // n7
+    const withPlan = step(before(), [{ op: "add", ref: "p", parent: "n2", kind: "案", text: "月 1", evidence: ["r2"], proposer: "相手 A" }]);
     expect(changesOf([{ op: "update", node: "n7", evidence: ["r2"] }], withPlan)).toEqual([]);
   });
 
@@ -146,7 +138,6 @@ describe("diffMaps: 反映の前後のマップと、反映で記録した統合
   });
 
   it("移動: 親が変わったノードにだけ「移動」を出す。子孫には記録がない", () => {
-    // n2（子に n3 を持つ）を root の下へ
     const got = changesOf([{ op: "move", node: "n2", parent: "root" }]);
     expect(got).toEqual([{ change: "移動", node: "n2", kind: "論点", text: "面接は何回か" }]);
   });
@@ -163,7 +154,6 @@ describe("diffMaps: 反映の前後のマップと、反映で記録した統合
   });
 
   it("統合: 統合先にだけ「統合」を出す（統合先の種別と本文）。統合元の記録はなく、引き取った子は「移動」にならず、根拠の増加は「更新」にならない", () => {
-    // n5 を n4 へ。n5 の根拠 r3 が n4 に入り、n5 の子 n6 が n4 の子になる
     const got = changesOf([{ op: "combine", from: "n5", into: "n4" }]);
     expect(got).toEqual([{ change: "統合", node: "n4", kind: "課題", text: "面接官が足りない", from: ["n5"] }]);
   });
@@ -216,9 +206,9 @@ describe("diffMaps: 反映の前後のマップと、反映で記録した統合
 
   it("複数のノードが変わると、反映後のマップのノードの並び（作られた順）に出す。同じノードの中は 追加・更新・決定済み化・却下・移動・統合 の順", () => {
     const got = changesOf([
-      { op: "update", node: "n3", text: "3 回にする", evidence: ["r2"], planStatus: "却下" }, // n3: 更新・却下
-      { op: "add", ref: "t7", parent: "n2", kind: "決定", text: "2 回にする", evidence: ["r4"] }, // n2: 決定済み化、n7: 追加
-      { op: "update", node: "n1", text: "中途採用", evidence: ["r1"] }, // n1: 更新
+      { op: "update", node: "n3", text: "3 回にする", evidence: ["r2"], planStatus: "却下" },
+      { op: "add", ref: "t7", parent: "n2", kind: "決定", text: "2 回にする", evidence: ["r4"] },
+      { op: "update", node: "n1", text: "中途採用", evidence: ["r1"] },
     ]);
     expect(got.map((c) => [c.node, c.change])).toEqual([
       ["n1", "更新"],

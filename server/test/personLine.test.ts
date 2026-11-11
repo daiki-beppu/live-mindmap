@@ -1,8 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { personLine, speakerName, type SnapshotNode } from "../src/core/index.ts";
 
-// Issue #1023: 案の出した人と TODO の担当者を、ノードの本文の後ろに出す 1 行。表示名は speakerName の 1 か所で決める（後の名前の sub-issue はここだけを変える）。
-
 const n = (kind: Exclude<SnapshotNode["kind"], "補足">, extra: Partial<Exclude<SnapshotNode, { kind: "補足" }>> = {}): Exclude<SnapshotNode, { kind: "補足" }> => ({ id: "x", parent: "root", kind, text: "t", evidence: ["r1"], ...extra });
 
 describe("speakerName: 話者の表示名（唯一の決め場所）", () => {
@@ -39,8 +37,6 @@ describe("personLine: 論点・課題・決定・要点・議題・会議には�
   it("案に担当者があっても出さない", () => expect(personLine(n("案", { assignee: "田中", assigneeSpeaker: "自分", due: "来週" }))).toBeNull());
 });
 
-// Issue #1026: 名前が付けば名前で出す。表示名を決めるのは speakerName の 1 か所。第 2 引数は 話者のラベル → 名前 の表。
-// 名前は表示だけを変える（ノードの proposer・assigneeSpeaker はラベルのまま）。TODO の assignee（会話に出た名前）を優先する規則は変えない
 describe("speakerName: 名前が付いたラベル", () => {
   it("名前の表にあるラベルは名前で出す", () => expect(speakerName("相手 B", { "相手 B": "田中" })).toBe("田中"));
   it("名前の無いラベルはラベルのまま", () => expect(speakerName("相手 A", { "相手 B": "田中" })).toBe("相手 A"));

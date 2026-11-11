@@ -13,7 +13,6 @@ public enum WebSocketServerError: Error, CustomStringConvertible {
     }
 }
 
-/// `127.0.0.1` だけで待ち受ける WebSocket サーバー。接続中の全クライアントへテキストフレームを流す。
 public actor WebSocketServer {
     private let requestedPort: UInt16
     private var listener: NWListener?
@@ -28,20 +27,16 @@ public actor WebSocketServer {
         if case .running = lifecycle { return true }
         return false
     }
-    /// 最初のクライアントの接続を待っている呼び出し（`waitForClient`）。
     private var clientWaiters: [CheckedContinuation<Void, Never>] = []
     private var closeWaiters: [CheckedContinuation<Void, Never>] = []
     private let closeDeadline: Duration
     private let queue = DispatchQueue(label: "live-mindmap.websocket")
     private var retained: [HelperEventRetentionSlot: HelperEvent] = [:]
-    /// nil は初回接続済み。全接続が切れても蓄積を再開しない。
     private var initialEvents: [HelperEvent]? = []
     private let writeStderr: @Sendable (String) -> Void
-    /// クライアントから届いたテキストフレームを、届いた順に流す（Issue #1069。サーバーからの休止の指示）。`stop` で終わる。
     public nonisolated let messages: AsyncStream<String>
     private nonisolated let messageContinuation: AsyncStream<String>.Continuation
 
-    /// `port` が 0 のときは空きポートを使う。
     public init(port: UInt16) {
         self.init(port: port, writeStderr: { message in
             FileHandle.standardError.write(Data((message + "\n").utf8))
@@ -59,14 +54,12 @@ public actor WebSocketServer {
 
     public var clientCount: Int { clients.count }
 
-    /// 待ち受けを始め、実際のポートを返す。
     public func start() async throws -> UInt16 {
         let parameters = NWParameters.tcp
         parameters.defaultProtocolStack.applicationProtocols.insert(NWProtocolWebSocket.Options(), at: 0)
         guard let port = requestedPort == 0 ? NWEndpoint.Port.any : NWEndpoint.Port(rawValue: requestedPort) else {
             throw WebSocketServerError.invalidPort(requestedPort)
         }
-        // loopback のアドレスに束縛して、外のインターフェースからは届かないようにする。
         parameters.requiredLocalEndpoint = .hostPort(host: .ipv4(.loopback), port: port)
         let listener = try NWListener(using: parameters)
         self.listener = listener
@@ -98,7 +91,6 @@ public actor WebSocketServer {
         }
     }
 
-    /// 種類に従って保持し、初回接続前の通常イベントも失わずに届ける。`stop` の前に送ったものは `stop` が届くまで待つ。`stop` の後に送ったものは捨てる。
     public func send(_ event: HelperEvent) {
         guard isRunning, let text = encode(event) else { return }
         switch event.delivery(retained: retained[.screen]) {
@@ -115,14 +107,12 @@ public actor WebSocketServer {
         do {
             return try event.jsonString()
         } catch {
-            // EncodingError の内容には発言や画像が含まれうるので、種類名だけを記録する。
             let kind = String(describing: event).prefix { $0 != "(" }
             writeStderr("helper event \(kind): JSON にできなかったので送らない")
             return nil
         }
     }
 
-    /// 録画の読み始めを接続後に揃える。接続済みならすぐ戻り、`stop` でも戻る。
     public func waitForClient() async {
         if !clients.isEmpty || !isRunning { return }
         await withCheckedContinuation { clientWaiters.append($0) }
@@ -153,8 +143,6 @@ public actor WebSocketServer {
         for waiter in pending { waiter.resume() }
     }
 
-    /// 新しい接続を断り、接続ごとに、それまでに送ったフレームの後ろへ close を送る。全接続が返事をする（または上限が来る）まで戻らない。
-    /// 戻ったとき `clientCount` は 0 で、`messages` は終わっている。同時に呼ぶと同じ閉じ方に相乗りし、閉じた後はすぐ戻る。
     public func stop() async {
         if isRunning { beginClosing() }
         guard case .closing = lifecycle else { return }
@@ -165,7 +153,6 @@ public actor WebSocketServer {
         listener?.cancel()
         listener = nil
         initialEvents = nil
-        // 待っている呼び出しは、止まった以上これ以上待てないので戻す
         resumeAll(&clientWaiters)
         lifecycle = .closing(deadline: Task {
             do { try await Task.sleep(for: closeDeadline) } catch { return }
@@ -222,7 +209,6 @@ public actor WebSocketServer {
         receiveLoop(connection)
     }
 
-    /// クライアントからの close フレームや切断を検知するために、受信を回し続ける。テキストフレームは `messages` に流す。
     private func receiveLoop(_ connection: NWConnection) {
         let id = ObjectIdentifier(connection)
         connection.receiveMessage { [weak self] data, context, _, error in

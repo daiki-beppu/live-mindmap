@@ -12,19 +12,15 @@ import { REVIEW_LICENSES_ELEMENT_ID, REVIEW_LOG_ELEMENT_ID } from "../src/core/i
 import { ReviewBuild, writeReviewPages } from "../src/review.ts";
 import { embeddedAudio, fakeAudioMix, FAKE_MIX_BYTES } from "./fixtures/audioMix.ts";
 
-// 実物の Vite（single-file）と Chromium で、書き出した map.html を file:// で開く。時間がかかる。
-// 事前に `pnpm cli install chromium` が要る。
 const TIMEOUT = 90_000;
 
 const WEB_DIST = join(import.meta.dirname, "../../web/dist");
 
-// pnpm が web の依存として置いた LICENSE（web/node_modules の symlink 先）。パッケージ名は、ビルドが同梱したことの確認にだけ使う
 const BUNDLED_LICENSES = ["foldkit", "effect"].map((name) => ({
   name,
   text: readFileSync(join(import.meta.dirname, "../../web/node_modules", name, "LICENSE"), "utf8").trim(),
 }));
 
-// 見返しの操作の行（#825）が写した video.js のアイコンの出どころとライセンス。ビルドが license.md の後ろに足す（web/src/app/review/icons.NOTICE.md）
 const ICONS_NOTICE = readFileSync(join(import.meta.dirname, "../../web/src/app/review/icons.NOTICE.md"), "utf8").trim();
 
 const events = [
@@ -54,7 +50,6 @@ describe("map.html の本物のビルド", () => {
         (path) => Effect.promise(() => rm(path, { recursive: true, force: true })),
       );
 
-      // 本物のビルドは 1 回だけ。音声つきの版には、偽の mix の出力（小さなバイト列）を埋め込む
       const { paths: [path, audioPath], skipped } = yield* writeReviewPages(dir, events, [{ file: "map.html", audio: false }, { file: "map-audio.html", audio: true }]).pipe(
         Effect.provide(Layer.mergeAll(ReviewBuild.layer, fakeAudioMix().layer).pipe(Layer.provideMerge(NodeFileSystem.layer))),
       );
@@ -62,7 +57,6 @@ describe("map.html の本物のビルド", () => {
       expect(skipped).toEqual([]);
       expect(path).toBe(join(dir, "map.html"));
       expect(audioPath).toBe(join(dir, "map-audio.html"));
-      // 本物のビルドのテンプレートに埋め込んだ音声を、元のバイト列に読み戻せる。ログも同じ HTML から読み戻せ、map.html には音声が入らない
       const audioHtml = yield* Effect.tryPromise(() => readFile(audioPath!, "utf8"));
       expect(embeddedAudio(audioHtml)).toEqual(FAKE_MIX_BYTES);
       const audioLog = new RegExp(`<script type="application/json" id="${REVIEW_LOG_ELEMENT_ID}">([\\s\\S]*?)</script>`).exec(audioHtml);
@@ -70,7 +64,6 @@ describe("map.html の本物のビルド", () => {
       expect(JSON.parse(audioLog![1]!).filter((row: { type: string }) => row.type !== "supplement")).toEqual(events.filter((row) => row.type !== "supplement"));
       expect(embeddedAudio(yield* Effect.tryPromise(() => readFile(path!, "utf8")))).toBeNull();
       const html = yield* Effect.tryPromise(() => readFile(path!, "utf8"));
-      // インライン化した JS・CSS の中身にタグに見える文字列があっても、外部参照とは数えない
       const markup = html.replace(/(<(script|style)\b[^>]*>)[\s\S]*?<\/\2>/g, "$1</$2>");
       expect(markup).not.toMatch(/<script[^>]*\ssrc=/);
       expect(markup).not.toMatch(/<link[^>]*rel="stylesheet"/);
@@ -78,17 +71,13 @@ describe("map.html の本物のビルド", () => {
       expect(JSON.parse(match![1]!)).toMatchObject(events);
       expect(JSON.parse(match![1]!).filter((row: { type: string }) => row.type !== "supplement")).toEqual(events.filter((row) => row.type !== "supplement"));
 
-      // CSS は <style> として HTML に入り、色のトークンと点滅を保つ。
       const css = [...html.matchAll(/<style\b[^>]*>([\s\S]*?)<\/style>/g)].map((m) => m[1]!).join("\n");
       expect(css.length).toBeGreaterThan(0);
-      // 点滅は 1 秒周期で 3 回、文字の透明度を変えない。
       expect(css).toMatch(/@keyframes map-node-blink/);
       expect(css).toMatch(/\.map-node--blink\s*\{[^}]*animation\s*:[^;}]*\b1s\b[^;}]*\s3\b/);
       expect(css).toMatch(/--color-yellow-400\s*:\s*#facc15/i);
 
-      // 同梱したライブラリの名前と LICENSE の全文が、HTML の中の表示されない要素に残る
       for (const { name } of BUNDLED_LICENSES) expect(html).toContain(`## ${name} - `);
-      // React と、React に結び付いた依存（Issue #829 で web から消した）はもう同梱されない
       for (const gone of ["react", "react-dom", "@xyflow/react", "@videojs/react", "@tanstack/react-hotkeys"]) expect(html, gone).not.toContain(`## ${gone} - `);
 
       const seen = yield* Effect.acquireUseRelease(
@@ -121,7 +110,6 @@ describe("map.html の本物のビルド", () => {
               nodes: await page.locator(".map-node").allInnerTexts(),
               intake: await page.locator(".intake-notice").count(),
               changes: await page.locator(".changes__item").allInnerTexts(),
-              // 「変わったこと」の項目を選ぶと、根拠の発言が右の列に出る
               evidenceBefore: await page.locator(".evidence__remark").count(),
               evidence: await (async () => {
                 await page.locator(".changes__button").first().click();
@@ -137,10 +125,8 @@ describe("map.html の本物のビルド", () => {
       );
       for (const { name, text } of BUNDLED_LICENSES) {
         expect(seen.licenses, name).toContain(text);
-        // 画面に出ていない（上で HTML の中にあると確かめた文言の、先頭の行が本文に無い）
         expect(seen.bodyText, name).not.toContain(text.split("\n")[0]!.trim());
       }
-      // 写したアイコンの出どころとライセンスの表示も、同じ表示されない要素に残り、画面には出ない
       expect(seen.licenses, "icons.NOTICE.md").toContain(ICONS_NOTICE);
       expect(seen.bodyText, "icons.NOTICE.md").not.toContain(ICONS_NOTICE.split("\n")[0]!.trim());
       expect(seen.nodes.join("\n")).toContain("採用");

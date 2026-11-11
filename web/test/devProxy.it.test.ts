@@ -3,8 +3,6 @@ import { join } from "node:path";
 import { createServer } from "vite";
 import { describe, expect, it } from "vitest";
 
-// Issue #1069: ライブ画面の M が送る POST /session/self-pause は、開発用サーバー（Vite）の proxy で、操作用ポート（LIVE_MINDMAP_PORT）へ届く。
-// Issue #1026: 字幕の名前の欄が送る POST /session/speaker-name も同じ。
 const root = join(import.meta.dirname, "..");
 const configFile = join(root, "vite.config.ts");
 

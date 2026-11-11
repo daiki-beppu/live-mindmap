@@ -7,10 +7,6 @@ import { RESUMED_NOTICE_MS } from "../src/intake.ts";
 import { init, Model, update } from "../src/app/sessionLayout/main.ts";
 import { Message } from "../src/app/sessionLayout/message.ts";
 
-// セッションの画面の部品（Issue #820）: 字幕・取り込みの知らせ・共有画面の知らせ・見る状態の知らせの update。
-// 知らせは Toast（headless）で持ち、消えるまでの時間は Toast の duration で持つ。
-// Story は update を直接動かし、Model と、update が出す Command（時間切れ）を見る。描画は sessionLayout.scene.test.ts が見る。
-
 type SessionModel = typeof Model.Type;
 type Toasts = Pick<SessionModel, "intakeToast" | "screenToast" | "tapToast" | "viewingToast">;
 type Simulation = StorySimulation<Model, Message>;
@@ -24,12 +20,9 @@ const DIFF = "変わったところを見ています・Esc で戻る・? でキ
 const SCREEN = "共有画面は使っていません（画面収録の許可がありません。システム設定で、起動したターミナルに許可を与え、ターミナルを開き直す）";
 const TAP = "相手の音声が届いていません（出力の機器を切り替えた後に起きることがあります。cli stop の後、cli start で始め直してください）";
 
-// 公開されている Toast の Model（entries・animation.isShowing・payload）だけを読む。出ている文 = 消し始めていない entry の文
 const shown = (toast: Toasts[keyof Toasts]): string[] => toast.entries.filter((e) => e.animation.isShowing).map((e) => e.payload.text);
 const count = (toast: Toasts[keyof Toasts]): number => toast.entries.length;
 
-// 出る・消えるときの動き（WaitForPaint / WaitForAnimationSettled）は、このテストの関心ではないので、保留の Command を全部解く。
-// 時間切れ（WaitBeforeDismissal）は解かない（解く・解かないがテストの主題）
 const settle = (simulation: Simulation): Simulation => {
   const pending = simulation.commands.find((c) => c.name === "WaitForPaint" || c.name === "WaitForAnimationSettled");
   if (pending === undefined) return simulation;
@@ -46,19 +39,15 @@ const expectTimers = (assert: (timers: ReadonlyArray<{ entryId: string; version:
   assert(timers(simulation).map((t) => t.args as { entryId: string; version: number; duration: Duration.Duration }));
   return simulation;
 };
-// 保留の時間切れ（先頭）を、いま来たものとして解く
 const expire = (simulation: Simulation): Simulation => {
   const { entryId, version, duration } = timers(simulation)[0]!.args as { entryId: string; version: number; duration: Duration.Duration };
   return Command.resolve(Toast.WaitBeforeDismissal({ entryId, version, duration }), Toast.Message.CompletedWaitBeforeDismissal({ entryId, version }))(simulation);
 };
 
-// Story は保留の Command を残したまま次の Message を送れない。実行時は「再開しました」のタイマーが走ったまま次の状態が届くので、
-// 保留のタイマーを「何も起こさない結果」（版が違う完了）で閉じ、本物の時間切れの Message（古い版）は、次の状態を受けた後に lateTimer で別に届ける
 const closeTimerQuietly = (simulation: Simulation): Simulation => {
   const { entryId, version, duration } = timers(simulation)[0]!.args as { entryId: string; version: number; duration: Duration.Duration };
   return Command.resolve(Toast.WaitBeforeDismissal({ entryId, version, duration }), Toast.Message.CompletedWaitBeforeDismissal({ entryId, version: version + 1000 }))(simulation);
 };
-// n 番目に出した取り込みの知らせ（0 始まり）の、古いタイマーが遅れて届く
 const lateTimer = (n: number) => message(Message.GotIntakeToastMessage({ message: Toast.Message.CompletedWaitBeforeDismissal({ entryId: `${init().intakeToast.id}-entry-${n}`, version: 0 }) }));
 
 const intake = (status: "running" | "interrupted" | "stopped" | "none") => message(Message.ReceivedIntakeStatus({ status }));

@@ -14,7 +14,6 @@ private func emitTab(_ emitter: ScreenEventEmitter, at time: Double, title: Stri
     emitter.emit(tabFrame(time, title, value)) { ScreenShot(image: image, lines: [image + " OCR"]) }
 }
 
-// JSON is the observable stream contract; extra notification metadata does not change image equality.
 struct TabScreen: Decodable, Equatable {
     let type: String
     let start: Double

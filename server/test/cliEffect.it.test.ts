@@ -24,7 +24,6 @@ import { fakeScreenJpeg } from "./fixtures/screenJpeg.ts";
 
 const external = vi.hoisted(() => ({ openClaudeUpdater: vi.fn(), openListener: vi.fn() }));
 vi.mock("../src/claude.ts", async () => (await import("./fixtures/claudeModule.ts")).fakeClaudeModule(() => external.openClaudeUpdater()));
-// 配信の待受け（openListener）だけを偽物にする。serveFeed は本物のまま
 vi.mock("../src/http.ts", async (importOriginal) => ({
   ...await importOriginal<typeof import("../src/http.ts")>(),
   openListener: external.openListener,
@@ -36,8 +35,6 @@ const directory = Effect.acquireRelease(
   (path) => Effect.promise(() => rm(path, { recursive: true, force: true })),
 );
 
-// 登録済みの待ち（sleep）の長さ（ミリ秒）。TestClock に委譲しつつ、目覚めるか中断されるまで一覧に残す。
-// TestClock を進める前に、依存する待ち（次の再生待ち）が登録済みであることを状態で確かめるために使う
 const trackedClock = (clock: Clock.Clock, pending: number[]): Clock.Clock => ({
   currentTimeMillisUnsafe: () => clock.currentTimeMillisUnsafe(),
   currentTimeMillis: clock.currentTimeMillis,
@@ -55,7 +52,6 @@ const trackedClock = (clock: Clock.Clock, pending: number[]): Clock.Clock => ({
   }),
 });
 
-// 登録済みの待ちが expected（順不同）と一致するまで、実時間で確かめ直す。上限に達したらテストを失敗させる
 const sleepsRegistered = (pending: readonly number[], expected: readonly number[]) => Effect.gen(function* () {
   const key = (values: readonly number[]) => [...values].sort((x, y) => x - y).join(",");
   for (let i = 0; i < 500; i++) {
@@ -65,7 +61,6 @@ const sleepsRegistered = (pending: readonly number[], expected: readonly number[
   return yield* Effect.die(new Error(`待ちが登録されなかった: 期待 [${expected.join(", ")}]、実際 [${pending.join(", ")}]`));
 });
 
-// 受けた依頼（メソッド・パス・本文）を記録し、決めた応答を返す偽の HTTP サーバー。ポートは 0 で待ち受けて実際の番号を返す
 interface FakeResponse { readonly status: number; readonly contentType: string; readonly body: string }
 const fakeServer = (respond: FakeResponse) => Effect.acquireRelease(
   Effect.callback<{ readonly port: number; readonly requests: { method: string; url: string; body: string }[]; close: () => Promise<void> }>((resume) => {

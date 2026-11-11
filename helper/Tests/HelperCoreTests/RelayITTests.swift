@@ -32,7 +32,6 @@ struct RelayITTests {
             try HelperEvent.remark(track: .相手, start: 0, end: 2, text: "こんにちは", duplicate: false, words: transcriptWords("こんにちは"), wordTimes: []).jsonString(),
         ]
         #expect(received == expected)
-        // 実際のトークナイザの語が、確定結果にも途中結果にも載る（空の words を期待値と取り違えない）
         for text in received {
             let object = try #require(JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any])
             let words = try #require(object["words"] as? [[String: Any]])
@@ -41,8 +40,6 @@ struct RelayITTests {
         }
     }
 }
-
-// 複数トラックの並行転送。自分（マイク）と相手（プロセスタップ）の結果を、1 つの接続先へ同じ形で流す。
 
 private struct TrackFailure: Error, Equatable {}
 
@@ -105,7 +102,6 @@ struct MultiTrackRelayITTests {
             try HelperEvent.partial(track: .相手, start: 0, end: 1, text: "こんに", duplicate: false, words: transcriptWords("こんに"), wordTimes: []).jsonString(),
             try HelperEvent.remark(track: .相手, start: 0.25, end: 2, text: "こんにちは", duplicate: false, words: transcriptWords("こんにちは"), wordTimes: []).jsonString(),
         ]
-        // トラック間の到着順は決まっていない。同じトラックの中の順序だけが保たれる。
         #expect(Set(received) == Set(expectedMine + expectedTheirs))
         #expect(received.filter(expectedMine.contains) == expectedMine)
         #expect(received.filter(expectedTheirs.contains) == expectedTheirs)

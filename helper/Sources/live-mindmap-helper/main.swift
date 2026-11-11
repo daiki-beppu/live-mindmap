@@ -4,9 +4,6 @@ import Dispatch
 import Foundation
 import HelperCore
 
-// 配線だけの層。STT は Transcriber プロトコルの後ろにあり、ここでは Speech を使わない。
-// 引数の解釈は HelperCore の parseRunArguments に任せる（既定のポートもそちら）。
-
 private func printError(_ message: String) {
     FileHandle.standardError.write(Data((message + "\n").utf8))
 }
@@ -112,23 +109,14 @@ private func run(app bundleID: String, port: UInt16, audioDir: String?, origin e
     try await session.run()
 }
 
-/// 動画・音声ファイルを文字にして、`相手` の `partial`・`remark` として流す（`cli recorded`）。映像があれば共有画面（`screen`）も流す（読めなければ `screen-off`）。音声の取り込みは扱わない。
-/// `selfFile` があるときは、自分用の録音も読み、ライブと同じ 2 トラック（`相手`・`自分`）で流す。2 本の読み手は同じ音声の時刻に揃え、
-/// `自分` は `DuplicateMarker` に通して重複の印を付ける（保留は読んだ位置の時計で測る）。映像は、メインにあればメインの、なければ自分用の映像を使う。
-/// 流れ: 読めるかを確かめる → 音声を書く → 待ち受けを始める → 全体の長さ（`file-duration`）と音声トラックの本数（`file-audio-tracks`）を保持して流す → 最初のクライアントを待つ →
-/// 文字にして流す → 最後のフレームを送り終えるのを待つ → 止める。時刻はファイルの音声の時刻（先頭が 0 秒）。
-/// `from` があれば `file`（相手）を、`selfFrom` があれば `selfFile`（自分）を、その時刻（秒）から読む（サーバーの起動し直し。トラックごとの位置。時刻はファイルの時刻のまま）。起動し直しでは `audioDir` を渡さない（書き出し先が既にある）。
 private func transcribeFile(file: String, selfFile: String?, port: UInt16, audioDir: String?, from: Double?, selfFrom: Double?) async throws {
     let url = URL(fileURLWithPath: file)
     let selfURL = selfFile.map { URL(fileURLWithPath: $0) }
-    // 読めないファイルは、待ち受けを始める前にここで失敗する
     var header = try await readFileHeader(of: url)
     if let selfURL {
-        // 進み具合の「全体」は、長いほうの長さ。音声トラックの本数は、メインのファイルのもの
         let selfHeader = try await readFileHeader(of: selfURL)
         header = FileHeader(duration: max(header.duration, selfHeader.duration), audioTrackCount: header.audioTrackCount)
     }
-    // 音声は待ち受けを始める前に書き終える。stop（Ctrl-C）がどの時点で来ても、完成した 相手.m4a（と 自分.m4a）が残る
     if let audioDir {
         try await exportFileAudioTracks(theirs: url, mine: selfURL, into: URL(fileURLWithPath: audioDir, isDirectory: true))
     }
@@ -140,13 +128,10 @@ private func transcribeFile(file: String, selfFile: String?, port: UInt16, audio
     let actualPort = try await server.start()
     printError("listening on ws://127.0.0.1:\(actualPort) (file: \(file), \(header.duration) s)")
     await broadcastFileHeader(header, on: server)
-    // `相手` に話者分離をかける。使えなければ、ここで `speaker-off` を保持して流し（接続前でも後から接続したクライアントに届く）、読む速さは抑えない
     let diarization = await FileDiarization.prepare(Nemotron3SpeakerDiarizer(), from: from ?? 0) { event in
         await server.send(event)
     }
 
-    // 差分更新が一時停止している間、サーバーは読み取りの停止を指示する（reading-pause）。止められている間は、ファイルを読み進めない。
-    // 指示は、server が起動時に環境変数で渡したトークンを持つものだけ受け付ける。無ければ指示を処理しない
     let gate = FileReadingGate()
     let controlToken = ProcessInfo.processInfo.environment[helperControlTokenEnvironmentKey] ?? ""
     var readingPauseTask: Task<Void, Never>?
@@ -158,20 +143,16 @@ private func transcribeFile(file: String, selfFile: String?, port: UInt16, audio
     defer { readingPauseTask?.cancel() }
 
     let work = Task {
-        // 録画の読み取りは、最初のクライアントが接続してから始める。
         await server.waitForClient()
-        // 文字起こしと話者分離を並べて動かす。両方が終わる（話者分離が最後の区間と `settled` を流し切る）まで待つ
         try await diarization.run {
             try await relayFileSession(theirs: theirs, mine: mine, to: server, gate: gate, theirsDiarization: diarization.feed)
         }
     }
-    // SIGINT / SIGTERM は、読むのをやめて通常の終了経路で片付ける
     let signalSources = [SIGINT, SIGTERM].map { signalNumber -> DispatchSourceSignal in
         signal(signalNumber, SIG_IGN)
         let source = DispatchSource.makeSignalSource(signal: signalNumber, queue: .main)
         source.setEventHandler {
             work.cancel()
-            // 止められて待っている読み手も、ここで抜けさせる
             Task { await gate.stop() }
             Task { await server.stop() }
         }

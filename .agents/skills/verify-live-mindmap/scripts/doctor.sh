@@ -1,6 +1,4 @@
 #!/usr/bin/env bash
-# 読み取りだけの確認: この run の server・web は動かす価値があるか。何も変えない。
-# 使い方: bash .agents/skills/verify-live-mindmap/scripts/doctor.sh <run のフォルダ>
 set -uo pipefail
 run=$1
 repo=$(git rev-parse --show-toplevel)

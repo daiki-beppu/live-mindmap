@@ -46,7 +46,6 @@ private final class SendDiagnostics: @unchecked Sendable {
     }
 }
 
-/// 小さいフレームだけでは、stop より先に送信が完了してしまう。
 private let closingScreenImage = String(repeating: "A", count: 1024 * 1024)
 
 private func emitClosingScreens(to emitter: ScreenEventEmitter) throws -> [String] {
@@ -89,7 +88,6 @@ private func readSlowly(port: UInt16, answersClose: Bool) -> SlowReaderOutcome {
     defer { close(fd) }
     var timeout = timeval(tv_sec: 10, tv_usec: 0)
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
-    // 相手が先に閉じていても、close の返事の書き込みでテストのプロセスごと落とさない
     var noSigpipe: Int32 = 1
     setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &noSigpipe, socklen_t(MemoryLayout<Int32>.size))
     var address = sockaddr_in()
@@ -203,7 +201,6 @@ struct WebSocketServerITTests {
             .speakerMixed(track: .相手, slot: 0, start: 1),
             .speakerCentroid(track: .相手, slot: 0, centroid: [1, 0]),
         ]
-        // 登録順や蓄積順をそのまま再送する実装を区別する。
         for (index, event) in retained.reversed().enumerated() {
             await server.send(event)
             if index < buffered.count { await server.send(buffered[index]) }
@@ -316,8 +313,8 @@ struct WebSocketServerITTests {
 
     @Test("読むのが遅いクライアントにも、stop の前に送ったフレームがすべて届き、close コード 1000 で閉じてから、同時に呼んだ stop がどちらも戻る")
     func slowReaderReceivesEveryFrameBeforeStopReturns() async throws {
-        // 見たいのは届くこと。混んだ機械ではこの読み手が既定の上限より長くかかる
-        let server = WebSocketServer(port: 0, closeDeadline: .seconds(30), writeStderr: { _ in })
+        let slowReaderCloseDeadline: Duration = .seconds(30)
+        let server = WebSocketServer(port: 0, closeDeadline: slowReaderCloseDeadline, writeStderr: { _ in })
         let port = try await server.start()
         let emitter = ScreenEventEmitter(bundleID: "com.google.Chrome", writeStderr: { _ in })
         let relay = Task { await relayScreenEvents(emitter.events, to: server) }
@@ -332,7 +329,6 @@ struct WebSocketServerITTests {
         #expect(await secondClientCount == 0)
 
         let outcome = await reader.value
-        // 比べるのは 1 MB の文字列なので、失敗の出力に全文を出さない
         let sameTexts = outcome.texts == expected
         #expect(outcome.texts.count == expected.count)
         #expect(sameTexts)
@@ -522,7 +518,7 @@ struct WebSocketServerITTests {
         defer { Task { await server.stop() } }
 
         let event = HelperEvent.origin(hostTime: 9_007_199_254_740_993)
-        await server.send(event) // まだ誰も接続していない
+        await server.send(event)
 
         let task = URLSession.shared.webSocketTask(with: URL(string: "ws://127.0.0.1:\(port)")!)
         task.resume()
@@ -558,7 +554,7 @@ struct WebSocketServerITTests {
         let latest = HelperEvent.screen(start: 2, image: "bGF0ZXN0", lines: nil)
         await server.send(origin)
         await server.send(older)
-        await server.send(latest) // まだ誰も接続していない
+        await server.send(latest)
 
         let task = URLSession.shared.webSocketTask(with: URL(string: "ws://127.0.0.1:\(port)")!)
         task.resume()
@@ -567,7 +563,6 @@ struct WebSocketServerITTests {
         #expect(try await receiveText(task) == origin.jsonString())
         #expect(try await receiveText(task) == latest.jsonString())
 
-        // 古い screen が後ろに残っていないこと: 次に届くのは、その後に send した内容
         let marker = HelperEvent.partial(track: .相手, start: 3, end: 4, text: "次", duplicate: false, words: transcriptWords("次"), wordTimes: [])
         await server.send(marker)
         #expect(try await receiveText(task) == marker.jsonString())
@@ -588,7 +583,6 @@ struct WebSocketServerITTests {
         #expect(try await receiveText(first) == origin.jsonString())
         try await waitForClients(server, count: 1)
 
-        // 接続した後に覚えさせた screen は、つながっているクライアントにも届き、origin はそのまま残る
         let screen = HelperEvent.screen(start: 5, image: "c2NyZWVu", lines: nil)
         await server.send(screen)
         #expect(try await receiveText(first) == screen.jsonString())
@@ -617,7 +611,6 @@ struct WebSocketServerITTests {
         await #expect(throws: (any Error).self) { try await pending.value }
     }
 
-    // Issue #1069: server から helper への最初の指示。受信したテキストを messages に流す
     @Test("クライアントが送ったテキストは messages に届いた順で流れる")
     func clientMessagesReachMessagesStream() async throws {
         let server = WebSocketServer(port: 0)

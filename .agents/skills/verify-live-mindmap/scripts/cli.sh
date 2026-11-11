@@ -1,7 +1,4 @@
 #!/usr/bin/env bash
-# 確かめ用の server に向けて CLI（server/src/cli.ts）を呼ぶ。設定ファイルと既定のモデルは読ませない。
-# 使い方: bash .agents/skills/verify-live-mindmap/scripts/cli.sh <run のフォルダ> <サブコマンド> [引数...]
-# 標準出力・標準エラー・終了コードを <run>/cli/<連番>-<サブコマンド>.{out,err,code} にも残す。
 set -uo pipefail
 run=$1; shift
 repo=$(git rev-parse --show-toplevel)

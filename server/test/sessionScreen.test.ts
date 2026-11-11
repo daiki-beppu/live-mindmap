@@ -4,9 +4,6 @@ import { DiffEvent, LogEvent, makeSession, ROOT_ID, restoreSession, restoreState
 import { gatedScripted } from "./fixtures/batches.ts";
 import { collectLog, forbiddenUpdater, logLayer, updaterLayer, type UpdateFailure } from "./fixtures/sessionLayers.ts";
 
-// 共有画面の変化を受ける口（Session.pushScreen）と、更新器・ログへの受け渡し。
-// ファイルには書かない（ADR 0003）: 画像は SessionLog.writeScreen にバイト列で渡し、ログには { start, image: ファイル名 | null } を書く。
-
 const bytes = (s: string) => new TextEncoder().encode(s);
 const shot = (start: number, id = `s${start}`): ScreenChange => ({ start, image: { id, bytes: bytes(`bytes:${id}`) } });
 const none = (start: number): ScreenChange => ({ start, image: null });
@@ -19,13 +16,11 @@ const remark = (end: number): Remark => {
 
 type Written = { file: string; bytes: Uint8Array };
 
-// held: 差分更新にまだ渡していない発言を 1 件持たせて開く（images は既定のまま）（ログから復元したたまり）。次の push で、held と新しい発言が 1 回の呼び出しにまとまって渡る
 const setup = Effect.fn("setup")(function* (options: { images?: boolean; fail?: (callIndex: number) => boolean; held?: Remark } = {}) {
   const calls: DiffInput[] = [];
   const events: LogEvent[] = [];
   const written: Written[] = [];
   const reads: string[] = [];
-  // block.on の間に呼ばれた差分更新は、終わらないまま止まる（発言が「渡したが反映していない」状態で残る）
   const block = { on: false };
   const update = (input: DiffInput): Effect.Effect<DiffOutput, UpdateFailure> =>
     Effect.suspend(() => {
@@ -38,7 +33,6 @@ const setup = Effect.fn("setup")(function* (options: { images?: boolean; fail?: 
   const session = options.held
     ? yield* restoreSession([{ type: "start", title: "定例" }, { type: "remark", remark: options.held }]).pipe(Effect.provide(layer))
     : yield* makeSession(settings).pipe(Effect.provide(layer));
-  // 発言を 1 件流して、差分更新を 1 回起こす（呼び出し中でなければ、発言 1 件ですぐ呼ばれる）
   const call = Effect.fn("call")(function* (end: number) {
     yield* session.push(remark(end));
     yield* session.idle;
@@ -97,7 +91,6 @@ describe("モデルが画像を読まないセッション（Issue #665）", () 
       const original = yield* setup({ images: false });
       yield* original.session.pushScreen(shot(1));
       yield* original.call(9);
-      // 呼び出しが終わらないうちの発言は、ログに remark の行だけが残り、反映されない
       original.block.on = true;
       const pending = remark(20);
       yield* original.session.push(pending);
@@ -172,7 +165,7 @@ describe("Session.pushScreen", () => {
       yield* session.pushScreen(a);
       yield* session.pushScreen(b);
       const [lineA, lineB] = screenLines();
-      expect(lineA!.image).toBe("0010.0.jpg"); // 最初の 1 件は時刻だけの名前
+      expect(lineA!.image).toBe("0010.0.jpg");
       expect(lineB!.image).toMatch(/\.jpg$/);
       expect(lineB!.image).not.toBe(lineA!.image);
       expect(written.map((w) => w.file)).toEqual([lineA!.image, lineB!.image]);
@@ -198,7 +191,7 @@ describe("Session.pushScreenOff", () => {
       const { session, events } = yield* setup();
       yield* session.pushScreen(none(1));
       yield* session.pushScreenOff({ start: 2, reason: "許可なし" });
-      yield* session.push(remark(5)); // 発言 1 件ですぐ差分更新が呼ばれ、diff の行が続く
+      yield* session.push(remark(5));
       yield* session.pushScreenOff({ start: 3, reason: "許可なし" });
       expect(events.map((e) => e.type)).toEqual(["start", "screen", "screen-off", "remark", "diff", "screen-off"]);
     }));
@@ -224,11 +217,9 @@ describe("Session.pushScreenOff", () => {
       yield* withOff.session.pushScreenOff({ start: 4, reason: "許可なし" });
       yield* withOff.call(9);
       expect(withOff.calls).toHaveLength(1);
-      // 発言の id はテストの採番が進むので、id を除いて比べる
       const withoutIds = (input: DiffInput) => ({ ...input, fresh: input.fresh.map(({ id: _id, ...rest }) => rest), recent: input.recent });
       expect(withoutIds(withOff.calls[0]!)).toEqual(withoutIds(plain.calls[0]!));
       expect("screens" in withOff.calls[0]!).toBe(false);
-      // ログの diff の input も、screens・screenCount が付かず、同じ項目を持つ（発言の id は採番が進むので値は比べない）
       expect(Object.keys(withOff.diffs()[0]!.input).sort()).toEqual(Object.keys(plain.diffs()[0]!.input).sort());
       expect("screenCount" in withOff.diffs()[0]!.input).toBe(false);
     }));
@@ -251,7 +242,7 @@ describe("画像のバイト列の保持", () => {
       const { session, calls, reads, written, call } = yield* setup();
       yield* session.pushScreen(shot(10, "a"));
       yield* session.pushScreen(shot(10, "b"));
-      yield* call(11); // 同じ時刻の b は 10 秒未満なので持ち越す
+      yield* call(11);
       yield* call(21);
       expect(written.map((w) => w.file)).toEqual(["0010.0.jpg", "0010.0-2.jpg"]);
       expect(reads).toEqual(["0010.0.jpg", "0010.0-2.jpg"]);
@@ -308,7 +299,7 @@ describe("差分更新への共有画面の配線", () => {
       yield* session.pushScreen(shot(20));
       yield* session.pushScreen(none(21));
       yield* session.push(remark(41));
-      expect(calls).toHaveLength(1); // 呼び出し中は重ならない
+      expect(calls).toHaveLength(1);
       replies[0]!();
       const deadline = Date.now() + 5000;
       while (calls.length < 2) {
@@ -331,10 +322,9 @@ describe("差分更新への共有画面の配線", () => {
 
   it.effect("end の最大値は新しい発言の中の最大（先頭の発言が最大とは限らない）", () =>
     Effect.gen(function* () {
-      // 復元したたまりの発言（end 20）と新しい発言（end 12）が 1 回の呼び出しにまとまる
       const { session, calls, call } = yield* setup({ held: remark(20) });
       yield* session.pushScreen(shot(15));
-      yield* call(12); // end の最大は 20（2 つ目の end は 12）
+      yield* call(12);
       expect(calls[0]!.fresh.map((x) => x.end)).toEqual([20, 12]);
       expect(startsOf(calls[0]!)).toEqual([15]);
     }));
@@ -487,7 +477,6 @@ describe("ログの読み戻し（共有画面のないログは今までどお�
     }));
 });
 
-// Issue #643: 画面の文字（OCR の行）。pushScreen の 2 番目の引数で渡した lines は screen の行にだけ残り、差分更新の入力（DiffInput.screens）には載らない
 describe("共有画面の文字（lines）", () => {
   const start = { type: "start", title: "定例" };
   it.effect("lines を渡した pushScreen は screen の行に lines を残す。空の配列は空のまま残り、渡さなければ lines のキーは無い", () =>

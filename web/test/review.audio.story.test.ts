@@ -8,9 +8,6 @@ import { Message } from "../src/app/review/message.ts";
 import { Message as SurfaceMessage } from "../src/app/mapSurface/message.ts";
 import { AUDIO_RATE, AUDIO_RATES, initialPlayback, PLAYBACK_RATE, PLAYBACK_RATES } from "../src/reviewPlayback.ts";
 
-// 見返しの録音つきの再生（Issue #824）の update。再生・一時停止・終わり・時刻の同期（書く側）と、録音なしの時計。
-// 反映 1: 時刻 10、反映 2: 時刻 30。会議の長さは 30
-
 const remark = (id: string, end: number, text: string) => ({ at: "x", type: "remark", remark: { id, track: "相手", start: end - 5, end, text } });
 const add = (ref: string, parent: string, kind: string, text: string, evidence: string[]) => ({ op: "add", ref, parent, kind, text, evidence });
 const diff = (fresh: string[], ops: unknown[]) => ({ at: "x", type: "diff", input: { recent: [], fresh, nodeCount: 0 }, ops, dropped: [] });

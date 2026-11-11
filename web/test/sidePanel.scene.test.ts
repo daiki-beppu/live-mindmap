@@ -11,14 +11,9 @@ import { view as sideView } from "../src/app/sidePanel/main.ts";
 import { INITIAL_VIEWING, type ViewingState } from "../src/viewing.ts";
 import { foldingActions } from "./foldingActions.ts";
 
-// 右の列（Issue #821）の Scene。描いた view から入り、選んだノードの根拠のパネルと変わったことの列が、今の画面（EvidencePanel.tsx・ChangeList.tsx）と同じ中身・同じ DOM で出ること、
-// 選択に連動して同じ画面の上で切り替わること、右の列の出す・隠すが Disclosure の panel として描かれることを見る。
-// 選ぶのはマップのノードの click（描いたノードのボタンの Mount を解いて届ける Message）、列の出し入れの引き金（E キー・#825 のボタン）は描いた木の外なので Subscription.emit で流す
-
 type MapSurfaceModel = ReturnType<typeof init>;
 type VNode = Parameters<typeof textContent>[0];
 
-// マップの表示面と右の列を、同じ Model から並べて描く（親が h.submodel で並べるのと同じ組み合わせ）
 const app = { update, view: (model: MapSurfaceModel, h: HtmlBuilder<Message>) => h.div([], [mapView(model, { notice: () => null }, h), sideView(model, h)]) };
 
 const node = (id: string, parent: string | null, kind: Exclude<SnapshotNode["kind"], "補足">, extra: Partial<Exclude<SnapshotNode, { kind: "補足" }>> = {}): Exclude<SnapshotNode, { kind: "補足" }> => ({ id, parent, kind, text: id, evidence: [], ...extra });
@@ -29,7 +24,6 @@ const REMARKS: Remark[] = [
 const NODES: SnapshotNode[] = [
   node("root", null, "会議"),
   node("A", "root", "議題", { talkStatus: "済み", text: "採用", evidence: ["r1"] }),
-  // 根拠は積んだ順（r2, r1）で、発言の開始時刻の昇順（r1, r2）に並べ直されて出る
   node("A1", "A", "論点", { text: "面接は何回か", pointStatus: "決定済み", evidence: ["r2", "r1"] }),
   node("A2", "A1", "案", { text: "<b>2 回</b>", planStatus: "却下", evidence: ["r1"] }),
   node("A3", "A1", "課題", { text: "人が足りない", evidence: ["r1"] }),
@@ -51,12 +45,9 @@ const modelOf = (snapshot: Snapshot = snap(), viewing: ViewingState = INITIAL_VI
   nodeHeights: HashMap.make(...Object.entries(HEIGHTS)),
   viewing,
 });
-// Mount は 1 度しか解けない。ノードの click を含まない Scene は、大きさだけの測定（目標の位置は変わらない）で解く
 const mounted = Mount.resolve(ObserveMapSurface, Message.MeasuredMapSurface({ ...SIZE, nodeHeights: {} }));
-// ノードを選ぶ（描いたノードのボタンの Mount が届ける Message。ノードの click を含む Scene はこれで Mount を解く）
 const clickedNode = (nodeId: string) => Mount.resolve(ObserveMapSurface, Message.ClickedNodeButton({ nodeId, clientX: 0, clientY: 0 }));
 const nodeButton = (nodeId: string) => expectScene(selector(`[data-node-id="${nodeId}"] button.map-node__button`)).toExist();
-// 議題 A を開いた見る状態（論点・案・課題・TODO がマップに描かれる）
 const opened = (): ViewingState => ({ ...INITIAL_VIEWING, humanFolds: Option.fromUndefinedOr(foldingActions(snap(), [{ type: "toggle", id: "A" }]).human) });
 const toggleSide = (isOpen: boolean) => Subscription.emit(Message.ToggledSide({ isOpen }));
 
@@ -143,7 +134,6 @@ describe("sidePanel の Scene: 根拠のパネル（選択と連動して今と�
           ["span.evidence__time", "span.evidence__track", "span.evidence__remark-text"],
         ]);
         expect(findAll("ul")(evidence)).toHaveLength(1);
-        // 発言の key は発言の id（表示中の文字から作らない）
         expect(remarks.map((r) => r.key)).toEqual(["r1", "r2"]);
       }),
     );
@@ -260,7 +250,6 @@ describe("sidePanel の Scene: 根拠のパネル（選択と連動して今と�
   });
 
   it("まとめのノード（議題 N 件）を指すと、種別・本文は出て、発言は「根拠の発言はありません」", () => {
-    // 済みの議題 A・A2' が続くと「議題 2 件」（run:A）にまとめられる。まとめのノードは click では選べないので、選択を持つ Model で始める
     const bundledNodes: SnapshotNode[] = [
       node("root", null, "会議"),
       node("A", "root", "議題", { talkStatus: "済み", evidence: ["r1"] }),
@@ -303,7 +292,6 @@ describe("sidePanel の Scene: 変わったことの列（今の ChangeList と�
           Array(3).fill(["time.changes__time", "span.changes__type", "span.changes__kind", "span.changes__text"]),
         );
         expect(findAll("button.changes__button")(list).map((b) => attr(b, "type"))).toEqual(Array(3).fill(Option.some("button")));
-        // key は 反映の回・ノード・変化の種類（表示中の文字から作らない）。新しい順
         expect(items.map((i) => i.key)).toEqual(["3-gone-追加", "2-A1-決定済み化", "1-A-追加"]);
       }),
     );
@@ -408,7 +396,6 @@ describe("sidePanel の Scene: 変わったことの項目を押すと、その�
   });
 });
 
-// TODO の段（Issue #1287）。専用のスナップショットで見る（NODES に足すと根拠の Scene の前提が変わる）
 const TODO_NODES: SnapshotNode[] = [
   node("root", null, "会議"),
   node("A", "root", "議題", { talkStatus: "済み", text: "採用" }),
@@ -451,7 +438,6 @@ describe("sidePanel の Scene: TODO の段（Issue #1287）", () => {
       app,
       given(todoModel()),
       mounted,
-      // 議題 A は済みで畳まれ、T1 はマップに描かれない
       expectScene(selector(`[data-node-id="T1"]`)).toBeAbsent(),
       tap((s) => {
         expect(textOf(todosOf(s.html), ".todos__text")).toEqual(["<b>求人を出す</b>", "日程を決める", "担当も期限も無い", "相手に任せる"]);
@@ -472,16 +458,13 @@ describe("sidePanel の Scene: TODO の段（Issue #1287）", () => {
         expect(textOf(t1!, ".todos__time")).toEqual(["00:10"]);
         expect(textOf(t1!, ".todos__assignee")).toEqual(["佐藤"]);
         expect(textOf(t1!, ".todos__due")).toEqual(["来週"]);
-        // 担当者の名前が無く担当の話者があるときは、表示名（speakerNames を通した名前）
         expect(textOf(t2!, ".todos__time")).toEqual(["62:05"]);
         expect(textOf(t2!, ".todos__assignee")).toEqual(["田中"]);
         expect(findAll(".todos__due")(t2!)).toHaveLength(0);
-        // 担当者・期限・追加の記録が無い TODO は、本文だけ
         expect(findAll(".todos__time")(t3!)).toHaveLength(0);
         expect(findAll(".todos__assignee")(t3!)).toHaveLength(0);
         expect(findAll(".todos__due")(t3!)).toHaveLength(0);
         expect(textOf(t3!, ".todos__text")).toEqual(["担当も期限も無い"]);
-        // 話者なしの相手は担当者として出さない
         expect(findAll(".todos__assignee")(t4!)).toHaveLength(0);
         expect(textOf(t4!, ".todos__time")).toEqual(["62:10"]);
       }),
@@ -544,7 +527,6 @@ describe("sidePanel の Scene: TODO の段（Issue #1287）", () => {
       expectScene(selector("section.evidence .evidence__kind")).toHaveText("TODO"),
       expectScene(selector("section.evidence p.evidence__text")).toHaveText("<b>求人を出す</b>"),
       tap((s) => expect(textOf(evidenceOf(s.html), ".evidence__remark-text")).toEqual(["<i>二回で</i>いきます"])),
-      // 押した後も一覧は残る
       tap((s) => expect(itemsOf(s.html)).toHaveLength(4)),
     );
   });

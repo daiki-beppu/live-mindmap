@@ -65,7 +65,9 @@ public actor AppleHTTPServer {
                 try await reply(connection, status: 200, object: object)
             } catch {
                 do { try await reply(connection, status: 500, object: ["error": String(describing: error)]) }
-                catch { /* 切断済みの接続へは応答できない。以下で必ず解放する。 */ }
+                catch {
+                    FileHandle.standardError.write(Data("Apple HTTP server: 500 を返せなかった: \(error)\n".utf8))
+                }
             }
             connections.removeValue(forKey: ObjectIdentifier(connection))
             connection.cancel()

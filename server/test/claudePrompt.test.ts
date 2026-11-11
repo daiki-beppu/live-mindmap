@@ -68,7 +68,6 @@ describe("Agent SDK を読み込めない環境でのプロンプト生成", () 
     expect(sdkLoad).not.toHaveBeenCalled();
   });
 
-  // Issue #1021: 新しい発言も直前の発言も、1 行は「ID [mm:ss] 話者: 本文」。話者は 相手 A / 相手 / 自分
   it("新しい発言と直前の発言の行に話者が出る（ラベルあり・話者なし・自分。トラック名だけの古い自分の発言も 自分:）", async () => {
     const { buildPrompt } = await import("../src/claudePrompt.ts");
     const lines = (prompt: string, section: string) => {
@@ -102,7 +101,6 @@ describe("Agent SDK を読み込めない環境でのプロンプト生成", () 
     ]);
   });
 
-  // Issue #1026: 名前が付いたラベルの相手の発言は「相手 B（田中）: 本文」。新しい発言も直前の発言も同じ。ラベルは変えず、名前を添えるだけ
   it("speakerNames があれば、ラベルのある相手の発言の行が 相手 B（田中） になる。新しい発言と直前の発言の両方。名前の無いラベル・話者なし・自分は今の形のまま", async () => {
     const { buildPrompt } = await import("../src/claudePrompt.ts");
     const lines = (prompt: string, section: string) => {

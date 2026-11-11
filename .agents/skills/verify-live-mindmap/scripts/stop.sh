@@ -1,7 +1,4 @@
 #!/usr/bin/env bash
-# この run が立てたものだけを止める。止める前にセッションのフォルダ（一時）を <run>/sessions/ へ写す（serve.ts は終わるときに一時フォルダを消す）。
-# 証拠（<run>/ の下）は消さない。
-# 使い方: bash .agents/skills/verify-live-mindmap/scripts/stop.sh <run のフォルダ>
 set -uo pipefail
 run=$1
 port=$(cat "$run/web-port"); pid=$(cat "$run/pid"); sessions=$(cat "$run/sessions-dir" 2>/dev/null)

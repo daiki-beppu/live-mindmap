@@ -1,4 +1,3 @@
-// Slider・Menu・Tooltip が属性の束（root・track・thumb・trigger・panel…）に付ける style と id は、そのまま残す。束の後に h.Style を足さない。
 import { Disclosure, Menu, Slider, Tooltip } from "@foldkit/ui";
 import { Option } from "effect";
 import { childAttributes, type ChildAttribute, type Html, type HtmlBuilder } from "foldkit/html";

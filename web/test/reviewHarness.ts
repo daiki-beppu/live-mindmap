@@ -62,7 +62,6 @@ export const tagOf = (vnode: VNode): string => (vnode.sel ?? "").split(/[#.]/)[0
 export const labelled = (html: VNode, label: string): VNode => one(html, `[aria-label="${label}"]`);
 
 type Step = <Model, Message, OutMessage>(simulation: SceneSimulation<Model, Message, OutMessage>) => SceneSimulation<Model, Message, OutMessage>;
-// Mount.resolve の第1引数は結果型を持たない AnyMount も受けるので、組の検査が効かない。resolveMount は定義だけから結果の型を決める
 const resolveMount = <Name extends string, ResultMessage>(definition: MountDefinition<Name, ResultMessage>, result: NoInfer<ResultMessage>): Step => Mount.resolve(definition, result);
 const commandSteps: Record<string, (args: unknown) => Step> = {
   PlayAudio: () => Command.resolveAll([PlayAudio, Message.SucceededPlayAudio()]),

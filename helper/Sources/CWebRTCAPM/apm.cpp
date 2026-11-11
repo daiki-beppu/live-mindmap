@@ -18,7 +18,6 @@
 struct ApmHandle {
     rtc::scoped_refptr<webrtc::AudioProcessing> apm;
     webrtc::StreamConfig config;
-    // reverse の出力先。呼び出し側の const な参照を書き換えないための作業領域。
     std::vector<float> reverseScratch;
     int streamDelayMs;
 };
@@ -39,7 +38,7 @@ private:
     webrtc::EchoCanceller3Config config_;
 };
 
-}  // namespace
+}
 
 extern "C" {
 
@@ -73,7 +72,6 @@ ApmRef apm_create(int sample_rate, int channels, const ApmEchoSettings *settings
 
 int apm_process_reverse(ApmRef handle, const float *frame, int frames) {
     if (!handle || !frame || frames != static_cast<int>(handle->config.num_frames())) return -1;
-    // 参照はモノラルの 1 チャンネルだけ。ポインタの配列で渡し、出力は作業領域に受ける。
     handle->reverseScratch.assign(frame, frame + frames);
     const float *input[1] = {handle->reverseScratch.data()};
     float *output[1] = {handle->reverseScratch.data()};
@@ -93,4 +91,4 @@ int apm_process_capture(ApmRef handle, float *frame, int frames) {
 
 void apm_destroy(ApmRef handle) { delete handle; }
 
-}  // extern "C"
+}

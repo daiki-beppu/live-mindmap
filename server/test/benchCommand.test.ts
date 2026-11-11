@@ -1,5 +1,3 @@
-// bench の sessionStats を effect/cli の Command として走らせたとき、位置引数が無ければ引数の読み取りで失敗すること。
-// ファイルもプロセスも使わない
 import { describe, expect, it } from "@effect/vitest";
 import { Effect } from "effect";
 import { command as statsCommand } from "../bench/sessionStats.ts";

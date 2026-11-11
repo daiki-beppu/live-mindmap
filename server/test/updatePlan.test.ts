@@ -5,8 +5,6 @@ import type { JudgeModel } from "../src/judgeSelection.ts";
 import { acceptPlan, needsTransferToken, planBody, planModel, resolvePlan, type UpdatePlan } from "../src/updatePlan.ts";
 import { availableApple } from "./fixtures/appleIntelligence.ts";
 
-// 更新の計画の規則（単一モデルか振り分けか、server が受けてよい本文、転送用トークンの要否）。
-// 鍵の有無は resolvePlan では見ない。鍵と知らせは planLayer（judgeRouting.test.ts）が所有する。
 const jev: JudgeModel = { name: "jev", route: "system-one", apiKeyEnv: "TYPESAFE_AI_API_KEY", timeoutMs: 1000 };
 const compat: ExecutableModel = { name: "local-llm", route: "openai-compatible", model: "synthetic-model", url: "http://127.0.0.1:11434/v1", local: false };
 const chatgpt: ExecutableModel = { name: "gpt", route: "chatgpt", model: "synthetic-gpt", local: false };

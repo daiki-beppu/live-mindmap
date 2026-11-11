@@ -8,7 +8,6 @@ const root = resolve(import.meta.dirname, "../..");
 const stages = ["install", "aec3", "resolve"] as const;
 type Stage = (typeof stages)[number];
 
-// 子プロセス境界で、開始の合流と失敗後の終了待ちを観測する。実際の依存取得は行わない。
 const fakeCommand = `
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -68,7 +67,6 @@ async function runBootstrap(failures: readonly Stage[]) {
     for (const file of [".nvmrc", "package.json", "pnpm-workspace.yaml", "pnpm-lock.yaml", "scripts/setup-deps.sh"]) {
       copyFileSync(join(root, file), join(dir, file));
     }
-    // 未実装時も fixture の copy エラーにせず、公開コマンドの失敗を観測する。
     if (existsSync(join(root, "scripts/bootstrap.sh"))) {
       copyFileSync(join(root, "scripts/bootstrap.sh"), join(dir, "scripts/bootstrap.sh"));
     }

@@ -5,14 +5,8 @@ import Synchronization
 import Testing
 @testable import HelperCore
 
-// 2 本のファイルの読み手を、同じ音声の時刻に揃える（FileReadingAlignment。`cli recorded --self`）の IT。
-// ファイルはテストの中で作った合成の WAV。文字にする役は偽物で、引いた入力の位置を記録し、引き方（速さ・止まり）をテストが決める。
-// 確かめること: 先に進む読み手は、もう一方の読み終えた位置を超えて先へ進まない / 終わった読み手は待たせない /
-// 待ちはキャンセルに応じる / 揃えた位置が時計（now・sleep）になる / 揃える相手が無ければ今までと同じ。
-
 private typealias Support = FileAudioTestSupport
 
-/// 引いた入力の位置の記録。1 件 = ある読み手が受け取った 1 つの入力（開始・終了の秒）。
 private struct Pulled: Equatable {
     let reader: String
     let start: Double
@@ -28,7 +22,6 @@ private final class PullLog: @unchecked Sendable {
     func maxEnd(of reader: String) -> Double { ends(of: reader).max() ?? 0 }
 }
 
-/// 渡された音声を引くたびに `afterPull` を呼ぶ偽の役。`afterPull` が止まっている間、その読み手は次の入力を引かない。
 private final class PacedFileTranscriber: FileTranscriber, @unchecked Sendable {
     private let name: String
     private let log: PullLog
@@ -78,7 +71,6 @@ private struct WaitTimedOut: Error, CustomStringConvertible {
     var description: String { "待っていた条件が成り立たなかった: \(condition)" }
 }
 
-/// 条件が成り立つまで、壁時計の期限（10 秒）まで待つ。期限が切れたら、待っていた条件を示して throw する。
 private func waitUntil(_ condition: String, _ check: @Sendable () -> Bool) async throws {
     let deadline = ContinuousClock.now + .seconds(10)
     while !check() {
@@ -108,7 +100,6 @@ struct FileReadingAlignmentITTests {
         let log = PullLog()
         let gate = Gate()
         let slowGotFirst = Flag()
-        // 自分は最初の入力を引いたところで止まる。相手はひたすら引く。
         let slow = PacedFileTranscriber("自分", log: log) { _ in
             slowGotFirst.raise()
             await gate.wait()
@@ -117,25 +108,22 @@ struct FileReadingAlignmentITTests {
 
         let slowTask = Task { try await drain(try await transcribeFile(at: mine, with: slow, alignment: mineReader)) }
         let fastTask = Task { try await drain(try await transcribeFile(at: theirs, with: fast, alignment: theirsReader)) }
-        // 途中で失敗しても、待っているタスクを残さない（正常終了後は何もしない）
         defer {
             gate.open()
             slowTask.cancel()
             fastTask.cancel()
         }
         try await waitUntil("遅い側が最初の入力を受け取る") { slowGotFirst.isRaised }
-        try await Task.sleep(for: .milliseconds(500)) // 揃える処理が無ければ、この間に相手は 30 秒を読み切る
+        try await Task.sleep(for: .milliseconds(500))
 
         let slowPosition = log.maxEnd(of: "自分")
-        // 速い側が止まっている側の位置まで進むのを待つ（負荷で読み出しが遅れても、検証の前提を満たす）
         try await waitUntil("速い側が遅い側の位置まで読む") { log.maxEnd(of: "相手") >= slowPosition }
         let fastPosition = log.maxEnd(of: "相手")
         let widest = log.values.map { $0.end - $0.start }.max() ?? 0
         try #require(slowPosition > 0)
-        try #require(slowPosition + widest < 30) // 前提: 1 つの入力ぶんの余裕を足しても、ファイルの終わりに届かない
-        #expect(fastPosition >= slowPosition) // 止まっている側の位置までは、待たずに進める
+        try #require(slowPosition + widest < 30)
+        #expect(fastPosition >= slowPosition)
         #expect(fastPosition <= slowPosition + widest, "先へ進む側が、止まっている側の位置 \(slowPosition) 秒より \(fastPosition - slowPosition) 秒先まで読んだ")
-        // 揃えた位置（時計）は、止まっている側の位置
         #expect(abs(await alignment.now() - slowPosition) < 0.001)
 
         gate.open()
@@ -153,7 +141,6 @@ struct FileReadingAlignmentITTests {
         let alignment = FileReadingAlignment()
         let theirsReader = await alignment.addReader(from: 10)
         let mineReader = await alignment.addReader(from: 10)
-        // 読み始める前の時計は開始位置（0 だと、互いに 10 秒の位置の入力を待ち続けて止まる）
         #expect(abs(await alignment.now() - 10) < 0.001)
         let log = PullLog()
         let outcomes = Mutex<[String: Result<Void, Error>]>([:])
@@ -227,7 +214,6 @@ struct FileReadingAlignmentITTests {
 
         let all = log.values
         let widest = all.map { $0.end - $0.start }.max() ?? 0
-        // 受け取った入力の開始位置は、もう一方が記録した位置（記録は受け取りの後なので、直前の 1 件ぶんの遅れを許す）を超えない
         var seenEnd: [String: Double] = ["相手": 0, "自分": 0]
         for pulled in all {
             let other = pulled.reader == "相手" ? "自分" : "相手"
@@ -281,7 +267,7 @@ struct FileReadingAlignmentITTests {
         let waiting = Task { try await drain(try await transcribeFile(at: theirs, with: PacedFileTranscriber("相手", log: log), alignment: theirsReader)) }
         defer { waiting.cancel(); slowTask.cancel() }
         try await waitUntil("遅い側が最初の入力を受け取る") { slowGotFirst.isRaised }
-        try await Task.sleep(for: .milliseconds(300)) // 相手が自分を待つ状態になる
+        try await Task.sleep(for: .milliseconds(300))
 
         waiting.cancel()
         let ended = Flag()
@@ -312,7 +298,7 @@ struct FileReadingAlignmentITTests {
             woke.raise()
             return await alignment.now()
         }
-        try await Task.sleep(for: .milliseconds(1300)) // 壁時計では 1 秒を過ぎるが、読み手はまだ 1 つも動いていない
+        try await Task.sleep(for: .milliseconds(1300))
         #expect(!woke.isRaised)
         #expect(await alignment.now() == 0)
 
@@ -350,7 +336,7 @@ struct FileReadingAlignmentITTests {
         await alignment.close()
         try await waitUntil("close() で待っていた sleep が戻る") { woke.isRaised }
         try await sleeper.value
-        try await alignment.sleep(.seconds(100)) // 閉じた後の sleep は、待たずに戻る
+        try await alignment.sleep(.seconds(100))
     }
 
     @Test("sleep は待っている間にキャンセルされると、CancellationError で戻る")
@@ -390,7 +376,7 @@ struct FileReadingAlignmentITTests {
     func waitScreenWaitsForAdvanceOrFinish() async throws {
         let alignment = FileReadingAlignment()
         let reader = await alignment.addReader()
-        try await reader.waitScreen(through: 5) // 映像を足していない: 待たない
+        try await reader.waitScreen(through: 5)
 
         let screen = await alignment.addScreen()
         let passed = Flag()
@@ -410,9 +396,9 @@ struct FileReadingAlignmentITTests {
         defer { finishedWait.cancel() }
         try await Task.sleep(for: .milliseconds(100))
         await screen.finish()
-        try await finishedWait.value // 映像が終わった: 待たない
+        try await finishedWait.value
         try await reader.waitScreen(through: 200)
-        #expect(await alignment.now() == 0) // 映像の進みは時計に入らない
+        #expect(await alignment.now() == 0)
     }
 
     @Test("映像の進みを待っている読み手は、キャンセルされるとすぐ CancellationError で終わる")

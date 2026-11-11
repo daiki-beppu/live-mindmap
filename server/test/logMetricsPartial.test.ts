@@ -61,7 +61,6 @@ it.effect("invConservation: 再適用でも未消費の発言を根拠にした�
     },
   ];
   expect((yield* logMetrics(events)).rewrites).toBe(0);
-  // input.fresh 全体の発言参照を検査する既存契約は、部分反映でも維持する。
   const error = yield* Effect.flip(logMetrics([events[0]!, events[1]!, events[3]!]));
   expect(error).toMatchObject({ _tag: "InvalidLogEvent", index: 2 });
   expect(error.reason).toContain("r2");

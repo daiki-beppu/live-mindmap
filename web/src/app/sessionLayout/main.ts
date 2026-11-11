@@ -218,7 +218,6 @@ const bubbleRowView = (h: H, bubble: DisplayBubble, nameEdit: Model["nameEdit"])
     ],
   );
 
-// 描く吹き出しの行。入力中の欄が字幕から外れても、押した時点の行を先頭に足して入力を残す（先頭に置くと、keyed の差分で行が動かず input とフォーカスが保たれる）
 function bubbleRowsOf(model: Model): ReadonlyArray<DisplayBubble> {
   const { bubbles } = model.captions;
   return Option.match(model.nameEdit, {

@@ -13,7 +13,6 @@ export const RestartBlink = Command.define("RestartBlink", {
       Effect.sync(() => {
         const elements = Array.from(document.querySelectorAll<HTMLElement>(BLINK_SELECTOR));
         for (const element of elements) element.style.animation = "none";
-        // reflow を起こして、外した状態を確定させる
         void document.body.offsetWidth;
         for (const element of elements) element.style.removeProperty("animation");
       }),

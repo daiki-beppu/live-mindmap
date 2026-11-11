@@ -62,7 +62,6 @@ final class RunAudio {
             try await mine.prepare()
             myTranscriber = mine
         }
-        // 話者分離は補助。準備に失敗しても throw せず、`run` の開始時に `speaker-off` を流して認識だけで続ける。
         if let candidate = makeDiarizer() {
             do {
                 try await candidate.prepare()
@@ -89,7 +88,6 @@ final class RunAudio {
                 myAudio = try echoCancelled(microphone, reference)
             }
         }
-        // 休止のゲートを通った音と、休止の間の同じ長さの無音を録音へ流す。STT へは休止していない音だけを区間ごとに分けて流す
         var gatedRecording: AudioStream.Continuation?
         var recordingOutput: AudioStream?
         if let recording {
@@ -97,23 +95,19 @@ final class RunAudio {
             recordings.append(their.finished)
             theirAudio = their.stream
             if myAudio != nil {
-                // 未消費は 2048 個まで。溢れたらゲートが backlogExceeded で失敗させる（音を黙って捨てない）
                 let (accepted, continuation) = AudioStream.makeStream(
                     of: CapturedAudio.self, throwing: Error.self, bufferingPolicy: .bufferingOldest(downstreamBacklogLimit))
                 gatedRecording = continuation
                 let mine = try recording(.自分, accepted, origin)
                 recordings.append(mine.finished)
-                // 録音の出力は音としては使わない（STT へはゲートが直接流す）。読み捨てながら、録音の失敗を結果の流れへ伝える
                 recordingOutput = mine.stream
             }
         }
-        // 話者分離は `相手` のトラックにだけ掛ける。録音を通した後の音声を分け、認識とは別の流れで読む。
         let diarizerTask = await startDiarizer(on: &theirAudio, origin: origin)
         var tracks: [(Track, ResultStream)] = []
         do {
             tracks.append((.相手, try await theirTranscriber.transcribe(theirAudio, origin: origin)))
         } catch {
-            // ゲートを始める前に失敗したら、作った録音の入力を終わらせる（終わらせないと finish が録音の終了を待ち続ける）
             gatedRecording?.finish(throwing: error)
             diarizerTask?.cancel()
             await diarizerTask?.value
@@ -129,11 +123,9 @@ final class RunAudio {
             await diarizerTask?.value
             throw error
         }
-        // 上流が終われば、残りの区間を確定させて流れが終わる。待ってから戻る（サーバーを閉じる前に流し切る）。
         await diarizerTask?.value
     }
 
-    /// 話者分離を始める。使えない場合は `speaker-off` を 1 回流して nil を返す。使えるなら `audio` の流れを 2 つに分け、片方を話者分離に渡す。
     private func startDiarizer(on audio: inout AudioStream, origin: UInt64) async -> Task<Void, Never>? {
         func emitOff(_ reason: SpeakerOffReason) {
             emitSpeaker(.speakerOff(start: offsetSeconds(from: origin, to: now()), reason: reason))
@@ -164,7 +156,6 @@ final class RunAudio {
         }
     }
 
-    /// 元のバッファと同じ形式・フレーム数・取得時刻で、全サンプルが 0 のバッファ。
     private static func silence(like item: CapturedAudio) throws -> CapturedAudio {
         guard let buffer = AVAudioPCMBuffer(pcmFormat: item.buffer.format, frameCapacity: item.buffer.frameLength) else {
             throw TranscriberError.conversionFailed("無音のバッファを作れない")
@@ -176,9 +167,6 @@ final class RunAudio {
         return CapturedAudio(buffer: buffer, hostTime: item.hostTime)
     }
 
-    /// `自分` の音を休止のゲートに通し、休止していない間の音を録音と STT に流す。休止の間の音は、録音へは同じ長さの無音にして流す。
-    /// STT は休止に入るたびに区間を閉じて（`Transcriber` の音声の流れが終わると、届いた分が確定する）、再開後は新しい `Transcriber` で次の区間を始める。
-    /// 区間の結果は 1 本の流れにつなぐ。休止の間もマイクの音は読み続けて捨てる（取り込みは止めない）。
     private func mySegmentedResults(
         microphone: AudioStream, first: Transcriber, recording: AudioStream.Continuation?, recordingOutput: AudioStream?, origin: UInt64
     ) -> ResultStream {
@@ -202,11 +190,9 @@ final class RunAudio {
                 let forwarded = Task {
                     do {
                         let stream = try await transcriber.transcribe(audio, origin: origin)
-                        // 前の区間の結果を流し終えてから、この区間の結果を流す
                         try await before?.value
                         for try await result in stream { output.yield(result) }
                     } catch {
-                        // 認識の失敗は、マイクの流れが終わるのを待たずに結果の流れへ伝える
                         output.finish(throwing: error)
                         throw error
                     }
@@ -216,14 +202,11 @@ final class RunAudio {
             }
             do {
                 for try await item in microphone {
-                    // バッファを取得した時刻で、休止・再開の境界と照らす（読んだ時刻ではない）
                     let state = selfPause.resolve(at: item.hostTime)
                     if state.enteredPause {
-                        // 休止に入った。それより前に取った音を発言に締める（休止と再開が音を挟まずに届いた場合も閉じる）
                         segment?.finish()
                         segment = nil
                     }
-                    // 休止中に取った音は STT へ流さず捨てる。録音へは同じ長さ・同じ取得時刻の無音を流し、録音の位置を発言の時刻に揃える
                     if state.paused {
                         if let recording {
                             if case .dropped = recording.yield(try Self.silence(like: item)) {
@@ -252,7 +235,6 @@ final class RunAudio {
         }
         output.onTermination = { _ in gate.cancel() }
         if let recordingOutput {
-            // 録音の書き込みの失敗は、従来どおり認識と転送の失敗として run に伝える（休止で STT が録音を経由しなくなっても、失敗を終了まで隠さない）
             Task {
                 do { for try await _ in recordingOutput {} }
                 catch { output.finish(throwing: error); gate.cancel() }
@@ -261,13 +243,10 @@ final class RunAudio {
         return results
     }
 
-    /// `自分` のトラックがあるか（マイクの許可がある）。無いセッションでは休止の指示が効かない。
     var hasMyTrack: Bool { myTranscriber != nil }
 
-    /// prepare で factory が nil を返した場合。準備失敗の通知は run が担う。
     var isDiarizerAbsent: Bool { diarizer == nil && diarizerFailure == nil }
 
-    /// 休止・再開を、指示を受け付けた時刻 `hostTime` の境界として求める（Issue #1069）。状態が変わったときだけ true を返す。`自分` を作らないセッション（マイクの許可が無い）では何も変えず false。
     func requestSelfPause(_ paused: Bool, at hostTime: UInt64) -> Bool {
         guard hasMyTrack else { return false }
         return selfPause.request(paused, at: hostTime)

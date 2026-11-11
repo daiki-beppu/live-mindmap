@@ -34,17 +34,11 @@ import { foldView, keepTargetOf } from "../src/folding.ts";
 import { layout, NODE_WIDTH } from "../src/layout.ts";
 import { type ViewKey } from "../src/viewing.ts";
 
-// マップの表示面のカメラ（Issue #819）の Story。update に Message を流し、そのたびの Model の viewport と viewing を見る。
-// 反映で寄せる・人が動かすと止まる・全体を見て戻る・開閉で位置を保つ・列を出してずらす、を update の中の関数の呼び順として確かめる。
-// 期待する viewport は、camera.ts の純粋な関数を直接呼んだ値（目標の位置と高さで測る。補間中の位置で測るのは、今の議題が無いときの収め直しだけ）。
-// 同じ Model に Message を続けて流し、その途中の Model を観測する（条件だけ変えた別の Model を作り直して比べない）
-
 type MapSurfaceModel = typeof Model.Type;
 
 const node = (id: string, parent: string | null, kind: Exclude<SnapshotNode["kind"], "補足"> = "議題", extra: Partial<Exclude<SnapshotNode, { kind: "補足" }>> = {}): Exclude<SnapshotNode, { kind: "補足" }> => ({ id, parent, kind, text: id, evidence: parent ? ["r1"] : [], ...extra });
 const snap = (nodes: SnapshotNode[], extra: Partial<Snapshot> = {}): Snapshot => ({ nodes, round: 1, changes: [], remarks: [], ...extra });
 
-// 会議 root > 議題 A（論点 A1・A2）・議題 B（論点 B1・B2・B3）。済みも古いものも無いので、畳まれるノードは無い。今の議題は A
 const baseNodes = (): SnapshotNode[] => [
   node("root", null, "会議"),
   node("A", "root"),
@@ -57,13 +51,10 @@ const baseNodes = (): SnapshotNode[] => [
 ];
 const tree = (extra: Partial<Snapshot> = {}): Snapshot => snap(baseNodes(), { currentTopic: "A", ...extra });
 const change = (nodeId: string, round: number): ChangeEntry => ({ change: "追加", node: nodeId, kind: "論点", text: nodeId, round, at: round }) as ChangeEntry;
-// 今の議題は A のまま、round の反映で ids が変わった。lastChanged は ids の最後
 const withChanges = (ids: string[], round = 2, extra: Partial<Snapshot> = {}): Snapshot =>
   snap(baseNodes(), { round, currentTopic: "A", changes: ids.map((id) => change(id, round)), lastChanged: ids.at(-1)!, ...extra });
-// 今の議題の下に、変更の記録を残さずノードが 1 つ増えた反映（寄せ先の箱が変わる）
 const withSilentNode = (extra: Partial<Snapshot> = {}): Snapshot => snap([...baseNodes(), node("A3", "A", "論点")], { round: 2, currentTopic: "A", ...extra });
 
-// 済みの議題 A（論点 A1・A2）は畳まれ、話し中の今の議題 B は畳まれない。A を開くと B が下へ動く
 const foldable = (extra: Partial<Snapshot> = {}): Snapshot =>
   snap(
     [node("root", null, "会議"), node("A", "root", "議題", { talkStatus: "済み" }), node("A1", "A", "論点"), node("A2", "A", "論点"), node("B", "root"), node("B1", "B", "論点")],
@@ -79,7 +70,6 @@ const settle = (snapshot: Snapshot, mode: MapSurfaceModel["mode"] = "live", size
 type Msg = typeof Message.Type;
 const run = (start: MapSurfaceModel, ...messages: Array<Msg>): MapSurfaceModel => messages.reduce((m, next) => update(m, next).model, start);
 
-// --- 入力の Message ---
 const wheel = (over: Partial<typeof Message.WheeledMapSurface.Type> = {}) =>
   Message.WheeledMapSurface({ deltaX: 0, deltaY: 0, deltaMode: 0, shiftKey: false, ctrlKey: false, metaKey: false, timeStamp: 0, x: 300, y: 200, ...over });
 const scroll = wheel({ deltaX: 40, deltaY: 100 });
@@ -90,7 +80,6 @@ const changed = (snapshot: Snapshot) => Message.ChangedSnapshot({ snapshot });
 const clickFoldDot = (nodeId: string) => Message.ClickedFoldDot({ nodeId });
 const clickNode = (nodeId: string) => Message.ClickedNodeButton({ nodeId, clientX: 0, clientY: 0 });
 
-// --- 期待する値（純粋な関数を直接呼ぶ） ---
 const heightsOf = (m: MapSurfaceModel): Record<string, number> => Object.fromEntries(HashMap.toEntries(m.nodeHeights));
 const dimsOf = (m: MapSurfaceModel): Record<string, { height: number }> => Object.fromEntries(HashMap.toEntries(m.nodeHeights).map(([id, height]) => [id, { height }]));
 const sizeOf = (m: MapSurfaceModel) => Option.getOrThrow(m.size);
@@ -101,7 +90,6 @@ const viewOf = (m: MapSurfaceModel) => {
 const shownOf = (m: MapSurfaceModel): SnapshotNode[] => viewOf(m)?.nodes ?? m.snapshot.nodes;
 const targetsOf = (m: MapSurfaceModel) => layout(shownOf(m), heightsOf(m));
 
-// 今の議題へ寄せた位置。見せないノードは、それを隠している畳んだノードに置き換えて測る
 const focusExpected = (m: MapSurfaceModel): Viewport => {
   const focus = cameraFocus(m.snapshot)!;
   const view = viewOf(m);
@@ -110,7 +98,6 @@ const focusExpected = (m: MapSurfaceModel): Viewport => {
   const dims = dimsOf(m);
   return focusViewport([...new Set(focus.ids.map(shownId))].map((id) => nodeRect(id, target, dims)), nodeRect(shownId(focus.center), target, dims), sizeOf(m));
 };
-// 最後の反映で変わったノードへ寄せた位置（下限は人の下限）。見せないノードは、見えている代わりのノードに置き換えて測る
 const changedExpected = (m: MapSurfaceModel): Viewport => {
   const view = viewOf(m);
   const focus = changedFocus(m.snapshot, (id) => keepTargetOf(view, id))!;
@@ -118,7 +105,6 @@ const changedExpected = (m: MapSurfaceModel): Viewport => {
   const dims = dimsOf(m);
   return focusViewport(focus.ids.map((id) => nodeRect(id, target, dims)), nodeRect(focus.center, target, dims), sizeOf(m), USER_MIN_ZOOM);
 };
-// 全体を収めた位置。測れたノードだけを、positions の位置で収める（still は下限 0.02、ふだんは 0.5）
 const fitExpected = (m: MapSurfaceModel, positions: Record<string, { x: number; y: number }> = targetsOf(m)): Viewport => {
   const heights = heightsOf(m);
   const rects = shownOf(m)
@@ -289,7 +275,6 @@ describe("入力と前の見方から決まるカメラ", () => {
     cases.push({ input: `${modifier}＋Esc`, before: "manual", after: "manual", start: () => inMode("manual"), apply: (m) => run(m, Message.PressedEscapeKey({ ...mods, [modifier]: true })), expected: unchanged });
     cases.push({ input: `空の反映の後の ${modifier}＋Esc`, before: "auto", after: "auto", start: afterQuietReflection, apply: (m) => run(m, Message.PressedEscapeKey({ ...mods, [modifier]: true })), expected: unchanged });
   }
-  // C は親画面で字幕を切り替えるため、実際の親のキー経路を通す。
   const parentKey = (surface: MapSurfaceModel, key: "?" | "C"): MapSurfaceModel => {
     const initial = Meeting.update(Meeting.init(false), MeetingMessage.GotLiveFeedMessage({ message: LiveFeedMessage.ReceivedLiveFrame({ frame: { type: "snapshot", snapshot: surface.snapshot }, receivedAt: 0 }) })).model;
     const session = Option.getOrThrow(initial.session);
@@ -703,7 +688,6 @@ describe("反映で寄せる: 自動のとき今の議題へ寄せる・今の�
 
   it("変化の無い反映（lastChanged も、その round の変更も無い）では、寄せ直さない。変化の付く反映では、同じ構成でも寄せ直す", () => {
     const start = settle(tree());
-    // 今の議題の下にノードが増えているので、寄せ直せば寄せ先は変わる（変わらないことで、寄せ直していないと分かる）
     const quiet = update(start, changed(withSilentNode())).model;
     expect(quiet.camera.viewport).toEqual(start.camera.viewport);
     const noisy = update(start, changed(withSilentNode({ lastChanged: "A3" }))).model;
@@ -743,7 +727,6 @@ describe("反映で寄せる: 自動のとき今の議題へ寄せる・今の�
   });
 
   it("寄せ先の箱は、畳まれて見えないノードを、それを隠している畳んだノードに置き換えて測る（位置の無い ID を原点で測らない）", () => {
-    // 今の議題 B の子の議題 C（済み）は畳まれ、C1 は隠れる。C1 は寄せ先の子孫に入るが、見せているのは C
     const snapshot = snap(
       [node("root", null, "会議"), node("A", "root"), node("B", "root"), node("B1", "B", "論点"), node("C", "B", "議題", { talkStatus: "済み" }), node("C1", "C", "論点")],
       { currentTopic: "B", now: 100 },
@@ -791,7 +774,6 @@ describe("反映で寄せる: 自動のとき今の議題へ寄せる・今の�
       message(changed(snap([...baseNodes(), node("A3", "A", "論点")], { round: 2 }))),
       model((m) => {
         expect(Option.isSome(m.motion)).toBe(true);
-        // この入力は、補間中の位置で収めた値が、目標の位置で収めた値と違うものでなければ検証にならない
         expectDifferent(fitExpected(m, displayedPositions(m)), fitExpected(m));
         expectViewport(m.camera.viewport, fitExpected(m, displayedPositions(m)));
       }),
@@ -828,7 +810,7 @@ describe("人が動かすと止まる: パン・ズームで見る状態の user
     ["⌘/Ctrl＋Shift＋スクロール（軸固定）", [wheel({ deltaX: 30, deltaY: 5, shiftKey: true, metaKey: true, timeStamp: 1000 })]],
     ["Ctrl＋ホイール（ピンチ）", [wheel({ ctrlKey: true, deltaY: -100, ...POINT })]],
     ["⌘＋クリック", [Message.ClickedMapSurfaceWithModifier({ ...POINT, ctrlKey: false, metaKey: true, altKey: false })]],
-    ["Safari の gesture", [Message.StartedMapSurfaceGesture(), Message.ChangedMapSurfaceGesture({ scale: 1.3, ...POINT })]],
+    ["Safari の gesture", [Message.StartedMapSurfaceGesture(), Message.ChangedMapSurfaceGesture({ cumulativeScale: 1.3, ...POINT })]],
     ["空いたところのドラッグ", [press, Message.MovedPointer({ clientX: 130, clientY: 90, buttons: 1 })]],
   ];
 
@@ -838,7 +820,6 @@ describe("人が動かすと止まる: パン・ズームで見る状態の user
       const moved = run(start, ...inputs);
       expect(cameraViewOf(moved), name).toEqual(manualAt("A"));
       expectDifferent(moved.camera.viewport, start.camera.viewport);
-      // 今の議題の下にノードが増えた反映と、実寸の変化で、自動のままなら寄せ先が変わる
       story(
         update,
         given(moved),
@@ -895,7 +876,6 @@ describe("人が動かすと止まる: パン・ズームで見る状態の user
 });
 
 describe("全体を見て、もう一度で変わったところへ寄る", () => {
-  // 今の議題 A の外（B1）が最後の反映で変わった。自動のカメラは A に寄るので、B1 は寄せ先に入らない
   const outside = () => settle(withChanges(["B1"]));
 
   it("止めている位置から F を押すと、全体を目標の位置で収めた viewport になり（見る状態は overview）、もう一度 F で、変わったノードへ寄る viewport になって diff になる（止めていた位置へは戻らない）", () => {
@@ -914,7 +894,6 @@ describe("全体を見て、もう一度で変わったところへ寄る", () =
       model((m) => {
         expect(cameraViewOf(m)).toEqual({ mode: "diff", topic: "A" });
         expectViewport(m.camera.viewport, changedExpected(m));
-        // 止めていた位置でも、自動のカメラが寄る今の議題でもない
         expectDifferent(m.camera.viewport, update(start, scroll).model.camera.viewport);
         expectDifferent(m.camera.viewport, focusExpected(m));
       }),
@@ -1129,7 +1108,6 @@ describe("差分を見ている間のカメラ", () => {
     expect(cameraViewOf(m)).toEqual({ mode: "diff", topic: "A" });
     expectViewport(m.camera.viewport, changedExpected(m));
     expectDifferent(m.camera.viewport, start.camera.viewport);
-    // 前の反映の変化（B1）ではなく、新しい反映の変化（A1・B3）で決まる
     expect(changedFocus(m.snapshot, (id) => id)!.ids.sort()).toEqual(["A1", "B3"]);
   });
 
@@ -1161,14 +1139,12 @@ describe("差分を見ている間のカメラ", () => {
 });
 
 describe("開閉で位置を保つ: 開閉したノードを同じ画面座標に映し続ける", () => {
-  // 開いた A の画面座標。補間中の表示位置で測る
   const anchorOf = (m: MapSurfaceModel) => screenPoint(m.camera.viewport, displayedPositions(m)["A"]!);
   const expectPointAt = (m: MapSurfaceModel, point: { x: number; y: number }) => {
     const at = anchorOf(m);
     expect(at.x).toBeCloseTo(point.x, 6);
     expect(at.y).toBeCloseTo(point.y, 6);
   };
-  // 止めている状態で A の丸を押した直後（補間の経過 0）。押す前の A の画面座標も返す
   const opened = (start = run(settle(foldable()), scroll)) => {
     const point = anchorOf(start);
     return { start, point, afterClick: update(start, clickFoldDot("A")).model };
@@ -1210,7 +1186,6 @@ describe("開閉で位置を保つ: 開閉したノードを同じ画面座標�
   it("止めている間に丸を押すと、開いたノードは補間の途中も終わりも、押す前と同じ画面座標に映る（倍率は変えない）", () => {
     const { start, point, afterClick } = opened();
     expect(viewOf(afterClick)!.openness["A"]).toEqual({ state: "open", byHuman: true });
-    // この入力は、補間で A が動くものでなければ検証にならない
     expectDifferent({ ...targetsOf(afterClick)["A"]!, zoom: 1 }, { ...displayedPositions(afterClick)["A"]!, zoom: 1 });
     story(
       update,
@@ -1303,7 +1278,6 @@ describe("開閉で位置を保つ: 開閉したノードを同じ画面座標�
 describe("列を出してずらす: E で保留を立て、画面の幅が変わったとき、今の議題が切れる分だけずらす", () => {
   const WIDE = { width: 600, height: 400 };
   const NARROW = { width: 500, height: 400 };
-  // 今の議題 A（A・A1・A2）の箱が、幅 600 では右に収まらない位置。列を隠している状態（E で出す側）
   const hiddenColumn = (mode: "auto" | "manual" = "manual", sideHidden = true): MapSurfaceModel => {
     const initial = settle(tree());
     const base = mode === "manual" ? run(initial, scroll) : initial;
@@ -1386,7 +1360,6 @@ describe("列を出してずらす: E で保留を立て、画面の幅が変わ
     expect(Option.isSome(start.camera.placedRound)).toBe(true);
     const expected = shiftIntoView(start.camera.viewport, focusRects(start), NARROW);
     expectDifferent(expected, start.camera.viewport);
-    // 前提: 寄せ直すと別の viewport になる
     expectDifferent(focusExpected(atWidth(start, NARROW)), start.camera.viewport);
     story(
       update,
@@ -1407,7 +1380,6 @@ describe("列を出してずらす: E で保留を立て、画面の幅が変わ
     const start: MapSurfaceModel = { ...withViewport(base, { x: 100, y: 0, zoom: 1 }), viewing: { ...base.viewing, sideHidden: true } };
     const expected = shiftIntoView(start.camera.viewport, focusRects(start), NARROW);
     expectDifferent(expected, start.camera.viewport);
-    // 前提: 収め直すと別の viewport になる
     expectDifferent(overviewExpected(atWidth(start, NARROW)), start.camera.viewport);
     story(
       update,

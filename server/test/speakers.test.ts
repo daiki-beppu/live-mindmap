@@ -1,14 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { createSpeakerAttribution, SPEAKER_WAIT_MS, splitBySpeaker, type SettledRemark, type SpeakerLogEvent, type SpeakerRecord, type WordTime } from "../src/core/index.ts";
 
-// Issue #1021: 相手の発言の話者を決める規則（ADR 0013、GLOSSARY「発言」「話者」）。
-// 規則は時刻を引数に取る純粋な関数（splitBySpeaker）と、時刻を引数に取りタイマーを持たない状態つきの段（createSpeakerAttribution）。
-// 実行環境の時計・TestClock は使わない。時刻は引数で渡す。
-
 type Segment = { start: number; end: number; slot: number };
 const seg = (slot: number, start: number, end: number): Segment => ({ slot, start, end });
 
-// 語（本文の断片と、その区間）から、本文と wordTimes を組み立てる
 type Part = readonly [text: string, start: number, end: number];
 const remarkOf = (parts: readonly Part[], range?: { start: number; end: number }): SettledRemark => {
   let location = 0;
@@ -96,7 +91,6 @@ describe("splitBySpeaker: 語に 2 人分の確定区間が重なるとき", () 
     const remark = remarkOf([["ながい語", 0, 4]]);
 
     expect(summary(splitBySpeaker(remark, [seg(0, 0, 1), seg(1, 1, 4)]))).toEqual([[1, "ながい語", 0, 4]]);
-    // 順序や番号の大小によらず、重なりの長さで決める
     expect(summary(splitBySpeaker(remark, [seg(1, 3, 4), seg(0, 0, 3)]))).toEqual([[0, "ながい語", 0, 4]]);
   });
 
@@ -269,8 +263,6 @@ describe("splitBySpeaker: 語の区間（wordTimes）が無い発言", () => {
   });
 });
 
-// ─── 状態を持つ段 ───
-
 const speakerEvent = (slot: number, start: number, end: number, final = true, track: "相手" | "自分" = "相手"): SpeakerLogEvent => ({ type: "speaker", track, start, end, slot, final });
 const settledEvent = (to: number, track: "相手" | "自分" = "相手"): SpeakerLogEvent => ({ type: "speaker-settled", track, to });
 const speakerOff: SpeakerLogEvent = { type: "speaker-off", start: 0, reason: "モデルなし" };
@@ -283,12 +275,11 @@ describe("createSpeakerAttribution: 確定を待ってから出す", () => {
 
     expect(attribution.remarks([heard("あ", 10, 12)], 12_000)).toEqual([]);
     expect(attribution.speaker(speakerEvent(2, 10, 11.5))).toEqual([]);
-    expect(attribution.speaker(settledEvent(11.5))).toEqual([]); // end の手前までしか揃っていない
-    expect(attribution.speaker(speakerEvent(2, 11.5, 12))).toEqual([]); // 区間が end に届いても、位置が届くまでは出さない
+    expect(attribution.speaker(settledEvent(11.5))).toEqual([]);
+    expect(attribution.speaker(speakerEvent(2, 11.5, 12))).toEqual([]);
     expect(pairs(attribution.speaker(settledEvent(12)))).toEqual([["相手 A", "あ"]]);
   });
 
-  // SCN-CT-WAIT-FINAL-P1: 同じ更新の中で枠の番号順に届いても、両方の話者で切る
   it("同じ更新で枠の番号順に届く（枠 0 の [12,14] が枠 1 の [10,12] より先）。位置が届くまで出ず、届くと両方の話者で切る", () => {
     const attribution = createSpeakerAttribution();
     attribution.remarks([remarkOf([["そうですね", 10, 12], ["私は反対です", 12, 14]])], 14_000);
@@ -298,7 +289,6 @@ describe("createSpeakerAttribution: 確定を待ってから出す", () => {
     expect(pairs(attribution.speaker(settledEvent(14)))).toEqual([["相手 A", "そうですね"], ["相手 B", "私は反対です"]]);
   });
 
-  // SCN-CT-WAIT-FINAL-N1: 区間の end が発言の end に届いても、位置が届くまでは出さない
   it("確定区間の end が発言の end に届いても、位置が届かなければ出さない（5 秒後は話者なし）", () => {
     const attribution = createSpeakerAttribution();
     attribution.remarks([heard("あ", 10, 14)], 14_000);
@@ -307,7 +297,6 @@ describe("createSpeakerAttribution: 確定を待ってから出す", () => {
     expect(pairs(attribution.remarks([], 14_000 + SPEAKER_WAIT_MS))).toEqual([[undefined, "あ"]]);
   });
 
-  // SCN-CT-WAIT-FINAL-P2: 黙っている間に位置が進めば、時間切れを待たずに話者付きで出る
   it("相手が黙って区間の end が発言の end に届かなくても、位置が進めば時間切れを待たずに話者付きで出る", () => {
     const attribution = createSpeakerAttribution();
     attribution.remarks([heard("あ", 10, 14)], 14_000);
@@ -316,7 +305,6 @@ describe("createSpeakerAttribution: 確定を待ってから出す", () => {
     expect(pairs(attribution.speaker(settledEvent(15)))).toEqual([["相手 A", "あ"]]);
   });
 
-  // SCN-CT-WAIT-FINAL-N2: 閉じていない区間がある間は、位置が進まない
   it("位置が発言の end に届かない間は、別の話者の短い区間が end を越えても出さない。位置が届くと 1 人の発言として出る", () => {
     const attribution = createSpeakerAttribution();
     attribution.remarks([heard("あ", 10, 14)], 14_000);
@@ -324,7 +312,7 @@ describe("createSpeakerAttribution: 確定を待ってから出す", () => {
 
     expect(attribution.speaker(settledEvent(10))).toEqual([]);
     attribution.speaker(speakerEvent(1, 10, 16));
-    expect(pairs(attribution.speaker(settledEvent(17)))).toEqual([["相手 A", "あ"]]); // 枠 0 の短い区間（0.5 秒）より、枠 1 の全体が長く重なる
+    expect(pairs(attribution.speaker(settledEvent(17)))).toEqual([["相手 A", "あ"]]);
   });
 
   it("位置は戻らない。前より小さい位置が届いても、揃った扱いは取り消されない", () => {
@@ -348,7 +336,6 @@ describe("createSpeakerAttribution: 確定を待ってから出す", () => {
     attribution.remarks([heard("あ", 10, 12)], 12_000);
 
     expect(attribution.speaker(speakerEvent(2, 10, 12, false))).toEqual([]);
-    // 仮の区間だけでは 5 秒待っても話者なし
     expect(pairs(attribution.remarks([], 12_000 + SPEAKER_WAIT_MS))).toEqual([[undefined, "あ"]]);
   });
 
@@ -387,7 +374,7 @@ describe("createSpeakerAttribution: 確定を待ってから出す", () => {
   it("5 秒の待ちは、発言の end ではなく保留に入れた時点から数える（遅れて届いた発言がすぐ時間切れにならない）", () => {
     const attribution = createSpeakerAttribution();
 
-    expect(attribution.remarks([heard("あ", 10, 12)], 20_000)).toEqual([]); // 発言の end の 12 秒から 8 秒遅れて届く
+    expect(attribution.remarks([heard("あ", 10, 12)], 20_000)).toEqual([]);
     expect(attribution.remarks([], 24_999)).toEqual([]);
     expect(pairs(attribution.remarks([], 25_000))).toEqual([[undefined, "あ"]]);
   });
@@ -432,7 +419,6 @@ describe("createSpeakerAttribution: 確定を待ってから出す", () => {
     attribution.speaker(speakerEvent(2, 0, 13));
     attribution.speaker(settledEvent(13));
     attribution.remarks([heard("そろっている", 10, 12), heard("そろっていない", 14, 16)], 16_000);
-    // 「そろっている」は区間が揃っているので上の呼び出しで既に出ている。残るのは「そろっていない」
     expect(pairs(attribution.drain())).toEqual([[undefined, "そろっていない"]]);
     expect(attribution.drain()).toEqual([]);
 
@@ -446,7 +432,7 @@ describe("createSpeakerAttribution: 確定を待ってから出す", () => {
     attribution.remarks([remarkOf([["あ", 10, 12], ["い", 12, 14]])], 14_000);
     attribution.speaker(speakerEvent(5, 10, 12));
     attribution.speaker(speakerEvent(5, 12, 13.5));
-    attribution.speaker(settledEvent(13.5)); // end の 14 に届かない
+    attribution.speaker(settledEvent(13.5));
 
     expect(pairs(attribution.drain())).toEqual([[undefined, "あい"]]);
   });
@@ -516,7 +502,7 @@ describe("createSpeakerAttribution: ラベル（相手 A / B / C…）", () => {
 
   it("確定区間が届いただけの枠にはラベルを振らない（先取りしない）。発言に出たときに初めて振る", () => {
     const attribution = createSpeakerAttribution();
-    attribution.speaker(speakerEvent(5, 0, 5)); // どの発言にも重ならなかった枠
+    attribution.speaker(speakerEvent(5, 0, 5));
     attribution.speaker(speakerEvent(3, 10, 12));
     attribution.speaker(settledEvent(12));
 
@@ -575,7 +561,6 @@ describe("createSpeakerAttribution: ラベル（相手 A / B / C…）", () => {
   });
 });
 
-// Issue #1022: 字幕の仮のラベル。仮の区間（final:false）は字幕にだけ使い、発言の判定とラベルの割り当てには使わない。
 describe("createSpeakerAttribution: 字幕のための覗き（previewLabel / previewSegments）", () => {
   it("仮の区間だけの枠は、仮の区間で初めて現れた順のラベルで覗ける", () => {
     const attribution = createSpeakerAttribution();
@@ -596,14 +581,14 @@ describe("createSpeakerAttribution: 字幕のための覗き（previewLabel / pr
     attribution.speaker(speakerEvent(2, 20, 22));
     attribution.speaker(settledEvent(22));
 
-    expect(pairs(attribution.remarks([heard("あ", 20, 22)], 22_000))).toEqual([["相手 A", "あ"]]); // 枠 2 が先に話したので A
+    expect(pairs(attribution.remarks([heard("あ", 20, 22)], 22_000))).toEqual([["相手 A", "あ"]]);
   });
 
   it("発言で振ったラベルがある枠は、そのラベルを覗ける。まだ振っていない枠は、振ったラベルの次から覗ける", () => {
     const attribution = createSpeakerAttribution();
     attribution.speaker(speakerEvent(2, 20, 22));
     attribution.speaker(settledEvent(22));
-    attribution.remarks([heard("あ", 20, 22)], 22_000); // 枠 2 が 相手 A を得る
+    attribution.remarks([heard("あ", 20, 22)], 22_000);
     attribution.speaker(speakerEvent(7, 30, 31, false));
     attribution.speaker(settledEvent(31));
 
@@ -621,7 +606,7 @@ describe("createSpeakerAttribution: 字幕のための覗き（previewLabel / pr
 
   it("previewSegments は確定区間と現在の仮の区間を返す。仮の区間は speaker-settled のたびに、その更新ぶんに入れ替わる", () => {
     const attribution = createSpeakerAttribution();
-    attribution.speaker(speakerEvent(0, 0, 4)); // 確定
+    attribution.speaker(speakerEvent(0, 0, 4));
     attribution.speaker(speakerEvent(1, 8, 8.5, false));
     expect(attribution.previewSegments()).toEqual([seg(0, 0, 4)]);
 
@@ -650,7 +635,6 @@ describe("createSpeakerAttribution: 字幕のための覗き（previewLabel / pr
   });
 });
 
-// Issue #1024: 混入（speaker-mixed）で戻した枠は、以降の発言にラベルを付けない。前の発言は変えず、会議の最後まで戻したまま。
 const mixedEvent = (slot: number, start = 100, track: "相手" | "自分" = "相手"): SpeakerLogEvent => ({ type: "speaker-mixed", track, slot, start });
 
 describe("createSpeakerAttribution: 混入で戻した枠（speaker-mixed）", () => {
@@ -699,7 +683,7 @@ describe("createSpeakerAttribution: 混入で戻した枠（speaker-mixed）", (
       attribution.speaker(settledEvent(start + 2));
       out.push(...attribution.remarks([heard("ふたたび", start, start + 2)], (start + 2) * 1000).map((r) => r.speaker));
     }
-    attribution.speaker(mixedEvent(1)); // 同じ枠に 2 度目が届いても変わらない
+    attribution.speaker(mixedEvent(1));
     attribution.speaker(speakerEvent(1, 100, 102));
     attribution.speaker(settledEvent(102));
     out.push(...attribution.remarks([heard("さいご", 100, 102)], 102_000).map((r) => r.speaker));
@@ -714,7 +698,6 @@ describe("createSpeakerAttribution: 混入で戻した枠（speaker-mixed）", (
     attribution.remarks([heard("あ", 10, 12)], 12_000);
     attribution.speaker(mixedEvent(1));
 
-    // 枠 1 の語（12〜14）が枠 0 の語（10〜12、14〜16）に挟まれている
     attribution.speaker(speakerEvent(0, 20, 22));
     attribution.speaker(speakerEvent(1, 22, 26));
     attribution.speaker(speakerEvent(0, 26, 28));
@@ -801,9 +784,6 @@ describe("createSpeakerAttribution: 混入で戻した枠（speaker-mixed）", (
   });
 });
 
-// Issue #1025: ヘルパーを起動し直すと Nemotron 3 の枠は振り直される。新しい枠の声の重心（speaker-centroid）を、
-// ラベルごとの重心と cos で照らし合わせる。0.9 以上が 1 つだけ → そのラベル、すべて 0.6 未満 → 新しいラベル、それ以外 → 話者なしのまま。
-// 照らし合わせが済むまでは話者なし。済んだ後は替わらない。戻したラベル（混入）には、つなげても付けない。
 describe("createSpeakerAttribution: 起動し直しをまたぐつなぎ直し（speaker-centroid・restart）", () => {
   const centroidEvent = (slot: number, centroid: readonly number[], track: "相手" | "自分" = "相手"): SpeakerLogEvent => ({ type: "speaker-centroid", track, slot, centroid: [...centroid] });
   const unit = (x: number, y: number, z: number) => {
@@ -812,12 +792,11 @@ describe("createSpeakerAttribution: 起動し直しをまたぐつなぎ直し�
   };
   const A = [1, 0, 0];
   const B = [0, 1, 0];
-  const FAR = [0, 0, 1]; // A・B のどちらとも cos 0
-  const NEAR_A = [0.95, Math.sqrt(1 - 0.95 ** 2), 0]; // A と 0.95、B と 約 0.31
-  const NEAR_B = [Math.sqrt(1 - 0.95 ** 2), 0.95, 0]; // B と 0.95、A と 約 0.31
-  const MID = [0.75, Math.sqrt(1 - 0.75 ** 2), 0]; // A と 0.75、B と 約 0.66（0.6 以上 0.9 未満）
+  const FAR = [0, 0, 1];
+  const NEAR_A = [0.95, Math.sqrt(1 - 0.95 ** 2), 0];
+  const NEAR_B = [Math.sqrt(1 - 0.95 ** 2), 0.95, 0];
+  const MID = [0.75, Math.sqrt(1 - 0.75 ** 2), 0];
 
-  // 1 回目のヘルパー: 枠 0 が 相手 A、枠 1 が 相手 B。重心は区間と同じ更新で届く
   const firstRun = (centroids: { a: readonly number[]; b: readonly number[] } = { a: A, b: B }) => {
     const attribution = createSpeakerAttribution();
     attribution.speaker(speakerEvent(0, 10, 12));
@@ -829,7 +808,6 @@ describe("createSpeakerAttribution: 起動し直しをまたぐつなぎ直し�
     return attribution;
   };
 
-  // 起動し直した後の 1 つの枠が、[start, start + 2] に話した発言の話者
   const spokenBy = (attribution: ReturnType<typeof createSpeakerAttribution>, slot: number, start: number): (string | undefined)[] => {
     attribution.speaker(speakerEvent(slot, start, start + 2));
     attribution.speaker(settledEvent(start + 2));
@@ -849,8 +827,8 @@ describe("createSpeakerAttribution: 起動し直しをまたぐつなぎ直し�
     const attribution = createSpeakerAttribution();
     attribution.speaker(speakerEvent(0, 10, 12));
     attribution.speaker(settledEvent(12));
-    expect(pairs(attribution.remarks([heard("あ", 10, 12)], 12_000))).toEqual([["相手 A", "あ"]]); // 重心なしで採番
-    attribution.speaker(centroidEvent(0, A)); // 採番の後に重心が届く
+    expect(pairs(attribution.remarks([heard("あ", 10, 12)], 12_000))).toEqual([["相手 A", "あ"]]);
+    attribution.speaker(centroidEvent(0, A));
 
     attribution.restart();
     attribution.speaker(centroidEvent(2, NEAR_A));
@@ -902,7 +880,7 @@ describe("createSpeakerAttribution: 起動し直しをまたぐつなぎ直し�
     const attribution = firstRun();
     attribution.restart();
     attribution.speaker(centroidEvent(3, FAR));
-    attribution.speaker(centroidEvent(1, [0, 0, -1])); // FAR と cos -1、A・B と cos 0
+    attribution.speaker(centroidEvent(1, [0, 0, -1]));
 
     expect(spokenBy(attribution, 1, 20)).toEqual(["相手 C"]);
     expect(spokenBy(attribution, 3, 30)).toEqual(["相手 D"]);
@@ -911,7 +889,7 @@ describe("createSpeakerAttribution: 起動し直しをまたぐつなぎ直し�
   it("新しい枠が発言しなければラベルを振らない。次に初めて話した枠が、続きのラベルを受ける", () => {
     const attribution = firstRun();
     attribution.restart();
-    attribution.speaker(centroidEvent(0, FAR)); // 区間も発言もない
+    attribution.speaker(centroidEvent(0, FAR));
     attribution.speaker(centroidEvent(1, [0, 0, -1]));
 
     expect(spokenBy(attribution, 1, 20)).toEqual(["相手 C"]);
@@ -927,9 +905,9 @@ describe("createSpeakerAttribution: 起動し直しをまたぐつなぎ直し�
   });
 
   it("2 つ以上のラベルと 0.9 以上で一致する新しい枠は、話者なしのまま", () => {
-    const attribution = firstRun({ a: [1, 0, 0], b: [0.8, 0.6, 0] }); // A と B が近い
+    const attribution = firstRun({ a: [1, 0, 0], b: [0.8, 0.6, 0] });
     attribution.restart();
-    attribution.speaker(centroidEvent(0, unit(1, 0.3, 0))); // A と 約 0.96、B と 約 0.94
+    attribution.speaker(centroidEvent(0, unit(1, 0.3, 0)));
 
     expect(spokenBy(attribution, 0, 20)).toEqual([undefined]);
   });
@@ -986,7 +964,7 @@ describe("createSpeakerAttribution: 起動し直しをまたぐつなぎ直し�
     attribution.speaker(centroidEvent(2, FAR));
 
     expect(spokenBy(attribution, 0, 20)).toEqual([undefined]);
-    expect(spokenBy(attribution, 2, 30)).toEqual(["相手 C"]); // 相手 B（戻した）を使い回さない
+    expect(spokenBy(attribution, 2, 30)).toEqual(["相手 C"]);
   });
 
   it("起動し直した後に混入で戻した枠のラベルも、つないだ別の枠に付けない", () => {
@@ -996,7 +974,7 @@ describe("createSpeakerAttribution: 起動し直しをまたぐつなぎ直し�
     attribution.speaker(centroidEvent(1, NEAR_A));
     expect(spokenBy(attribution, 0, 20)).toEqual(["相手 A"]);
 
-    attribution.speaker(mixedEvent(0)); // 枠 0 に混入 → ラベル 相手 A を戻す
+    attribution.speaker(mixedEvent(0));
 
     expect(spokenBy(attribution, 0, 30)).toEqual([undefined]);
     expect(spokenBy(attribution, 1, 40)).toEqual([undefined]);
@@ -1054,7 +1032,7 @@ describe("createSpeakerAttribution: 起動し直しをまたぐつなぎ直し�
     attribution.speaker(speakerEvent(2, 10, 12));
     attribution.speaker(centroidEvent(2, MID));
     attribution.speaker(speakerEvent(0, 12, 14));
-    attribution.speaker(centroidEvent(0, MID)); // 世代の最初の枠どうしが近くても、つなぎ直しの対象ではない
+    attribution.speaker(centroidEvent(0, MID));
     attribution.speaker(settledEvent(14));
 
     expect(pairs(attribution.remarks([heard("あ", 10, 12), heard("い", 12, 14)], 14_000))).toEqual([["相手 A", "あ"], ["相手 B", "い"]]);
@@ -1065,7 +1043,7 @@ describe("createSpeakerAttribution: 起動し直しをまたぐつなぎ直し�
     attribution.speaker(speakerEvent(0, 10, 12));
     attribution.speaker(settledEvent(12));
     expect(attribution.remarks([heard("あ", 10, 12)], 12_000).map((r) => r.speaker)).toEqual(["相手 A"]);
-    expect(attribution.remarks([heard("い", 20, 22)], 22_000)).toEqual([]); // まだ揃っていない
+    expect(attribution.remarks([heard("い", 20, 22)], 22_000)).toEqual([]);
 
     const out = attribution.restart();
 
@@ -1076,7 +1054,7 @@ describe("createSpeakerAttribution: 起動し直しをまたぐつなぎ直し�
 
   it("restart は前の世代の枠の区間を持ち越さない。前の世代の枠 0 の区間が、新しい世代の枠 0 の発言に使われない", () => {
     const attribution = firstRun();
-    attribution.speaker(speakerEvent(0, 20, 30)); // 前の世代の枠 0 が 20〜30 に話した（確定）
+    attribution.speaker(speakerEvent(0, 20, 30));
     attribution.speaker(settledEvent(30));
     attribution.restart();
 
@@ -1119,7 +1097,7 @@ describe("createSpeakerAttribution: 起動し直しをまたぐつなぎ直し�
     const attribution = firstRun();
     attribution.restart();
     attribution.speaker(speakerEvent(0, 20, 22));
-    attribution.remarks([heard("あ", 20, 22)], 20_000); // 揃っていないので保留
+    attribution.remarks([heard("あ", 20, 22)], 20_000);
 
     expect(attribution.speaker(centroidEvent(0, NEAR_A))).toEqual([]);
     expect(attribution.heldRemarks()).toHaveLength(1);
@@ -1143,7 +1121,6 @@ describe("createSpeakerAttribution: 起動し直しをまたぐつなぎ直し�
   });
 });
 
-// Issue #1026: 名前を付けられるのは、発言に振ったラベルだけ。サーバーが受け付ける範囲は labels() で読む
 describe("createSpeakerAttribution: 振ったラベルを読む（labels）", () => {
   const speakInOrder = (attribution: ReturnType<typeof createSpeakerAttribution>, slot: number, at: number) => {
     attribution.speaker(speakerEvent(slot, at, at + 1));

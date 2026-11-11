@@ -2,20 +2,14 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
-// 見返しの操作の行（Issue #825）の、ファイルとして確かめるもの: Menu・Tooltip の状態の規則（素の CSS に残す）、video.js のアイコンの出どころとライセンスの表示（icons.NOTICE.md）。
-// Slider・Tooltip・Menu と見た目のぶつかりを直す値は、CSS の置き場によらず実ブラウザの computed style で確かめる（review.mount.heavy.test.ts の寸法）。
-// 実ブラウザでの位置と重なりは、review.mount.heavy.test.ts の「見返し（Foldkit 版）の寸法」「見返し（Foldkit 版）の速さのメニューとツールチップの位置」が見る
-
 const webRoot = join(import.meta.dirname, "..");
 const reviewDir = join(webRoot, "src/app/review");
 const read = (...path: string[]) => readFileSync(join(...path), "utf8");
 
-// 素の CSS は web/src の下の全 .css に分かれうる（入口の styles.css・controls.css・keyList.css）。どれに置いても、状態の規則があることを確かめる
 const cssFiles = (dir: string): string[] =>
   readdirSync(dir, { withFileTypes: true }).flatMap((entry) => (entry.isDirectory() ? cssFiles(join(dir, entry.name)) : entry.name.endsWith(".css") ? [join(dir, entry.name)] : []));
 const allCss = () => cssFiles(join(webRoot, "src")).map((file) => readFileSync(file, "utf8")).join("\n");
 
-// CSS の規則（セレクタの並び → 宣言）を取り出す。コメントは落とす。@media などの入れ子は扱わない（対象の規則は入れ子の外）
 const rulesOf = (css: string): Array<{ selectors: string[]; body: string }> =>
   [...css.replace(/\/\*[\s\S]*?\*\//g, "").matchAll(/([^{}]+)\{([^{}]*)\}/g)].map((m) => ({ selectors: m[1]!.split(",").map((s) => s.trim().replace(/\s+/g, " ")), body: m[2]!.replace(/\s+/g, " ") }));
 const declarationsFor = (css: string, matches: (selector: string) => boolean): string =>

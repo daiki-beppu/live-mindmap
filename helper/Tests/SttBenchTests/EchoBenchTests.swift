@@ -3,20 +3,13 @@ import HelperCore
 import Testing
 @testable import stt_bench
 
-// `stt-bench echo` の純粋な部分。本物の AEC3 も `say` も使わず、偽の canceller で固定する。
-// 本物の AEC3 を通した数字は、調査文書（docs/investigations/2026-10-03-aec-startup-double-talk.md）に記録する。
-// 偽の canceller は HelperCore の `EchoCanceller`（public）に準拠させる。
-
 private let frame = 480
 private let rate = 48_000
 
-/// 周期がサンプル数に対して整数になる正弦波（1 秒 = 48 000 サンプルの中で周波数の整数倍で閉じる）。
-/// 周波数の違う正弦波どうしは、1 秒の整数倍の区間で厳密に直交するので、成分の分離を厳密に確かめられる。
 private func sine(count: Int, hz: Double, amplitude: Float) -> [Float] {
     (0..<count).map { amplitude * Float(sin(2 * Double.pi * hz * Double($0) / Double(rate))) }
 }
 
-/// capture をそのまま返す。呼び出しの履歴を残す。
 private final class RecordingCanceller: EchoCanceller, @unchecked Sendable {
     enum Call: Equatable { case reverse(first: Float, count: Int), capture(first: Float, count: Int) }
     private(set) var calls: [Call] = []
@@ -33,7 +26,6 @@ private final class RecordingCanceller: EchoCanceller, @unchecked Sendable {
     }
 }
 
-/// capture を `delaySamples` サンプル遅らせて返す（AEC3 の内部の遅れの代わり）。
 private final class DelayingCanceller: EchoCanceller, @unchecked Sendable {
     private var pending: [Float]
     init(delaySamples: Int) { pending = [Float](repeating: 0, count: delaySamples) }
@@ -115,7 +107,6 @@ struct RunCancellerTests {
         let captures = canceller.calls.filter { if case .capture = $0 { return true } else { return false } }
         #expect(captures.count == 6)
         #expect(canceller.calls.count == 12)
-        // bypass 区間の capture にも、元のマイク信号がそのまま渡っている
         #expect(captures[0] == .capture(first: microphone[0], count: frame))
         #expect(captures[1] == .capture(first: microphone[frame], count: frame))
     }
@@ -188,15 +179,13 @@ struct WindowResultsTests {
 
     private func scenario(leakGain: Float) -> (reference: [Float], built: EchoMicrophone) {
         let reference = sine(count: count, hz: 1_000, amplitude: 0.1)
-        let utterance = sine(count: rate, hz: 440, amplitude: 0.1)  // 1 秒
+        let utterance = sine(count: rate, hz: 440, amplitude: 0.1)
         let built = buildMicrophone(reference: reference, utterance: utterance, delaySamples: 1_920, leakGain: leakGain, insertAt: [rate, 3 * rate])
         return (reference, built)
     }
 
     @Test("出力の遅れの測定: 参照を無音にして雑音を通し、相関が最大になる遅れを返す")
     func measuresOutputDelay() throws {
-        // 相関を取る区間は 100 ms に縮める（本番は 1 秒）。探す遅れの範囲（0〜960）は同じで、区間は雑音の相関の幅より十分長いので、
-        // 正しい遅れの内積（区間内の入力のエネルギー）がほかの遅れの内積を上回る。向きの逆転・1 サンプルのずれ・範囲不足は元と同じく捕まえる。
         let correlationSamples = rate / 10
         #expect(try measureOutputDelay(correlationSamples: correlationSamples, makeCanceller: { DelayingCanceller(delaySamples: 0) }) == 0)
         #expect(try measureOutputDelay(correlationSamples: correlationSamples, makeCanceller: { DelayingCanceller(delaySamples: 137) }) == 137)
@@ -242,14 +231,12 @@ struct WindowResultsTests {
         let output = runCanceller(RecordingCanceller(), reference: reference, microphone: built.microphone, bypassSamples: 0)
         let results = windowResults(built: built, output: output, outputDelay: 0, reference: reference)
         #expect(results.map(\.insertAtSamples) == [rate, 3 * rate])
-        // 振幅 0.1 の正弦波の RMS は 0.1/√2 → 約 −23.01 dBFS
         for result in results { #expect(abs(result.referenceRmsDbfs - -23.0103) < 0.1, "参照: \(result.referenceRmsDbfs) dBFS") }
     }
 
     @Test("発話の残り方は、区間の外の信号に影響されない（別の挿入位置の発話を混ぜても、その区間の数字は変わらない）")
     func windowIgnoresOtherInsertions() throws {
         let (reference, built) = scenario(leakGain: 0)
-        // 1 回目の発話だけを半分にして、2 回目はそのままにする出力
         var output = built.microphone
         for i in rate..<(2 * rate) { output[i] *= 0.5 }
         let results = windowResults(built: built, output: output, outputDelay: 0, reference: reference)

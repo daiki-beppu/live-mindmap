@@ -93,8 +93,6 @@ const hasTopGreenLine = () => [...document.querySelectorAll("*")].some((element)
   return (fill || border) && color !== undefined && color[1]! > color[0]! && color[1]! > color[2]!;
 });
 
-// 幅 768px 以下で開いた会議中の画面は、字幕を隠して始める（web/src/app/startFlags.ts）。字幕の位置を測る前に C で出す。
-// C は画面の部品ができてから（最初のスナップショットの後）でないと効かないので、.layout が出てから押す
 const showCaptionsIfNarrow = (page: Page, width: number) =>
   width > 768 ? Effect.void : Effect.tryPromise(async () => {
     await page.locator(".layout").waitFor();
@@ -113,11 +111,10 @@ describe("開始したセッションのローカルモード表示", () => {
         expect((yield* server.start).status).toBe(200);
         const waitText = (text: string) => Effect.tryPromise(() => vi.waitFor(async () => expect(await page.locator(".local-mode-notice").textContent()).toBe(text)));
         yield* waitText(LABEL);
-        yield* server.emit({ type: "speaker-off", start: 0, reason: "モデルなし" }); // 相手の発言は話者の確定を待つので、話者分離を使えない helper にして待たせない（Issue #1021）
-        yield* server.emit({ type: "remark", track: "相手", start: 1, end: 2, text: "採用を進めます。" }); // 発言 1 件ですぐ差分更新を呼ぶ
+        yield* server.emit({ type: "speaker-off", start: 0, reason: "モデルなし" });
+        yield* server.emit({ type: "remark", track: "相手", start: 1, end: 2, text: "採用を進めます。" });
         yield* Effect.tryPromise(() => page.locator(".map-node__text").filter({ hasText: /^採用$/ }).waitFor());
         yield* server.speak({ type: "captions", bubbles: [{ id: "c2", track: "自分", speaker: "自分", label: "確定", start: 0, end: 1, text: "状態が変わる前から表示している字幕です。", settledLength: 20 }] });
-        // 既存 CSS は幅632px未満で字幕の幅が0になる。配置の保持はその状態でも測り、可視表示は広い画面で確かめる。
         yield* showCaptionsIfNarrow(page, width);
         yield* Effect.tryPromise(() => page.getByText("状態が変わる前から表示している字幕です。", { exact: true }).waitFor({ state: "attached" }));
         if (width === 1200) yield* Effect.tryPromise(() => page.locator(".captions").waitFor());

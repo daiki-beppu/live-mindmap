@@ -4,9 +4,6 @@ import { MAP_NODE_BUTTON_CLASS } from "../src/enterFold.ts";
 import { ObserveMapSurface } from "../src/app/mapSurface/mount.ts";
 import type { Message } from "../src/app/mapSurface/message.ts";
 
-// ノードのボタン上の click が、⌘/Ctrl 付きならノードの選択（ClickedNodeButton）に届かないことを Mount の段階で確かめる（Issue #816）。
-// DOM が無い unit 環境なので偽の要素で capture → bubble の順に届ける。実ブラウザでの動作は未確認
-
 type Listener = { handler: (event: unknown) => void; capture: boolean };
 type ClickInit = { metaKey: boolean; ctrlKey: boolean; altKey: boolean; detail: number };
 
@@ -50,7 +47,6 @@ class FakeSurface {
     }
     return !event.defaultPrevented;
   }
-  // capture を先に呼び、stopPropagation されたら bubble を呼ばない
   click(target: unknown, init: ClickInit) {
     let stopped = false;
     const event = { target, clientX: 10, clientY: 20, ...init, stopPropagation: () => { stopped = true; } };
@@ -69,7 +65,6 @@ afterEach(() => vi.unstubAllGlobals());
 
 const observe = async (surface: FakeSurface) => {
   const got: Message[] = [];
-  // FakeSurface は、この Mount が読む要素の機能だけを実装する。
   const stream = ObserveMapSurface().f(surface as unknown as Element, Stream.empty);
   const fiber = Effect.runFork(Stream.runForEach(stream, (m) => Effect.sync(() => { got.push(m); })));
   const close = () => Effect.runPromise(Fiber.interrupt(fiber));
@@ -131,7 +126,7 @@ describe("ObserveMapSurface（Mount）: Safari の gesture", () => {
       expect(first.defaultPrevented).toBe(true);
       await expect.poll(() => got).toEqual([
         { _tag: "StartedMapSurfaceGesture" },
-        { _tag: "ChangedMapSurfaceGesture", scale: 1.1, x: 200, y: 150 },
+        { _tag: "ChangedMapSurfaceGesture", cumulativeScale: 1.1, x: 200, y: 150 },
       ]);
 
       const second = Object.assign(new Event("gesturechange", { cancelable: true }), {
@@ -141,8 +136,8 @@ describe("ObserveMapSurface（Mount）: Safari の gesture", () => {
       expect(second.defaultPrevented).toBe(true);
       await expect.poll(() => got).toEqual([
         { _tag: "StartedMapSurfaceGesture" },
-        { _tag: "ChangedMapSurfaceGesture", scale: 1.1, x: 200, y: 150 },
-        { _tag: "ChangedMapSurfaceGesture", scale: 1.21, x: 230, y: 180 },
+        { _tag: "ChangedMapSurfaceGesture", cumulativeScale: 1.1, x: 200, y: 150 },
+        { _tag: "ChangedMapSurfaceGesture", cumulativeScale: 1.21, x: 230, y: 180 },
       ]);
     } finally {
       await close();

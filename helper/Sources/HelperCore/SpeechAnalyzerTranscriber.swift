@@ -17,12 +17,9 @@ public enum TranscriberError: Error, CustomStringConvertible {
     }
 }
 
-/// SpeechAnalyzer（ja-JP・端末内）をストリーミングで直接使う `Transcriber`。
 public final class SpeechAnalyzerTranscriber: Transcriber {
     private let locale = Locale(identifier: "ja-JP")
     private let transcriber: SpeechTranscriber
-    // 2048 個: ProcessTap の上限と同じ。通常の遅れは吸収し、analyzer が止まった場合だけ超える。
-    private static let backlogLimit = 2048
 
     private var analyzerFormat: AVAudioFormat?
 
@@ -52,14 +49,13 @@ public final class SpeechAnalyzerTranscriber: Transcriber {
     public func transcribe(_ audio: AsyncThrowingStream<CapturedAudio, Error>, origin: UInt64) async throws -> AsyncThrowingStream<TranscriptionResult, Error> {
         guard let format = analyzerFormat else { throw TranscriberError.noCompatibleFormat }
         let analyzer = SpeechAnalyzer(modules: [transcriber])
-        let limit = Self.backlogLimit
+        let limit = downstreamBacklogLimit
         let (inputs, inputBuilder) = AsyncStream.makeStream(of: AnalyzerInput.self, bufferingPolicy: .bufferingOldest(limit))
         try await analyzer.start(inputSequence: inputs)
 
         let transcriber = self.transcriber
         let timeline = TrackTimeline(origin: origin)
         return AsyncThrowingStream { continuation in
-            // 音声 → 変換 → AnalyzerInput。音声が終わったら入力を閉じ、残りを確定させる。
             let feeder = Task {
                 var converter: AVAudioConverter?
                 var received = false
@@ -67,7 +63,6 @@ public final class SpeechAnalyzerTranscriber: Transcriber {
                     for try await captured in audio {
                         received = true
                         let buffer = captured.buffer
-                        // 結果の時刻は、アナライザに入れた最初の音声が 0。最初のバッファの取得時刻と共通の基準との差で補正する。
                         timeline.record(captured)
                         if converter == nil {
                             converter = AVAudioConverter(from: buffer.format, to: format)
@@ -76,7 +71,6 @@ public final class SpeechAnalyzerTranscriber: Transcriber {
                             throw TranscriberError.conversionFailed("\(buffer.format) → \(format)")
                         }
                         let input = AnalyzerInput(buffer: try Self.convert(buffer, with: converter, to: format))
-                        // 満杯で入らなかった入力は捨てずに、エラーで終わらせる（時刻の意味を保つため）。
                         if case .dropped = inputBuilder.yield(input) {
                             throw TranscriberError.backlogExceeded(limit: limit)
                         }
@@ -89,7 +83,6 @@ public final class SpeechAnalyzerTranscriber: Transcriber {
                 }
                 inputBuilder.finish()
                 // 入力が 0 件のまま finalize を呼ぶと戻らず、結果の流れが終わらない（#70）。
-                // 確定させる結果がないので、結果の流れを先に閉じてから analyzer を捨てる。
                 if !received {
                     continuation.finish()
                     await analyzer.cancelAndFinishNow()
@@ -101,7 +94,6 @@ public final class SpeechAnalyzerTranscriber: Transcriber {
                     continuation.finish(throwing: error)
                 }
             }
-            // SpeechTranscriber の結果 → TranscriptionResult。analyzer の終了で結果の流れも終わる。
             let collector = Task {
                 do {
                     for try await result in transcriber.results {
@@ -126,8 +118,6 @@ public final class SpeechAnalyzerTranscriber: Transcriber {
         }
     }
 
-    /// 結果の本文から、run ごとの区間を取り出す。秒はアナライザ基準のまま（原点への補正は `TrackTimeline.align`）。
-    /// 区間の無い run（`audioTimeRange` が無い・数値でない）は、位置だけ進めて要素を作らない。
     static func wordTimes(of text: AttributedString) -> [WordTime] {
         var location = 0
         var times: [WordTime] = []
@@ -165,9 +155,6 @@ public final class SpeechAnalyzerTranscriber: Transcriber {
     }
 }
 
-/// ファイル 1 本を文字にする口（`transcribe-file`）。ライブの `transcribe` と違い、音声は analyzer が引いたぶんだけ読む
-/// （間に上限つきの列を置かないので、入力の上限 2048 に当たらず、速さは analyzer に合う）。
-/// 入力は途切れなくファイルの先頭から続くので、結果の時刻はファイルの音声の時刻（先頭が 0 秒）になる。
 extension SpeechAnalyzerTranscriber: FileTranscriber {
     public func transcribe(_ inputs: FileAudioInputs) async throws -> AsyncThrowingStream<TranscriptionResult, Error> {
         guard let format = analyzerFormat else { throw TranscriberError.noCompatibleFormat }
@@ -175,7 +162,6 @@ extension SpeechAnalyzerTranscriber: FileTranscriber {
         let transcriber = self.transcriber
         let origin = FileTimeOrigin()
         return AsyncThrowingStream { continuation in
-            // 入力 → analyzer。列が終わったら、最後の位置までを確定させる。
             let feeder = Task {
                 do {
                     let last = try await analyzer.analyzeSequence(ConvertedAnalyzerInputs(base: inputs, format: format, origin: origin))
@@ -190,12 +176,10 @@ extension SpeechAnalyzerTranscriber: FileTranscriber {
                     await analyzer.cancelAndFinishNow()
                 }
             }
-            // SpeechTranscriber の結果 → TranscriptionResult。analyzer の終了で結果の流れも終わる。
             let collector = Task {
                 do {
                     for try await result in transcriber.results {
                         let range = result.range
-                        // analyzer の時刻は最初の入力が 0。途中から読んだ分を足して、ファイルの音声の時刻に戻す
                         continuation.yield(TranscriptionResult(
                             text: String(result.text.characters),
                             isFinal: result.isFinal,
@@ -217,7 +201,6 @@ extension SpeechAnalyzerTranscriber: FileTranscriber {
     }
 }
 
-/// `FileAudioInputs`（ファイルの形式のまま）を analyzer の形式に変換する列。
 private struct ConvertedAnalyzerInputs: AsyncSequence {
     typealias Element = AnalyzerInput
 
@@ -252,13 +235,11 @@ private struct ConvertedAnalyzerInputs: AsyncSequence {
             }
             let converted = try SpeechAnalyzerTranscriber.convert(input.buffer, with: converter, to: format)
             // 位置は渡さない。変換後のバッファの長さは丸めで元とずれ、元の位置を明示すると「前の入力と重なる」と拒否される。
-            // 途切れなく続くので、analyzer が数える位置（先頭が 0）が、そのままファイルの音声の時刻になる
             return AnalyzerInput(buffer: converted)
         }
     }
 }
 
-/// 最初の入力のファイル上の位置（秒）。結果を読む側と入力を送る側で共有する（最初の入力を渡した後にしか結果は出ない）。
 private final class FileTimeOrigin: @unchecked Sendable {
     private let lock = NSLock()
     private var first: Double?

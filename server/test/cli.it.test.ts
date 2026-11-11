@@ -37,8 +37,6 @@ import { fakeReadings, type FakeReadings } from "./fixtures/readings.ts";
 import { AppleIntelligence } from "../src/appleIntelligence.ts";
 import { portOf } from "../src/httpServing.ts";
 
-// play の updater（claude.ts）と配信の待受け（http.ts の openListener）を差し替える。待受けは既定で偽物にし、
-// 本物の WebSocket 越しに観測する 1 本だけ、実物の openListener に戻す
 const external = vi.hoisted(() => ({
   openClaudeUpdater: vi.fn(),
   openListener: vi.fn(),
@@ -64,7 +62,6 @@ const temporaryDirectory = Effect.acquireRelease(
   (path) => Effect.promise(() => rm(path, { recursive: true, force: true })),
 );
 
-// 旧 CliDeps の置き換え。保存先とポートは ConfigProvider、標準出力は Console、撮影は MapCapture の Layer で渡す
 function dependencies(sessionsDir: string, port = "0", modelEnv: Record<string, string> = {}) {
   const stdout: string[] = [];
   const stderr: string[] = [];
@@ -108,7 +105,6 @@ function dependencies(sessionsDir: string, port = "0", modelEnv: Record<string, 
   return { layer, stdout, stderr, captures, captureFailure, reviewFailure, mix };
 }
 
-// 既定の updater。script を順に返す
 function scripted(ops: Op[][] = script) {
   const calls: DiffInput[] = [];
   const close = vi.fn();
@@ -372,7 +368,6 @@ describe("ヘルパーの開始前の確かめ（Issue #709）", () => {
       managedDeps,
       sessionSinks: SessionSinks.layer.pipe(Layer.provide(fakeExportServices({ readings }))), startupChecks: StartupChecks.layer({ prepareUpdater: () => Effect.succeed({ layer: Layer.succeed(DiffUpdater, DiffUpdater.of({
         update: () => Effect.succeed({ ops: [] }),
-        // 英字の語のカタカナの読み（Issue #642）。Zendesk だけ答える
         katakana: (words) => Effect.succeed(words.filter((w) => w === "Zendesk").map((surface) => ({ surface, katakana: "ゼンデスク" }))),
       })) }) }).pipe(Layer.provide(fakeExportServices({ readings }))),
     });
@@ -479,7 +474,6 @@ describe("ヘルパーの開始前の確かめ（Issue #709）", () => {
     expect(existsSync(join(r.deps.stdout.join("").trim(), "log.jsonl"))).toBe(true);
   }).pipe(Effect.scoped));
 
-  // Issue #640: cli start --vocab <file>（1 行に 1 語、空行は無視）。cli resume は新しい語を受け取らない
   const vocabLinesOf = (sessionDir: string) =>
     readFileSync(join(sessionDir, "log.jsonl"), "utf8").split("\n").filter((l) => l !== "").map((l) => JSON.parse(l)).filter((e) => e.type === "vocab");
 
@@ -521,7 +515,7 @@ describe("ヘルパーの開始前の確かめ（Issue #709）", () => {
       { surface: "Zendesk", romaji: "zendesuku", source: "user" },
       { surface: "読めない語", romaji: null, source: "user" },
     ]);
-    expect(readings.calls).toEqual([["港南店", "読めない語", "ゼンデスク"]]); // 英字の語はモデルのカタカナの読みを渡す。読みは全語を 1 回のまとめた呼び出しで作る
+    expect(readings.calls).toEqual([["港南店", "読めない語", "ゼンデスク"]]);
   }).pipe(Effect.scoped));
 
   it.live("640: --vocab を付けない start は、語を足さない（vocab の行も読みの呼び出しも無い）", () => Effect.gen(function* () {
@@ -551,7 +545,6 @@ describe("ヘルパーの開始前の確かめ（Issue #709）", () => {
   }).pipe(Effect.scoped));
 });
 
-// play を 1 回流し、セッションのフォルダと出力したパスを返す
 const played = (deps: ReturnType<typeof dependencies>) => Effect.gen(function* () {
   yield* runCli(["play", fixture]).pipe(Effect.provide(deps.layer));
   const paths = deps.stdout.join("").trim().split("\n");
@@ -601,7 +594,6 @@ describe("CLI", () => {
       mkdirSync(join(home, ".live-mindmap"), { recursive: true });
       writeFileSync(join(home, ".live-mindmap/config.json"), JSON.stringify({ models: { homeModel: { route: "claude", model: "claude-haiku-5-5" } } }));
       const deps = dependencies(join(root, "sessions"), "0", { HOME: home });
-      // Default path is the contract here; omit the override rather than passing an empty path.
       const provider = ConfigProvider.layer(ConfigProvider.fromEnvRecord({ HOME: home, LIVE_MINDMAP_SESSIONS: join(root, "sessions"), LIVE_MINDMAP_PORT: "0" }));
       yield* runCli(["models"]).pipe(Effect.provide(provider), Effect.provide(deps.layer));
       expect(deps.stdout.join("").split("\n").some((line) => /^homeModel\s/.test(line))).toBe(true);
@@ -702,7 +694,6 @@ describe("CLI", () => {
   });
 
   describe("play の判定による振り分け（Issue #984）", () => {
-    // 判定の宛先（api.typesafe.ai）への要求だけを数える偽の HttpClient。「含む」の確からしさは 0.9
     const judgeClient = () => {
       const urls: string[] = [];
       const client = HttpClient.make((request) => Effect.sync(() => {
@@ -738,7 +729,6 @@ describe("CLI", () => {
       expect(external.openClaudeUpdater).toHaveBeenCalledOnce();
     }));
 
-    // start は CLI が判定を解決して、転送用トークンのヘッダーつきでサーバーへ送る。サーバーへの要求の本文とヘッダーを記録する
     const startRequest = (argv: string[]) => Effect.gen(function* () {
       const root = yield* temporaryDirectory;
       const sessions = join(root, "sessions");
@@ -879,7 +869,6 @@ describe("CLI", () => {
     expect(md).toContain("面接は何回か → 2 回にする");
     const drawnix = JSON.parse(yield* Effect.tryPromise(() => readFile(join(session, "map.drawnix"), "utf8")));
     expect(drawnix).toMatchObject({ type: "drawnix", elements: [{ type: "mindmap" }] });
-    // play のセッションには録音が無い。map-audio.html は作らず、mix も呼ばない
     expect(files).not.toContain("map-audio.html");
     expect(deps.mix.calls).toEqual([]);
     expect(deps.stderr.join("")).not.toContain("map-audio");
@@ -970,7 +959,7 @@ describe("CLI", () => {
     external.openClaudeUpdater.mockReturnValue({
       update: () => Effect.sync(() => {
         const [session] = readdirSync(dir);
-        mkdirSync(join(dir, session!, "map.md")); // 書き先と同名のフォルダがあり、map.md を書けない
+        mkdirSync(join(dir, session!, "map.md"));
         return { ops: [] };
       }),
       close: vi.fn(),
@@ -1020,7 +1009,7 @@ describe("CLI", () => {
         const ops = script[calls++] ?? [];
         if (calls === 3) {
           Deferred.doneUnsafe(reachedThird, Effect.void);
-          return Deferred.await(release).pipe(Effect.as({ ops })); // 3 回目（r3）の更新が終わらない、進行中の状態で止める
+          return Deferred.await(release).pipe(Effect.as({ ops }));
         }
         return Effect.succeed({ ops });
       }),
@@ -1089,11 +1078,10 @@ describe("CLI", () => {
   describe("restore", () => {
     const adoptionScript: Op[][] = script;
 
-    // sessionsDir に script で 1 セッション再生し、そのフォルダと export の出力を返す
     const playInto = (deps: ReturnType<typeof dependencies>, ops: Op[][]) => Effect.gen(function* () {
       scripted(ops);
       yield* runCli(["play", fixture]).pipe(Effect.provide(deps.layer));
-      const session = dirname(deps.stdout.join("").split("\n")[0]!); // play は書き出したファイルのパスを出す（#41）
+      const session = dirname(deps.stdout.join("").split("\n")[0]!);
       deps.stdout.length = 0;
       yield* runCli(["export", "--format", "json"]).pipe(Effect.provide(deps.layer));
       const before = deps.stdout.join("");
@@ -1105,7 +1093,6 @@ describe("CLI", () => {
       const dir = yield* temporaryDirectory;
       const deps = dependencies(dir);
       const { session, before } = yield* playInto(deps, adoptionScript);
-      // 落ちた状態: エクスポートは残っておらず、ログには知らない種類の行がある
       rmSync(join(session, "export.json"));
       appendFileSync(join(session, "log.jsonl"), JSON.stringify({ type: "jev", at: "2026-10-01T00:00:00.000Z" }) + "\n");
       external.openClaudeUpdater.mockReset();
@@ -1158,8 +1145,6 @@ describe("CLI", () => {
       expect(deps.stdout.join("").trim()).toBe(session);
     }));
 
-    // Issue #645: 終了の処理を通らなかったセッションも、restore で組み直したときに語彙の溜まりの更新に含める。
-    // 溜まりの更新は、ログの vocab-pool の行（そのセッションの番号）と vocab・remark の行から導く。ログは書き足さない
     describe("語彙の溜まり（Issue #645）", () => {
       const SESSION_NAME = "2026-10-01T00-00-00.000Z";
       const crashedLog = [
@@ -1170,7 +1155,6 @@ describe("CLI", () => {
           { surface: "Zendesk", romaji: "zendesuku", source: "screen" },
           { surface: "葛西", romaji: "kasai", source: "user" },
         ] },
-        // 港南店は直して出た語（直す前は江南店）。Zendesk は映っただけで話されない
         { type: "remark", remark: { id: "r1", track: "相手", start: 0, end: 5, text: "港南店に行きます" }, raw: "江南店に行きます" },
       ];
       const writeLog = (root: string, lines: Record<string, unknown>[]) => {
@@ -1185,7 +1169,7 @@ describe("CLI", () => {
       it.effect("組み直したセッションの、話された語（直して出た語を含む）と足した語が溜まりに入り、映っただけの語は入らない。ログは書き足さない", () => Effect.gen(function* () {
         const root = yield* temporaryDirectory;
         const session = writeLog(root, crashedLog);
-        writePool(root, { sessions: 3, words: [] }); // 開始時に溜まりが数えたところまで
+        writePool(root, { sessions: 3, words: [] });
         const logBefore = readFileSync(join(session, "log.jsonl"), "utf8");
         const deps = dependencies(root);
 
@@ -1198,7 +1182,7 @@ describe("CLI", () => {
           { surface: "葛西", romaji: "kasai", source: "user", lastSpoken: 0 },
         ] }));
         expect(readFileSync(join(session, "log.jsonl"), "utf8")).toBe(logBefore);
-        expect(existsSync(join(session, "export.json"))).toBe(true); // 今までどおりマップも戻す
+        expect(existsSync(join(session, "export.json"))).toBe(true);
       }));
 
       it.effect("同じセッションを 2 回 restore しても、溜まりは同じ（始めたセッションの数も増えない）", () => Effect.gen(function* () {
@@ -1209,7 +1193,7 @@ describe("CLI", () => {
 
         yield* runCli(["restore"]).pipe(Effect.provide(deps.layer));
         const once = readFileSync(vocabularyPoolPath(root), "utf8");
-        expect(JSON.parse(once).words).toHaveLength(2); // 1 回目で入っている
+        expect(JSON.parse(once).words).toHaveLength(2);
         yield* runCli(["restore"]).pipe(Effect.provide(deps.layer));
 
         expect(readFileSync(vocabularyPoolPath(root), "utf8")).toBe(once);
@@ -1291,13 +1275,11 @@ describe("CLI", () => {
       if (Result.isSuccess(result)) return;
       expect(Predicate.hasProperty(result.failure, "_tag")).toBe(true);
       expect(CliError.isCliError(result.failure)).toBe(false);
-      // 「セッションがありません: <パス>」の 1 行は cliEntry.it.test.ts（restore）と cliProcess.heavy.test.ts（export）で観測する
       expect(deps.stdout).toEqual([]);
       expect(deps.stderr).toEqual([]);
     }));
   });
 
-  // Issue #646: cli vocab list / forget。サーバーを使わず、セッションの置き場の vocabulary.json を直接読み書きする
   describe("vocab（Issue #646）", () => {
     const POOL = {
       sessions: 10,
@@ -1309,7 +1291,6 @@ describe("CLI", () => {
     };
     const writePool = (root: string, pool: unknown) => writeFileSync(vocabularyPoolPath(root), JSON.stringify(pool));
     const readPool = (root: string) => JSON.parse(readFileSync(vocabularyPoolPath(root), "utf8"));
-    // 失敗は message つきのタグ付きの失敗（入口の 1 行になる）
     const failureMessage = (failure: unknown) => {
       expect(Predicate.hasProperty(failure, "_tag")).toBe(true);
       expect(CliError.isCliError(failure)).toBe(false);
@@ -1395,7 +1376,7 @@ describe("CLI", () => {
       if (Result.isSuccess(result)) return;
       expect(failureMessage(result.failure)).toBe("溜まりにありません: 新宿店");
       expect(readFileSync(vocabularyPoolPath(root), "utf8")).toBe(before);
-      expect(readdirSync(root).filter((name) => name.includes("vocabulary"))).toEqual(["vocabulary.json"]); // 一時ファイルも残さない
+      expect(readdirSync(root).filter((name) => name.includes("vocabulary"))).toEqual(["vocabulary.json"]);
     }));
 
     it.effect("forget は正規化では照合しない: 大小・全角が違う表記は溜まりに無い語として失敗し、溜まりは変わらない", () => Effect.gen(function* () {
@@ -1459,7 +1440,6 @@ describe("CLI", () => {
     };
     const logOf = (session: string) =>
       readFileSync(join(session, "log.jsonl"), "utf8").split("\n").filter((l) => l.trim() !== "").map((l) => JSON.parse(l) as unknown);
-    // フォルダ直下のファイルの中身（map.html 以外）
     const snapshotExceptHtml = (session: string) =>
       Object.fromEntries(readdirSync(session).filter((f) => f !== "map.html").sort().map((f) => [f, readFileSync(join(session, f), "utf8")]));
 
@@ -1627,7 +1607,6 @@ describe("CLI", () => {
     }));
 
     describe("録音があるセッション", () => {
-      // played のセッションに、録音（中身は何でもよい）を置く
       const withRecordings = (session: string, ...names: string[]) => {
         for (const name of names) writeFileSync(join(session, name), "録音");
       };
@@ -1644,13 +1623,13 @@ describe("CLI", () => {
         expect(deps.stderr).toEqual([]);
         expect(deps.mix.calls).toHaveLength(1);
         expect(deps.mix.calls[0]!.session).toBe(session);
-        expect(deps.mix.calls[0]!.track).toBeUndefined(); // --self-only なしでは `自分` だけの指定を渡さない
-        expect(dirname(deps.mix.calls[0]!.out)).not.toBe(session); // 既にある出力は上書きされないので、出力はセッションのフォルダに書かない
+        expect(deps.mix.calls[0]!.track).toBeUndefined();
+        expect(dirname(deps.mix.calls[0]!.out)).not.toBe(session);
         const audioHtml = readFileSync(join(session, "map-audio.html"), "utf8");
         expect(embeddedAudio(audioHtml)).toEqual(FAKE_MIX_BYTES);
-        expect(embedded(audioHtml)).toEqual(logOf(session)); // ログも同じように埋め込まれている
+        expect(embedded(audioHtml)).toEqual(logOf(session));
         const plainHtml = readFileSync(join(session, "map.html"), "utf8");
-        expect(embeddedAudio(plainHtml)).toBeNull(); // map.html には音声を入れない
+        expect(embeddedAudio(plainHtml)).toBeNull();
         expect(embedded(plainHtml)).toEqual(logOf(session));
       }));
 
@@ -1750,7 +1729,6 @@ describe("CLI", () => {
       const withRecordings = (session: string, ...names: string[]) => {
         for (const name of names) writeFileSync(join(session, name), "録音");
       };
-      // map-audio-自分.html 以外の全ファイルの中身と更新日時
       const snapshot = (session: string) =>
         Object.fromEntries(
           readdirSync(session, { withFileTypes: true })
@@ -1766,7 +1744,7 @@ describe("CLI", () => {
         writeFileSync(join(session, "map.html"), "既存の map");
         writeFileSync(join(session, "map-audio.html"), "既存の map-audio");
         const before = snapshot(session);
-        yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 20))); // 更新日時が進むだけの間を置く
+        yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 20)));
 
         yield* runCli(["review", "--self-only"]).pipe(Effect.provide(deps.layer));
 
@@ -1777,7 +1755,7 @@ describe("CLI", () => {
         expect(deps.mix.calls[0]!.track).toBe("自分");
         const html = readFileSync(join(session, SELF_FILE), "utf8");
         expect(embeddedAudio(html)).toEqual(FAKE_MIX_BYTES);
-        expect(embedded(html)).toEqual(logOf(session)); // 字幕・マップ用のログ（相手の発言を含む）は埋め込まれたまま
+        expect(embedded(html)).toEqual(logOf(session));
         expect(readFileSync(join(session, "map.html"), "utf8")).toBe("既存の map");
         expect(readFileSync(join(session, "map-audio.html"), "utf8")).toBe("既存の map-audio");
         expect(snapshot(session)).toEqual(before);
@@ -1885,7 +1863,7 @@ describe("CLI", () => {
         writeFileSync(join(session, "相手.txt"), "拡張子が違う");
         mkdirSync(join(session, "相手"));
         writeFileSync(join(session, "相手", "x.m4a"), "サブフォルダの中");
-        deps.mix.failure.reason = "呼ばれたら理由が出る"; // 呼ばれていれば標準エラーに出る
+        deps.mix.failure.reason = "呼ばれたら理由が出る";
 
         yield* runCli(["review"]).pipe(Effect.provide(deps.layer));
 
@@ -1977,8 +1955,6 @@ describe("CLI", () => {
   });
 
   describe("ブラウザへの配信", () => {
-    // 本物の WebSocket 越しに観測するのは、このファイルで 1 本だけ（正本 22 行）。
-    // 「失敗した反映では送らない」「終わると閉じる」は、偽の待受け（fakeListener）で同じ契約を観測する
     it.live("反映のたびに WebSocket へマップが届き、再生の終了で差分更新とローカルモードが解除される。標準出力は変わらない", () => Effect.gen(function* () {
       const dir = yield* temporaryDirectory;
       const deps = dependencies(dir);
@@ -1994,7 +1970,7 @@ describe("CLI", () => {
       let n = 0;
       external.openClaudeUpdater.mockReturnValue({
         update: () =>
-          Effect.promise(() => first).pipe( // 接続して最初のスナップショットが届くまで、反映を待たせる
+          Effect.promise(() => first).pipe(
             Effect.map(() => ({ ops: script[n++] ?? [] })),
           ),
         close: () => {},
@@ -2031,7 +2007,6 @@ describe("CLI", () => {
       const last = received.at(-1)!;
       expect(last.nodes.map((x) => x.text)).toEqual(["short", "採用", "面接は何回か", "2 回にする"]);
       expect(last.nodes.find((x) => x.kind === "論点")).toMatchObject({ pointStatus: "決定済み" });
-      // 反映ごとに round が進み、その反映の新しい発言（1 件ずつ渡る）の end を時刻として、記録が積み上がって届く
       expect(received.map((s) => s.round)).toEqual([0, 1, 2, 3]);
       expect(received[0]!.changes).toEqual([]);
       expect(received[1]!.changes).toEqual([
@@ -2046,13 +2021,12 @@ describe("CLI", () => {
         { round: 3, at: 28, change: "決定済み化", node: "n2", kind: "論点", text: "面接は何回か" },
         { round: 3, at: 28, change: "追加", node: "n3", kind: "決定", text: "2 回にする" },
       ]);
-      // 根拠: 届いたスナップショットから、ノードの根拠の ID で発言（時刻・本文）を引ける
       const n1 = last.nodes.find((x) => x.id === "n1")!;
       const r1 = last.remarks.find((r) => r.id === n1.evidence[0])!;
       expect(r1).toMatchObject({ start: 0.5, end: 9.8, text: "今日は採用の進め方を決めます" });
       expect(["自分", "相手"]).toContain(r1.track);
       for (const node of last.nodes) for (const id of node.evidence) expect(last.remarks.some((r) => r.id === id)).toBe(true);
-      expect(deps.stdout.join("")).toMatch(/^([^\n]+\n){5}$/); // 書き出した 5 ファイルのパスだけ
+      expect(deps.stdout.join("")).toMatch(/^([^\n]+\n){5}$/);
     }));
 
     it.effect("失敗した反映（マップが変わらない）ではスナップショットを送らない", () => Effect.gen(function* () {
@@ -2069,8 +2043,8 @@ describe("CLI", () => {
 
       yield* runCli(["play", fixture]).pipe(Effect.provide(deps.layer));
 
-      expect(n).toBe(3); // 発言 3 件が 1 件ずつ、3 回とも更新へ到達したうえで
-      expect(fake.published.map((s) => s.nodes.length)).toEqual([1, 1, 1]); // 初期のルート＋成功した 2 回（変更なし）だけ。失敗した 1 回目は送らない
+      expect(n).toBe(3);
+      expect(fake.published.map((s) => s.nodes.length)).toEqual([1, 1, 1]);
       expect(fake.published.map((s) => s.round)).toEqual([0, 1, 2]);
     }));
 
@@ -2082,8 +2056,7 @@ describe("CLI", () => {
 
       yield* runCli(["play", fixture]).pipe(Effect.provide(deps.layer));
 
-      expect(fake.published.length).toBeGreaterThan(0); // 配信へ到達したうえで
-      // 待受けを 1 回だけ閉じ、その前に最後のスナップショットまで渡し切る
+      expect(fake.published.length).toBeGreaterThan(0);
       expect(fake.events).toEqual(["drained", "closed"]);
     }));
   });

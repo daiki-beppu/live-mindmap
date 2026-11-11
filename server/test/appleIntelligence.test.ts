@@ -7,8 +7,6 @@ import { prepareUpdaterLayer } from "../src/diffUpdater.ts";
 import { forbiddenManagedDeps } from "./fixtures/forbiddenManagedDeps.ts";
 import { settleUntil } from "./fixtures/sessionLayers.ts";
 
-// 計画のプロセス境界。問い合わせは一回で終了、launch は呼び出し側 Scope の資源を返す。
-// 構造化した stdout の名前は実装時に変更できるが、準備待ちと寿命の assertion は維持する。
 const fakeProcess = Effect.fnUntraced(function* (stdoutGate: Effect.Effect<void>) {
   const output = yield* Queue.make<Uint8Array, Cause.Done>();
   const exited = yield* Deferred.make<ChildProcessSpawner.ExitCode>();

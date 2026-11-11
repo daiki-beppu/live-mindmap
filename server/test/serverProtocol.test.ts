@@ -1,9 +1,3 @@
-// Issue #1308: CLI と server の受け渡しを 1 つの共有モジュール（serverProtocol）にする。
-//
-// ここでは共有モジュールだけを直接見る（Schema の decode と経路の記述の値）。HTTP の往復は http.it / http.heavy が持つ。
-//   - 本文の既定値の補完は本文の Schema の decode で 1 回だけ行う（audio・screen は true、vocab は空、realtime は false、title は無し）。
-//     補うのは欄を省略したときだけで、null は受けない（手で組んだ本文は支えない。Issue #1471）。
-//   - 経路は 17 本が { method, path, body?, response } の値として並ぶ。
 import { describe, expect, it } from "@effect/vitest";
 import { Schema } from "effect";
 import { ServerRoutes, SessionRecordedBody, SessionStartBody } from "../src/serverProtocol.ts";

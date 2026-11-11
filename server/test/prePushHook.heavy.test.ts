@@ -22,7 +22,6 @@ type Fixture = {
   localSha: (ref: string) => string;
 };
 
-// 実物の mode を index から写す。作業ツリーの mode だと、644 で commit した hook が黙って無視される失敗を見逃す。
 function placeHook(work: string) {
   const [mode] = execFileSync("git", ["ls-files", "-s", hook], { cwd: root, encoding: "utf8" }).split(" ");
   if (mode === undefined || mode === "") throw new Error(`${hook} is not tracked`);

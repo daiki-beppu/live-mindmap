@@ -1,15 +1,4 @@
 #!/usr/bin/env bash
-# 初回準備に効く依存・ビルド・取得処理や README の準備手順を変えたときに実行する。
-# 使用法: bash scripts/measure-bootstrap.sh [commit]（既定 HEAD）。未コミットの変更は clone に含まれない。
-# main とブランチを同じ時間帯に続けて測り、PR に before/after を記録する。
-# 空き 10 GB 以上、1 分 load average 4 未満、他の swift-build 0 本でのみ開始する。
-# clone と SwiftPM の cache/config/security、pnpm store、uv、管理依存、話者モデルを一時領域へ置く。
-# pnpm bootstrap → pnpm dev → 話者モデル取得 → cli install chromium → cli install claude の順で測る。
-# pnpm bootstrap の並列性を保ち、AEC3 compile と helper release の合計をビルド計として表示する。
-# 初回計は clone 開始から最後の導入完了までの実時間（事前確認と cleanup を除く）。
-# 目標はビルド 140 秒・初回 240 秒。揺れは ±10〜20%、混雑時は 2〜5 倍なので合否は出さない。
-# 目標を ±20% より大きく超えたら、その PR で直すか issue を立てる。CI の性能 check にはしない。
-# 約 5 GB 使用する。成功・失敗・SIGINT・SIGTERM 時は所有プロセスを止めてから一時領域を消す。
 set -euo pipefail
 exec node --input-type=module - "$0" "$@" <<'NODE'
 import { spawn, spawnSync } from 'node:child_process';
@@ -48,7 +37,6 @@ function preflight() {
   }
   const manager = realpathSync(tools.pnpm);
   if (basename(manager) === 'vp') {
-    // 一時 HOME に変える前に、vp の shim が選ぶ既存の pnpm 本体を解決する。
     tools.pnpm = checked(manager, ['env', 'which', 'pnpm']).split('\n')[0];
   }
   const disk = statfsSync(tmpdir());
@@ -73,7 +61,6 @@ function start(command, args, options) {
       else reject(new Error(`${command} ${args.join(' ')} exited ${code === null ? signal : code}`));
     });
   });
-  // dev は起動待ちの最中にも終了し得るため、待機側へ渡すまで rejection を保持する。
   done.catch(() => {});
   children.push(done);
   return { child, done };

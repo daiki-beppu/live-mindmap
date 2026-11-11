@@ -17,7 +17,6 @@ const issue = (number: number, title: string, state: string, labels: string[]): 
   number, title, state, labels: labels.map((name) => ({ name })), body: "previous run", comments: [],
 });
 
-// Only GitHub is replaced: Bash, jq, the notification script and workflow run steps execute for real.
 const fakeGh = String.raw`
 import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
@@ -250,7 +249,6 @@ describe.each([{ workflow: "nightly", title: nightly }, { workflow: "weekly", ti
     });
     const body = notify(passed);
     if (passed === "failure") {
-      // A prose heading may legitimately say "failure"; changing only a successful job name must not change the notification.
       expect(body).toBe(notify("successful helper"));
     } else {
       expect(body.split("\n").filter((line) => line.includes(passed))).toEqual([]);

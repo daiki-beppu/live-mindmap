@@ -10,14 +10,13 @@ const node = (id: string, parent: string | null, kind: Exclude<SnapshotNode["kin
   evidence: parent ? ["r1"] : [],
 });
 
-// 作られた順（snapshot().nodes の並び）
 const tree = (): SnapshotNode[] => [
   node("root", null, "会議"),
   node("A", "root"),
   node("B", "root"),
   node("A1", "A", "論点"),
   node("B1", "B", "論点"),
-  node("A2", "A", "論点"), // B・B1 より後に作られた A の子
+  node("A2", "A", "論点"),
 ];
 
 const H = 40;
@@ -43,8 +42,8 @@ describe("layout: 左 → 右の木", () => {
   it("兄弟は作られた順に上から積む（後から作られた子は、先に作られた別の親の子より後ではなく、同じ親の兄弟の下に来る）", () => {
     const pos = layout(tree(), heights(ids(tree())));
     expect(pos.A!.y).toBeLessThan(pos.B!.y);
-    expect(pos.A1!.y).toBeLessThan(pos.A2!.y); // A の子は作られた順
-    expect(pos.A2!.y).toBeLessThan(pos.B1!.y); // A の部分木の下に B の部分木が続く
+    expect(pos.A1!.y).toBeLessThan(pos.A2!.y);
+    expect(pos.A2!.y).toBeLessThan(pos.B1!.y);
   });
 
   it("兄弟は重ならない（測った高さを使う）", () => {
@@ -102,7 +101,7 @@ describe("layout: 追加で動くのは追加位置より下のノードだけ",
     const after = layout(added, heights(ids(added)));
     expect(after.A).toEqual(before.A);
     expect(after.A1).toEqual(before.A1);
-    expect(after.B1).toEqual(before.B1); // 追加位置より上の兄弟
+    expect(after.B1).toEqual(before.B1);
   });
 
   it("末尾の葉（B1）の下に子を足しても、A の部分木は動かない", () => {

@@ -8,7 +8,6 @@ import { describe, expect, it } from "vitest";
 const root = resolve(import.meta.dirname, "../..");
 const entry = "scripts/measure-bootstrap.sh";
 
-// 実際の clone・checkout と bootstrap を通し、準備コマンドの副作用を fixture で観測する。
 const commands = String.raw`
 import { spawn, spawnSync, execFileSync } from "node:child_process";
 import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -140,7 +139,6 @@ if (command === "corepack") {
 else unexpected();
 `;
 
-// 負荷と空き容量は Node API の置換で固定する。
 const host = String.raw`
 const os = require("node:os");
 const fs = require("node:fs");
@@ -248,7 +246,6 @@ async function withMeasurement(options: RunOptions, verify: (result: {
       verify({ code, output, events: events(), temp, home, elapsedSeconds: (performance.now() - startedAt) / 1000, expectedCommit });
     } finally {
       clearTimeout(timer);
-      // production cleanup を観測した後でだけ、失敗したテストが残した子を回収する。
       for (const pid of [...events().filter(([kind]) => kind === "pid").map(([, pid]) => Number(pid)), ...(child.pid === undefined ? [] : [-child.pid])]) {
         try { process.kill(pid, "SIGKILL"); }
         catch (error) { if (!(error instanceof Error && "code" in error && error.code === "ESRCH")) throw error; }

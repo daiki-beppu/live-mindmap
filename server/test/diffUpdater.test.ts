@@ -10,7 +10,6 @@ import { ManagedDeps, ManagedDepsFailed } from "../src/managedDeps.ts";
 import type { AgentSdk } from "../src/claude.ts";
 import { unusedApple } from "./fixtures/appleIntelligence.ts";
 
-// 置換前の通常依存経路でも、本物の Claude を呼ばない。
 vi.mock("@anthropic-ai/claude-agent-sdk", () => ({ query: () => { throw new Error("通常依存の SDK を呼びました"); } }));
 const load = vi.fn((_name: string) => Effect.fail(new ManagedDepsFailed({ message: "管理 SDK がありません" })));
 const managedDeps = Layer.succeed(ManagedDeps, ManagedDeps.of({

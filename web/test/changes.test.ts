@@ -24,7 +24,6 @@ describe("changedNodeIds: 赤い枠を付けるノード", () => {
     const second = [...first, entry(2, "n2", "更新"), entry(2, "n3")];
 
     expect(changedNodeIds(snapshot(1, first))).toEqual(new Set(["n1", "n2"]));
-    // 反映 2 では、n1 の枠は消え、n2（再び変わった）と n3 だけになる。積み上がった履歴の古い記録は枠にならない
     expect(changedNodeIds(snapshot(2, second))).toEqual(new Set(["n2", "n3"]));
   });
 

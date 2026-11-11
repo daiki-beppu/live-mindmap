@@ -21,21 +21,8 @@ import type { JudgeModel } from "../src/judgeSelection.ts";
 import type { Ending } from "../src/remarkFlow.ts";
 import type { UpdatePlan } from "../src/updatePlan.ts";
 
-// Issue #240 段 3（ADR 0008）: Sessions の状態・start・stop・resume・status と種類別の配線を、
-// 偽の Helpers・SessionSinks の Layer と TestClock で確かめる（order.md:39）。本物の子プロセスは使わない。
-// 本物の子プロセスのテストは server/test/server.heavy.test.ts の契約 6 本、SessionSinks 自身の実物 Layer の契約は
-// server/test/sessionSinks.it.test.ts が確かめる（このファイルでは SessionSinks も偽物）。
-//
-// 想定する契約（このファイルが要求する Helpers・SessionSinks の形。段 3 の実装はこれを満たす）:
-// - `Helpers.launch(args)` は 1 回分の起動を表す `HelperAttempt`（events の Stream・stop・exit・stderrTail）を
-//   `Effect<HelperAttempt, HelperLaunchFailure, Scope.Scope>` で返す（Scope を閉じると後始末が走る。要件10,24,27,39,40）。
-//   `events` はヘルパーが送った JSON 文字列を届いた順に流す Stream（helperSocket.ts の Queue を経由する想定）。
-// - ライブの open と録画の openRecorded は、それぞれの sink をセッションの Scope で 1 回開く
-//   （要件3,68,117,125）。Scope を閉じると updater が閉じる（CT-SINK-SCOPE）。
-
 const APPS = [{ bundleID: "us.zoom.xos", name: "zoom.us" }];
 
-// sink の appendLog が受け取る型（intake の記録・自分の休止の記録）。speaker の記録は sink.speaker が受け取る（Issue #1021）
 type LogLineEvent = Parameters<LiveSink["appendLog"]>[0];
 type SpeakerLine = Parameters<LiveSink["speaker"]>[0];
 
@@ -44,22 +31,20 @@ type FakeSinksHandle = {
   readonly opened: { count: number; closed: number };
   readonly finals: { id: string; track: Track; text: string }[];
   readonly partials: { track: Track; text: string }[];
-  readonly words: { final: unknown[]; partial: unknown[] }; // sink へ届いた発言・途中結果の words（Issue #639。無ければ undefined）
+  readonly words: { final: unknown[]; partial: unknown[] };
   readonly screens: { start: number; image: Uint8Array | null; lines?: readonly string[] }[];
   readonly screenOffs: { start: number; reason: "指定" | "許可なし" }[];
-  readonly sequence: string[]; // screenOff と final が届いた順（ログの行の順を観測する）
+  readonly sequence: string[];
   readonly relayStats: { interrupted: number; stopped: number };
   readonly ends: Ending["kind"][];
   readonly appended: LogLineEvent[];
-  readonly speakers: SpeakerLine[]; // sink.speaker へ届いた speaker・speaker-off（届いた順）
-  readonly speakerCalls: string[]; // sink.speaker（speaker:<type>）と sink.speakersRenumbered（renumbered）が呼ばれた順（Issue #1025）
-  readonly vocabAdded: string[][]; // 開始引数で受け取った語（空でない呼び出しごと）
-  readonly order: string[]; // writeOut・close が起きた順
+  readonly speakers: SpeakerLine[];
+  readonly speakerCalls: string[];
+  readonly vocabAdded: string[][];
+  readonly order: string[];
   readonly control: { createDirFails: boolean };
 };
 
-// 偽の SessionSinks。ID の採番だけ本物の規則（セッションにつき 1 回のクロージャ、r1 から）を真似る。
-// 覆い（settle.ts）の規則は真似ない（その規則は remarkSettling.test.ts・settle.test.ts が別に固定している）
 function makeFakeSessionSinks(options: { exportsFails?: boolean; warnings?: readonly string[] } = {}): Effect.Effect<FakeSinksHandle, never, Scope.Scope> {
   return Effect.gen(function* () {
     const opened = { count: 0, closed: 0 };
@@ -123,13 +108,10 @@ function makeFakeSessionSinks(options: { exportsFails?: boolean; warnings?: read
   });
 }
 
-// 本物の startup と同じ形（Layer.build + Context.get。server/src/http.ts:214-217 が手本）で Sessions を取り出す。
-// scope を自分で持つことで、「サーバーの Scope を閉じる」を明示的なタイミングで起こせる（CT-CLOSE-ONLY-INTERRUPT）
 const defaultPreparation = () => Effect.succeed({ layer: Layer.succeed(DiffUpdater, DiffUpdater.of({ update: () => Effect.succeed({ ops: [] }) })) });
 
 const bootSessions = (helpersLayer: Layer.Layer<Helpers>, sinksLayer: Layer.Layer<SessionSinks>, prepareUpdater: StartupChecksDeps["prepareUpdater"] = defaultPreparation) =>
   Effect.gen(function* () {
-    // テストの終了で必ず解放する（closeServer で先に閉じても、二重の close は何もしない）
     const scope = yield* Effect.acquireRelease(Scope.make(), (made) => Scope.close(made, Exit.void));
     const context = yield* Scope.provide(Layer.build(Sessions.layer.pipe(Layer.provideMerge(Layer.mergeAll(StartupChecks.layer({ prepareUpdater }).pipe(Layer.provide(readyManagedDeps)), helpersLayer, sinksLayer, Layer.succeed(SessionsDir)("/tmp/live-mindmap-fake"), Viewers.layer)))), scope);
     return { sessions: Context.get(context, Sessions), viewers: Context.get(context, Viewers), closeServer: () => Scope.close(scope, Exit.void) };
@@ -811,7 +793,6 @@ describe("推論プロセスの準備をセッションが所有する", () => {
     expect(helper.calls).toEqual([]);
     expect(prep.state.createdDirs).toBe(0);
     expect(fake.opened.count).toBe(0);
-    // 新しい開始は別の準備を取得する。失敗したセッションの状態を持ち越さない。
     prep.control.ready = yield* Deferred.make<void, UpdaterUnavailable>();
     yield* Deferred.succeed(prep.control.ready, undefined);
     yield* sessions.start(input);
@@ -877,7 +858,6 @@ describe("推論プロセスの準備をセッションが所有する", () => {
     expect(fake.opened.count).toBe(0);
   }));
 
-  // Issue #640: 開始時の語彙は open の引数へ渡す。読み取得は sink が所有する。
   it.effect("開始の要求の vocab はライブの open の引数へ渡し、空の語彙でも開始できる", () => Effect.gen(function* () {
     const withVocab = yield* makeFakeSessionSinks();
     const prepWith = yield* preparation(withVocab);
@@ -918,7 +898,6 @@ describe("推論プロセスの準備をセッションが所有する", () => {
   }));
 });
 
-// ブラウザ側のクライアントの代わり。Viewers.connect に渡す Socket で、届いたフレームを溜める（server/test/ws.test.ts の client と同じ作り）
 const viewerClient = Effect.fnUntraced(function* () {
   const frames = yield* Queue.make<unknown>();
   const modes = yield* Ref.make<ReadonlyArray<boolean>>([]);
@@ -938,35 +917,30 @@ const viewerClient = Effect.fnUntraced(function* () {
       () => Effect.void,
     ),
   });
-  // 届いた状態のフレーム（type が intake のもの）の status を、届いた順に返す
   const intakeStatuses = Effect.gen(function* () {
-    for (let i = 0; i < 20; i++) yield* Effect.yieldNow; // 時計を進めずに、配信のファイバーへ処理を渡し切る
+    for (let i = 0; i < 20; i++) yield* Effect.yieldNow;
     const received: unknown[] = [];
     while ((yield* Queue.size(frames)) > 0) received.push(yield* Queue.take(frames));
     return received.filter((f): f is { type: "intake"; status: string } => typeof f === "object" && f !== null && (f as { type?: unknown }).type === "intake").map((f) => f.status);
   });
-  // 届いたフレームのうち、type が screen-notice のものの text を、届いた順に返す
   const screenNotices = Effect.gen(function* () {
     for (let i = 0; i < 20; i++) yield* Effect.yieldNow;
     const received: unknown[] = [];
     while ((yield* Queue.size(frames)) > 0) received.push(yield* Queue.take(frames));
     return received.filter((f): f is { type: "screen-notice"; text: string | null } => typeof f === "object" && f !== null && (f as { type?: unknown }).type === "screen-notice").map((f) => f.text);
   });
-  // 届いたフレームのうち、type が tap-notice のものの text を、届いた順に返す
   const tapNotices = Effect.gen(function* () {
     for (let i = 0; i < 20; i++) yield* Effect.yieldNow;
     const received: unknown[] = [];
     while ((yield* Queue.size(frames)) > 0) received.push(yield* Queue.take(frames));
     return received.filter((f): f is { type: "tap-notice"; text: string | null } => typeof f === "object" && f !== null && (f as { type?: unknown }).type === "tap-notice").map((f) => f.text);
   });
-  // 届いたフレームのうち、type が self-pause のものの paused を、届いた順に返す（Issue #1069）
   const selfPauses = Effect.gen(function* () {
     for (let i = 0; i < 20; i++) yield* Effect.yieldNow;
     const received: unknown[] = [];
     while ((yield* Queue.size(frames)) > 0) received.push(yield* Queue.take(frames));
     return received.filter((f): f is { type: "self-pause"; paused: boolean } => typeof f === "object" && f !== null && (f as { type?: unknown }).type === "self-pause").map((f) => f.paused);
   });
-  // 届いたフレームのうち、type が self-pause のものを、届いた順にそのまま返す（Issue #1071。休止中の理由を確かめる）
   const selfPauseFrames = Effect.gen(function* () {
     for (let i = 0; i < 20; i++) yield* Effect.yieldNow;
     const received: unknown[] = [];
@@ -980,8 +954,6 @@ const viewerClient = Effect.fnUntraced(function* () {
   return { socket, intakeStatuses, screenNotices, tapNotices, selfPauses, selfPauseFrames, sessionModes };
 });
 
-// Console.error に渡された行を、Node の console と同じ形（引数を空白で連ねて末尾に改行 1 つ）で集める Console。
-// note は Console.error を呼ぶので、標準エラーに出るバイト列（改行の数）をここで確かめられる
 const collectingStderr = () => {
   const stderr: string[] = [];
   const service: Console.Console = { ...console, error: (...args: unknown[]) => { stderr.push(args.map(String).join(" ") + "\n"); } };
@@ -1382,10 +1354,10 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
       const fakeHelpers = yield* makeFakeHelpers([{}, {}]);
       const fakeSinks = yield* makeFakeSessionSinks();
       const { sessions } = yield* bootSessions(Layer.succeed(Helpers)(fakeHelpers.helpers), Layer.succeed(SessionSinks)(fakeSinks.sinks));
-      expect(fakeSinks.opened).toMatchObject({ count: 0, closed: 0 }); // 開始していなければ開かない
+      expect(fakeSinks.opened).toMatchObject({ count: 0, closed: 0 });
 
       yield* sessions.start(start());
-      expect(fakeSinks.opened).toMatchObject({ count: 1, closed: 0 }); // 会議中は閉じない
+      expect(fakeSinks.opened).toMatchObject({ count: 1, closed: 0 });
 
       yield* sessions.stop;
       expect(fakeSinks.opened).toMatchObject({ count: 1, closed: 1 });
@@ -1434,10 +1406,8 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
 
         expect(fakeSinks.partials).toContainEqual({ track: "相手", text: "とちゅう" });
         expect(fakeSinks.finals).toContainEqual({ id: "r1", track: "相手", text: "かくてい" });
-        // 原点が次の起動し直しの起動オプションに渡ることは「起動オプション（原点・録音の試行番号）」の describe で確かめる
       }));
 
-    // Issue #639: words 付きの JSON はそのまま sink へ届く。words の無い JSON も今までどおり届く
     it.effect("words 付きの remark・partial は words のまま sink へ届き、words の無いイベントには words が付かない", () =>
       Effect.gen(function* () {
         const fakeHelpers = yield* makeFakeHelpers([{}]);
@@ -1460,7 +1430,6 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
 
   });
 
-  // 共有画面の変化（Issue #278）。screen は sink.screen（Session.pushScreen への口）へ届く。原点・取り込みの状態・ログには触れない
   describe("共有画面の配線", () => {
 
     it.effect("screen は start とバイト列のまま sink.screen へ届く。image が null でも届く", () =>
@@ -1481,7 +1450,6 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
         expect(fakeSinks.screens[1]).toEqual({ start: 4, image: null });
       }));
 
-    // Issue #643: helper の screen の lines は、読み取った文字列のまま sink.screen へ届く。古い helper（lines なし）は lines を付けずに届く
     it.effect("screen の lines は sink.screen へそのまま届く。空の配列は空のまま、lines が無い screen は lines なしで届く", () =>
       Effect.gen(function* () {
         const fakeHelpers = yield* makeFakeHelpers([{}]);
@@ -1511,7 +1479,7 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
         fakeHelpers.send(0, { type: "screen", start: 2, image: null });
         yield* TestClock.adjust(1);
 
-        expect(fakeSinks.screens).toHaveLength(2); // 届いたうえで
+        expect(fakeSinks.screens).toHaveLength(2);
         expect(fakeSinks.appended).toEqual([]);
         expect(fakeSinks.finals).toEqual([]);
         expect(fakeSinks.partials).toEqual([]);
@@ -1526,14 +1494,14 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
           const { sessions } = yield* bootSessions(Layer.succeed(Helpers)(fakeHelpers.helpers), Layer.succeed(SessionSinks)(fakeSinks.sinks));
           yield* sessions.start(start());
 
-          fakeHelpers.send(0, { type: "screen", start: 1, image: "%%%" }); // base64 として不正
-          fakeHelpers.send(0, { type: "screen", start: 2 }); // image のキーが無い
+          fakeHelpers.send(0, { type: "screen", start: 1, image: "%%%" });
+          fakeHelpers.send(0, { type: "screen", start: 2 });
           fakeHelpers.send(0, { type: "remark", track: "相手", start: 0, end: 1, text: "つづく" });
           yield* TestClock.adjust(1);
 
           expect(stderr.filter((s) => s.includes("ヘルパーのイベントを読み飛ばしました"))).toHaveLength(2);
           expect(fakeSinks.screens).toEqual([]);
-          expect(fakeSinks.finals).toContainEqual({ id: "r1", track: "相手", text: "つづく" }); // セッションは止まらず続く
+          expect(fakeSinks.finals).toContainEqual({ id: "r1", track: "相手", text: "つづく" });
           expect((yield* sessions.status).status).toBe("running");
         })));
   });
@@ -1706,7 +1674,6 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
         expect(selfLogs(fakeSinks.appended)).toEqual([{ type: "self-paused", reason: "手動", start: 1 }]);
         expect(yield* watcher.selfPauses).toEqual([true]);
 
-        // 休止していない状態への「再開」も、変わっていなければ何も書かない
         fakeHelpers.send(0, pauseEvent(false, 3));
         fakeHelpers.send(0, pauseEvent(false, 4));
         yield* TestClock.adjust(1);
@@ -1820,7 +1787,6 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
         yield* TestClock.adjust(1);
         fakeHelpers.send(0, pauseEvent(true, 2, "自動"));
         yield* TestClock.adjust(1);
-        // 理由が同じ重ねての報告は、何も送らない
         fakeHelpers.send(0, pauseEvent(true, 3, "自動"));
         yield* TestClock.adjust(1);
 
@@ -1830,7 +1796,6 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
           { type: "self-pause", paused: true, reason: "自動" },
         ]);
 
-        // 休止中に後からつないだ画面には、最新の理由が届く
         const late = yield* viewerClient();
         yield* Effect.forkChild(viewers.connect(late.socket));
         expect(yield* late.selfPauseFrames).toEqual([{ type: "self-pause", paused: true, reason: "自動" }]);
@@ -1937,7 +1902,7 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
           {},
         ]);
         yield* sessions.start(start());
-        yield* relaunchAfter(500); // 起動回 1 が接続待ちで止まる
+        yield* relaunchAfter(500);
         expect(fakeHelpers.calls).toHaveLength(2);
 
         yield* sessions.setSelfPause(true);
@@ -1990,7 +1955,7 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
           { unexpectedExit: { afterMs: 500, exit: { code: 1, signal: null } } },
           { connect: false, stderrTail: ["失敗2"] },
           { connect: false, stderrTail: ["失敗3"] },
-          {}, // resume
+          {},
         ]);
         yield* sessions.start(start());
         fakeHelpers.send(0, pauseEvent(true, 1));
@@ -2004,7 +1969,7 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
 
         const expected = { kind: "run", selfPause: { manual: "pause", basis: "using", lastKnown: "idle", idleFor: 1.5 } };
         expect(fakeHelpers.calls).toHaveLength(4);
-        expect(fakeHelpers.calls[1]).toMatchObject(expected); // 失敗した起動回は状態を上書きしない
+        expect(fakeHelpers.calls[1]).toMatchObject(expected);
         expect(fakeHelpers.calls[2]).toMatchObject(expected);
         expect(fakeHelpers.calls[3]).toMatchObject(expected);
       }));
@@ -2015,7 +1980,7 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
           { unexpectedExit: { afterMs: 500, exit: { code: 1, signal: null } } },
           { connect: false, stderrTail: ["失敗2"] },
           { connect: false, stderrTail: ["失敗3"] },
-          {}, // resume
+          {},
         ]);
         yield* sessions.start(start());
         fakeHelpers.send(0, stateEvent("none", "unknown", "idle", 3));
@@ -2063,7 +2028,7 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
         fakeHelpers.send(0, { type: "speaker-off", start: 9, reason: "途中で停止" });
         yield* TestClock.adjust(1);
 
-        expect(fakeSinks.appended).toEqual([]); // 話者の記録は appendLog 経由ではなく sink.speaker 経由の 1 経路だけ
+        expect(fakeSinks.appended).toEqual([]);
         expect(fakeSinks.speakers).toEqual([
           { type: "speaker", track: "相手", start: 1.5, end: 2.5, slot: 2, final: false },
           { type: "speaker", track: "相手", start: 0, end: 1.5, slot: 0, final: true },
@@ -2074,7 +2039,6 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
         expect((yield* sessions.status).status).toBe("running");
       }));
 
-    // Issue #1025: 起動し直すたびに Sortformer の枠は振り直される。sink へは、新しいヘルパーのイベントより前に 1 回だけ知らせる
     it.effect("speaker-centroid は届いた値のまま、届いた順に sink.speaker へ渡る。差分更新・appendLog には載らない", () =>
       Effect.gen(function* () {
         const { fakeHelpers, fakeSinks, sessions } = yield* boot([{}]);
@@ -2101,7 +2065,7 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
         yield* TestClock.adjust(1);
         expect(fakeSinks.speakerCalls).toEqual(["speaker:speaker"]);
 
-        yield* TestClock.adjust(500); // 構成の変化（75）による終了: 待たずに起動し直す
+        yield* TestClock.adjust(500);
         yield* TestClock.adjust(10);
         expect(fakeHelpers.calls).toHaveLength(2);
         fakeHelpers.send(1, { type: "speaker", track: "相手", start: 2, end: 3, slot: 0, final: true });
@@ -2147,13 +2111,12 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
         expect(fakeSinks.speakerCalls).toEqual(["renumbered"]);
       }));
 
-    // Issue #1021: 枠とラベルの対応は SessionSink が 1 つだけ持つ。ヘルパーを起動し直しても、同じ sink へ届ける（セッションの寿命で 1 つ）
     it.effect("ヘルパーを起動し直した後の speaker・speaker-off も、起動し直す前と同じ sink（開いたのは 1 回）へ届く", () =>
       Effect.gen(function* () {
         const { fakeHelpers, fakeSinks, sessions } = yield* boot([{ unexpectedExit: { afterMs: 500, exit: { code: 75, signal: null } } }, {}]);
         yield* sessions.start(start());
         fakeHelpers.send(0, { type: "speaker", track: "相手", start: 0, end: 1, slot: 2, final: true });
-        yield* TestClock.adjust(500); // 構成の変化（75）による終了: 待たずに起動し直す
+        yield* TestClock.adjust(500);
         yield* TestClock.adjust(10);
         expect(fakeHelpers.calls).toHaveLength(2);
         fakeHelpers.send(1, { type: "origin", hostTime: "2" });
@@ -2203,7 +2166,7 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
   });
 
   describe("共有画面を使わない（screen-off・screen:false。Issue #280）", () => {
-    const NOTICE_MS = 10_000; // 「届いてから約 10 秒」
+    const NOTICE_MS = 10_000;
     const boot = (attempts: AttemptScript[]) =>
       Effect.gen(function* () {
         const fakeHelpers = yield* makeFakeHelpers(attempts);
@@ -2215,10 +2178,10 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
     it.effect("screen:false は初回・自動の起動し直し・resume のすべての起動オプションで screen:false を渡す", () =>
       Effect.gen(function* () {
         const { fakeHelpers, sessions } = yield* boot([
-          { unexpectedExit: { afterMs: 5, exit: { code: 1, signal: null } } }, // 初回。すぐ終わる
-          { connect: false, stderrTail: ["失敗2"] }, // 自動の起動し直し
-          { connect: false, stderrTail: ["失敗3"] }, // 自動の起動し直し。ここで諦める
-          {}, // resume
+          { unexpectedExit: { afterMs: 5, exit: { code: 1, signal: null } } },
+          { connect: false, stderrTail: ["失敗2"] },
+          { connect: false, stderrTail: ["失敗3"] },
+          {},
         ]);
         yield* sessions.start(start({ screen: false }));
         yield* TestClock.adjust(10);
@@ -2275,10 +2238,10 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
 
         yield* TestClock.adjust(10);
         yield* sessions.resume;
-        expect(fakeHelpers.calls).toHaveLength(4); // 起動し直しと resume が起きたうえで
+        expect(fakeHelpers.calls).toHaveLength(4);
         expect(fakeSinks.screenOffs).toEqual([{ start: 0, reason: "指定" }]);
         yield* TestClock.adjust(NOTICE_MS * 2);
-        expect(yield* watcher.screenNotices).toEqual([]); // 指定では知らせを出さない
+        expect(yield* watcher.screenNotices).toEqual([]);
       }));
 
     it.effect("screen:true（既定）のセッションは screen-off を残さない", () =>
@@ -2322,16 +2285,16 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
         expect(first[0]).toContain("共有画面は使っていません");
         expect(fakeSinks.screenOffs).toHaveLength(1);
 
-        yield* TestClock.adjust(500); // 予期しない終了
-        yield* TestClock.adjust(10); // 起動し直し
+        yield* TestClock.adjust(500);
+        yield* TestClock.adjust(10);
         expect(fakeHelpers.calls).toHaveLength(2);
         fakeHelpers.send(1, { type: "screen-off", start: 0.5, reason: "許可なし" });
         fakeHelpers.send(1, { type: "remark", track: "相手", start: 0, end: 1, text: "再開後" });
         yield* TestClock.adjust(1);
 
         expect(fakeSinks.screenOffs).toEqual([{ start: 1, reason: "許可なし" }, { start: 0.5, reason: "許可なし" }]);
-        expect(yield* watcher.screenNotices).toEqual([]); // 一文は出し直さない
-        expect(fakeSinks.finals).toContainEqual({ id: "r1", track: "相手", text: "再開後" }); // 発言は流れ続ける
+        expect(yield* watcher.screenNotices).toEqual([]);
+        expect(fakeSinks.finals).toContainEqual({ id: "r1", track: "相手", text: "再開後" });
         expect((yield* sessions.status).status).toBe("running");
       }));
 
@@ -2346,19 +2309,19 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
         expect((yield* early.screenNotices).map((t) => t !== null)).toEqual([true]);
 
         yield* TestClock.adjust(NOTICE_MS - 2_000);
-        const within = yield* viewerClient(); // 10 秒以内につないだブラウザには送り直す
+        const within = yield* viewerClient();
         yield* Effect.forkChild(viewers.connect(within.socket));
         const seen = yield* within.screenNotices;
         expect(seen).toHaveLength(1);
         expect(seen[0]).toContain("共有画面は使っていません");
 
         yield* TestClock.adjust(2_000 + 1);
-        expect(yield* early.screenNotices).toEqual([null]); // 消すフレーム
+        expect(yield* early.screenNotices).toEqual([null]);
         expect(yield* within.screenNotices).toEqual([null]);
 
         const late = yield* viewerClient();
         yield* Effect.forkChild(viewers.connect(late.socket));
-        expect(yield* late.screenNotices).toEqual([null]); // 期限後は再び出さない
+        expect(yield* late.screenNotices).toEqual([null]);
       }));
 
     it.effect("10 秒たった後に起動し直しで screen-off がまた届いても、一文は出し直さない", () =>
@@ -2390,8 +2353,8 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
           yield* Effect.forkChild(viewers.connect(watcher.socket));
           yield* sessions.start(start());
 
-          fakeHelpers.send(0, { type: "screen-off", start: 1, reason: "指定" }); // reason はヘルパーが流さない値
-          fakeHelpers.send(0, { type: "screen-off", reason: "許可なし" }); // start が無い
+          fakeHelpers.send(0, { type: "screen-off", start: 1, reason: "指定" });
+          fakeHelpers.send(0, { type: "screen-off", reason: "許可なし" });
           fakeHelpers.send(0, { type: "remark", track: "相手", start: 0, end: 1, text: "つづく" });
           yield* TestClock.adjust(1);
 
@@ -2429,7 +2392,7 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
         yield* TestClock.adjust(1);
 
         const stopFiber = yield* Effect.forkChild(sessions.stop);
-        yield* TestClock.adjust(10); // ヘルパーの停止の待ちに入る
+        yield* TestClock.adjust(10);
         yield* Fiber.interrupt(stopFiber);
         yield* TestClock.adjust(1_000);
 
@@ -2437,7 +2400,7 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
         expect(fakeSinks.ends).toEqual(["入れ切る"]);
         expect(fakeSinks.finals).toContainEqual({ id: "r1", track: "相手", text: "ぎりぎり" });
         expect((yield* sessions.status).status).toBe("none");
-        yield* sessions.start(start()); // idle に戻っているので続けて開始できる
+        yield* sessions.start(start());
       }));
 
     it.effect("サーバーの終了（serverScope を閉じる）による中断は維持される。書き出さずに閉じ、stop の呼び出し側も中断で終わる", () =>
@@ -2474,7 +2437,7 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
         yield* TestClock.adjust(10);
 
         expect(fakeSinks.relayStats.interrupted).toBeGreaterThan(0);
-        expect(fakeSinks.relayStats.stopped).toBe(0); // セッションはまだ続いている（stop の後だけ 1）
+        expect(fakeSinks.relayStats.stopped).toBe(0);
 
         yield* sessions.stop;
         expect(fakeSinks.relayStats.stopped).toBe(1);
@@ -2531,12 +2494,9 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
       }));
   });
 
-  // ヘルパーの終了コード 75（シグナルなし）は、マイクの入力の構成の変化（入力の機器の切り替えなど）による終了。
-  // 失敗の連続には数えず、別の歯止め（60 秒に 10 回を超えたら諦める）で数える。
   describe("構成の変化による終了（終了コード 75）は諦める回数に数えない", () => {
     const configChange = (afterMs = 500): AttemptScript => ({ unexpectedExit: { afterMs, exit: { code: 75, signal: null } } });
     const repeat = <T>(n: number, value: T): T[] => Array.from({ length: n }, () => value);
-    // 終了が 1 回起きて、起動し直しのループが次の launch まで進むための時間（時計は 500ms 進めたあとに少し進める）
     const cycle = Effect.gen(function* () {
       yield* TestClock.adjust(500);
       yield* TestClock.adjust(10);
@@ -2550,7 +2510,7 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
         yield* sessions.start(start());
         const client = yield* viewerClient();
         yield* Effect.forkChild(viewers.connect(client.socket));
-        yield* client.intakeStatuses; // 接続時のスナップショットの状態を読み捨てる
+        yield* client.intakeStatuses;
 
         yield* cycle;
 
@@ -2582,13 +2542,13 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
       Effect.gen(function* () {
         const fakeHelpers = yield* makeFakeHelpers([
           { unexpectedExit: { afterMs: 500, exit: { code: null, signal: "SIGKILL" } } },
-          { connect: true }, // 2 回目は接続するが、台本内でまだ events を送らない＝起動し直しの最中とみなす
+          { connect: true },
         ]);
         const fakeSinks = yield* makeFakeSessionSinks();
         const { sessions } = yield* bootSessions(Layer.succeed(Helpers)(fakeHelpers.helpers), Layer.succeed(SessionSinks)(fakeSinks.sinks));
         yield* sessions.start(start());
         yield* TestClock.adjust(500);
-        yield* TestClock.adjust(10); // 2 回目の起動し直しが始まる
+        yield* TestClock.adjust(10);
 
         const result = yield* sessions.stop;
 
@@ -2623,7 +2583,7 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
         yield* sessions.stop;
         yield* TestClock.adjust(1_000);
 
-        expect(fakeHelpers.calls).toHaveLength(1); // stop による終了を、予期せぬ終了と誤認しない
+        expect(fakeHelpers.calls).toHaveLength(1);
       }));
   });
 
@@ -2731,7 +2691,7 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
           yield* sessions.start(start({ audio: true }));
           yield* TestClock.adjust(500);
           yield* TestClock.adjust(10);
-          expect(fakeHelpers.calls).toHaveLength(2); // 2 回目が接続待ちのまま
+          expect(fakeHelpers.calls).toHaveLength(2);
           expect(fakeHelpers.stops).toEqual([]);
 
           yield* sessions.stop;
@@ -2757,7 +2717,7 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
           yield* sessions.start(start({ audio: false }));
           yield* TestClock.adjust(500);
           yield* TestClock.adjust(10);
-          expect(fakeHelpers.calls).toHaveLength(2); // 2 回目が接続待ちのまま
+          expect(fakeHelpers.calls).toHaveLength(2);
           expect(fakeHelpers.stops).toEqual([]);
 
           yield* sessions.stop;
@@ -2780,7 +2740,7 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
           yield* sessions.start(start({ audio: true }));
           yield* TestClock.adjust(500);
           yield* TestClock.adjust(10);
-          expect(fakeHelpers.calls).toHaveLength(2); // 2 回目が接続待ちのまま
+          expect(fakeHelpers.calls).toHaveLength(2);
           expect(fakeHelpers.stops).toEqual([]);
 
           yield* sessions.stop;
@@ -2810,7 +2770,7 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
 
           const resumeFiber = yield* Effect.forkChild(Effect.exit(sessions.resume));
           yield* TestClock.adjust(10);
-          expect(fakeHelpers.calls).toHaveLength(4); // 4 回目が接続待ちのまま
+          expect(fakeHelpers.calls).toHaveLength(4);
           expect(fakeHelpers.stops).toEqual([]);
 
           yield* sessions.stop;
@@ -2868,10 +2828,10 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
         const { sessions } = yield* bootSessions(Layer.succeed(Helpers)(fakeHelpers.helpers), Layer.succeed(SessionSinks)(fakeSinks.sinks));
 
         yield* sessions.start(start());
-        expect(fakeHelpers.calls[0]?.kind === "run" ? fakeHelpers.calls[0].origin : "unexpected kind").toBeUndefined(); // 1 回目は、まだ原点を受け取る前に起動している
+        expect(fakeHelpers.calls[0]?.kind === "run" ? fakeHelpers.calls[0].origin : "unexpected kind").toBeUndefined();
         fakeHelpers.send(0, { type: "origin", hostTime: "9007199254740993" });
         yield* TestClock.adjust(1);
-        fakeHelpers.send(0, { type: "origin", hostTime: "1" }); // 2 回目以降は無視される（最初の値だけ採用）
+        fakeHelpers.send(0, { type: "origin", hostTime: "1" });
         yield* TestClock.adjust(1);
 
         yield* TestClock.adjust(500);
@@ -2892,7 +2852,7 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
         const { service } = collectingStderr();
         yield* Effect.gen(function* () {
           yield* sessions.start(start());
-          fakeHelpers.send(0, { type: "origin", hostTime: 123 }); // 壊れた形（number）
+          fakeHelpers.send(0, { type: "origin", hostTime: 123 });
           yield* TestClock.adjust(1);
 
           yield* TestClock.adjust(500);
@@ -2919,20 +2879,20 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
         yield* sessions.start(start());
         const running = yield* sessions.status;
         expect(running.status).toBe("running");
-        expect(running.dir).toBe("/tmp/live-mindmap-fake/1"); // cli status が出すセッションのフォルダ
+        expect(running.dir).toBe("/tmp/live-mindmap-fake/1");
         expect(running.restarts).toBe(0);
         expect(running.lastInterruptedAt).toBeUndefined();
 
         yield* TestClock.adjust(500);
         const interrupted = yield* sessions.status;
         expect(interrupted.status).toBe("interrupted");
-        expect(interrupted.lastInterruptedAt).toMatch(/^1970-01-01T00:00:00\.50[01]Z$/); // Clock（TestClock）の時刻を ISO 形式で書く
+        expect(interrupted.lastInterruptedAt).toMatch(/^1970-01-01T00:00:00\.50[01]Z$/);
 
         yield* TestClock.adjust(10);
         const stopped = yield* sessions.status;
         expect(stopped.status).toBe("stopped");
-        expect(stopped.dir).toBe("/tmp/live-mindmap-fake/1"); // 止まった後もセッションのフォルダは引き続き出る
-        expect(stopped.restarts).toBe(0); // 起動し直しに成功した回がない
+        expect(stopped.dir).toBe("/tmp/live-mindmap-fake/1");
+        expect(stopped.restarts).toBe(0);
         expect(stopped.lastInterruptedAt).toBe(interrupted.lastInterruptedAt);
       }));
 
@@ -2977,7 +2937,7 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
         if (Exit.isSuccess(result)) return;
         expect(Cause.squash(result.cause)).toBeInstanceOf(HelperExited);
         expect((yield* sessions.status).status).toBe("none");
-        expect(fakeSinks.opened).toMatchObject({ count: 0, closed: 0 }); // 開始の失敗では SessionSinks を開かない
+        expect(fakeSinks.opened).toMatchObject({ count: 0, closed: 0 });
       }));
   });
 
@@ -2994,10 +2954,10 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
         yield* sessions.start(start({ title: "1 つ目" }));
         const busy = yield* Effect.flip(sessions.start(start({ title: "2 つ目" })));
         expect(busy).toBeInstanceOf(SessionBusy);
-        expect(fakeHelpers.calls).toHaveLength(1); // 拒否された start はヘルパーを起動しない
+        expect(fakeHelpers.calls).toHaveLength(1);
         expect(fakeSinks.opened).toMatchObject({ count: 1, closed: 0 });
 
-        yield* sessions.stop; // 拒否された start の後でも、1 つ目のセッションを終了できる
+        yield* sessions.stop;
         yield* sessions.start(start({ title: "2 つ目" }));
         yield* sessions.stop;
         expect(fakeHelpers.calls).toHaveLength(2);
@@ -3041,20 +3001,19 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
         const before = yield* viewerClient();
         yield* Effect.forkChild(viewers.connect(before.socket));
         yield* sessions.start(start());
-        expect(yield* before.intakeStatuses).toEqual([]); // 動いている間は状態のフレームを送らない
+        expect(yield* before.intakeStatuses).toEqual([]);
 
         yield* TestClock.adjust(500);
         expect((yield* before.intakeStatuses).at(-1)).toBe("interrupted");
         const during = yield* viewerClient();
         yield* Effect.forkChild(viewers.connect(during.socket));
-        expect((yield* during.intakeStatuses).at(-1)).toBe("interrupted"); // 途中から接続しても、今の状態が届く
+        expect((yield* during.intakeStatuses).at(-1)).toBe("interrupted");
 
         yield* TestClock.adjust(10);
         expect((yield* before.intakeStatuses).at(-1)).toBe("stopped");
         expect((yield* during.intakeStatuses).at(-1)).toBe("stopped");
 
         yield* sessions.stop;
-        // "running" ではなく "none"。"running" だと、直前が stopped だったクライアントが「再開した」と解釈する（CT-NOTICE-CLEAR）
         expect((yield* before.intakeStatuses).at(-1)).toBe("none");
         expect((yield* during.intakeStatuses).at(-1)).toBe("none");
 
@@ -3064,7 +3023,6 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
       }));
   });
 
-  // base の server.heavy.test.ts の移動先のうち、偽の Helpers・SessionSinks と TestClock で観測できる残りの条件
   describe("セッションの中身の寿命・起動し直しをまたぐ連続性・ログ（base server.heavy.test.ts の移動先）", () => {
 
     it.effect("録音先は、SessionSinks が作ったセッションのフォルダで、起動し直しでも変わらない（base:733）", () =>
@@ -3077,7 +3035,7 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
         yield* TestClock.adjust(10);
 
         expect(fakeHelpers.calls[0]).toMatchObject({ kind: "run", audio: { dir: "/tmp/live-mindmap-fake/1" } });
-        expect(fakeHelpers.calls[1]).toMatchObject({ kind: "run", audio: { dir: "/tmp/live-mindmap-fake/1" } }); // フォルダは増えない（base:848）
+        expect(fakeHelpers.calls[1]).toMatchObject({ kind: "run", audio: { dir: "/tmp/live-mindmap-fake/1" } });
       }));
 
     it.effect("起動し直しをまたいで、SessionSinks は開き直さず、発言の ID は連番で、接続中のクライアントに running のフレームが届く（base:848, 900）", () =>
@@ -3103,7 +3061,7 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
           { id: "r2", track: "自分", text: "前の回 2" },
           { id: "r3", track: "相手", text: "後の回" },
         ]);
-        expect(fakeSinks.opened).toMatchObject({ count: 1, closed: 0 }); // 起動し直しで開き直さず、閉じない
+        expect(fakeSinks.opened).toMatchObject({ count: 1, closed: 0 });
         expect(yield* client.intakeStatuses).toEqual(["interrupted", "running"]);
       }));
 
@@ -3130,7 +3088,7 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
         yield* TestClock.adjust(500);
         yield* TestClock.adjust(10);
 
-        expect(fakeHelpers.calls).toHaveLength(2); // 2 回目が接続待ちのまま
+        expect(fakeHelpers.calls).toHaveLength(2);
         expect(fakeHelpers.stops).not.toContain(1);
 
         yield* closeServer();

@@ -86,11 +86,6 @@ it.each([false, true])("堂々巡りの通知は初回と継続受信から画�
   );
 });
 
-// 会議中の Foldkit プログラム（Issue #829）の Scene。描いた view から入り、`/ws` の frame（描いた木の外から届くので Subscription.emit で流す）が、
-// 最初のスナップショットまでの待ち表示・画面の並び・知らせ・字幕・マップ・右の列・キーまで届くことを、同じ画面（1 つの Model）の上の続きで見る。
-// 並び・class・文言は React の SessionView（.layout の直下: ローカルモード → .map → 字幕 → 取り込み → 共有画面 → 相手の音声 → 差分更新 → .side）と同じ。
-// マップの動き（ビューポート・選択・補間）は、live の表示面（MapSurface）に同じ Message を流した結果と、描いた木が一致することで見る（動きの中身は mapSurface の Story・Scene が見る）。
-
 const WAITING = "サーバーを待っています";
 const NOTICE_CLASSES = ["intake-notice", "screen-notice", "tap-notice", "diff-update-notice", "self-pause-notice", "local-mode-notice", "local-mode-line"];
 
@@ -347,7 +342,6 @@ describe("会議中の Scene: 取り込みの知らせ（途切れ → 再開し
       intake("interrupted"),
       intake("running"),
       tap((sim) => expect(timers(sim)).toHaveLength(1)),
-      // 次の流しの前に、先のタイマーは閉じられる。同じ running をもう一度受けても、新しいタイマーは増えない
       intake("running"),
       tap((sim) => expect(timers(sim)).toHaveLength(0)),
       expectScene(selector(".intake-notice")).toHaveText(RESUMED),
@@ -376,7 +370,6 @@ describe("会議中の Scene: 自分の休止（M・休止中の一言）", () =
     );
   });
 
-  // Issue #1071: 理由で一言が変わる。同じ画面（同じ Model）の上で、手動 → 自動 → 再開 → 自動と続けて観測する
   it("休止の理由で一言の文言が変わる。休止中に理由だけ変わっても、一言は 1 つのまま置き換わり、再開で消える", () => {
     meetingScene(init(false),
       snapshotFrame(FIRST),
@@ -556,7 +549,6 @@ describe("会議中の Scene: 切れる・つなぎ直すをまたいで、同�
       frame({ type: "diff-update", state: PAUSED }),
       frame({ type: "session-mode", local: true }),
       settle,
-      // 変わったことの項目を押して A を選ぶ（この選択が、切断・再接続をまたいで残る）
       click(selector("button.changes__button")),
       settle,
       tap((sim) => {
@@ -570,7 +562,6 @@ describe("会議中の Scene: 切れる・つなぎ直すをまたいで、同�
         expect(findAll(sim.html, ".tap-notice")).toHaveLength(0);
         expect(findAll(sim.html, ".local-mode-notice")).toHaveLength(0);
         expect(findAll(sim.html, ".layout--local")).toHaveLength(0);
-        // 残るもの
         expect(texts(sim.html, ".captions__bubble")).toEqual(["途中の字幕。"]);
         expect(texts(sim.html, ".intake-notice")).toEqual([INTERRUPTED]);
         expect(texts(sim.html, ".diff-update-notice")).toEqual([PAUSED_TEXT]);
@@ -583,12 +574,10 @@ describe("会議中の Scene: 切れる・つなぎ直すをまたいで、同�
       connected(),
       settle,
       tap((sim) => {
-        // つなぎ直しで字幕は空に戻り、取り込みの知らせは「動いている」を作り出さずに保たれる
         expect(findAll(sim.html, ".captions")).toHaveLength(0);
         expect(texts(sim.html, ".intake-notice")).toEqual([INTERRUPTED]);
         expect(selectedIds(sim.html)).toEqual(["A"]);
       }),
-      // server が、つないだら保持している値を先に送り直す
       snapshotFrame(FIRST),
       frame({ type: "screen-notice", text: SCREEN }),
       frame({ type: "session-mode", local: true }),
@@ -599,7 +588,6 @@ describe("会議中の Scene: 切れる・つなぎ直すをまたいで、同�
         expect(texts(sim.html, ".captions__bubble")).toEqual(["つなぎ直した後の字幕。"]);
         expect(findAll(sim.html, ".layout--local")).toHaveLength(1);
         expect(texts(sim.html, ".intake-notice")).toEqual([INTERRUPTED]);
-        // 表示面は作り直さない: 選択もビューポートも同じ
         expect(selectedIds(sim.html)).toEqual(["A"]);
         const r = matchesReference(sim.html, reference);
         expect(r.selected).toEqual(r.expectedSelected);
@@ -658,7 +646,6 @@ describe("会議中の Scene: 反映（新しいスナップショット）で�
       snapshotFrame(FIRST),
       settle,
       tap((sim) => expect(commandNames(sim)).toEqual([])),
-      // 人が選んで拡大した状態（manual）にしてから反映を受ける
       click(selector("button.changes__button")),
       settle,
       press("="),
@@ -673,7 +660,6 @@ describe("会議中の Scene: 反映（新しいスナップショット）で�
       }),
       snapshotFrameRaw(SECOND),
       tap((sim) => {
-        // 反映で、点滅を最初から再生し直す Command が出る（測定済みで、反映の番号が変わり、変わったノードがあるため）
         expect(commandNames(sim)).toContain("RestartBlink");
       }),
       settle,
@@ -682,7 +668,6 @@ describe("会議中の Scene: 反映（新しいスナップショット）で�
         reference = referenceUpdate(reference, MapSurfaceMessage.ChangedSnapshot({ snapshot: SECOND }));
         expect(renderedIds(sim.html)).toEqual(["root", "A", "A1", "B"]);
         expect(texts(sim.html, ".changes__item")).toHaveLength(SECOND.changes.length);
-        // 選択も、止めたカメラも、表示面の反映（changedSnapshot）の結果と同じ
         const r = matchesReference(sim.html, reference);
         expect(r.selected).toEqual(r.expectedSelected);
         expect(r.selected).toEqual(["A"]);
@@ -882,7 +867,6 @@ describe("会議中の Scene: キー（会議中の行だけ。見返しのキ�
         expect(findAll(one(sim.html, ".layout"), ".side .key-list")).toHaveLength(0);
       }),
       press("?"),
-      // 閉じると、キーの一覧の Mount が外れる
       Mount.expectEnded(Popover.AnchorPopover),
       expectScene(selector(".key-list")).toBeAbsent(),
     );
@@ -991,12 +975,10 @@ describe("会議中の Scene: 自動のカメラは、スナップショット�
       MapSurfaceMessage.MeasuredMapSurface({ width: 1100, height: 600, nodeHeights: HEIGHTS }),
     );
   const NO_TOPIC_NEXT: Snapshot = { ...NO_TOPIC, round: 2 };
-  // 測定・補間を終え、E で右の列を隠して幅を測り直した、自動の見る状態の画面
   const remeasured = [
     snapshotFrame(NO_TOPIC),
     settle,
     surface(MapSurfaceMessage.TickedAnimationFrame({ deltaMs: 2000 })),
-    // 測り直した後は settle しない（settle は保留の Mount を最初の測定（800 の幅）で解き直してしまう）
     raw(press("E")),
     raw(surface(MapSurfaceMessage.MeasuredMapSurface({ width: 1100, height: 600, nodeHeights: HEIGHTS }))),
   ] as const;
@@ -1042,10 +1024,8 @@ describe("会議中の Scene: 題材の前提", () => {
   });
 });
 
-// Issue #1026: 話者の名前。名前の表は /ws の speaker-names の frame でだけ変わる。同じ画面（1 つの Model）の上で 前 → frame → 後 を続けて見る。
 describe("会議中の Scene: 話者の名前（Issue #1026）", () => {
   const node = (id: string, parent: string | null, kind: Exclude<Snapshot["nodes"][number]["kind"], "補足">, text: string, extra: Partial<Exclude<Snapshot["nodes"][number], { kind: "補足" }>> = {}): Snapshot["nodes"][number] => ({ id, parent, kind, text, evidence: [], ...extra });
-  // 案 A1 は相手 A が出し、TODO B は相手 B が担当（期限 10/15）。高さの分かるノード id（HEIGHTS）だけを使う
   const PEOPLE: Snapshot = {
     nodes: [node("root", null, "会議", "定例"), node("A", "root", "議題", "採用"), node("A1", "A", "案", "週 1", { proposer: "相手 A" }), node("B", "root", "TODO", "見積もり", { assigneeSpeaker: "相手 B", due: "10/15" })],
     round: 1,
@@ -1060,7 +1040,7 @@ describe("会議中の Scene: 話者の名前（Issue #1026）", () => {
   const names = (...rows: Array<[string, string]>) => frame({ type: "speaker-names", names: rows.map(([label, name]) => ({ label, name })) });
   const captionNames = (sim: Sim) => texts(sim.html, ".captions__name");
   const personLines = (sim: Sim) => [texts(sim.html, '[data-node-id="A1"] .map-node__person'), texts(sim.html, '[data-node-id="B"] .map-node__person')];
-  const todoAssignees = (sim: Sim) => texts(sim.html, ".todos__assignee"); // 右の列の TODO の段（Issue #1287）
+  const todoAssignees = (sim: Sim) => texts(sim.html, ".todos__assignee");
 
   it("名前が付くと、それまでの字幕の名前の欄・案の出した人・TODO の担当者が、次のスナップショットを待たずに名前になる。同じ名前を 2 つのラベルに付けても別のラベルのまま。空の表でラベルに戻る", () => {
     meetingScene(init(false),
@@ -1079,7 +1059,7 @@ describe("会議中の Scene: 話者の名前（Issue #1026）", () => {
       }),
       names(["相手 A", "田中"], ["相手 B", "田中"]),
       tap((sim) => {
-        expect(captionNames(sim)).toEqual(["田中", "田中"]); // 別のラベルの吹き出しは、同じ名前でも両方に出る
+        expect(captionNames(sim)).toEqual(["田中", "田中"]);
         expect(personLines(sim)).toEqual([["— 田中"], ["→ 田中 · 10/15"]]);
         expect(todoAssignees(sim)).toEqual(["田中"]);
       }),
@@ -1103,20 +1083,19 @@ describe("会議中の Scene: 話者の名前（Issue #1026）", () => {
     );
   });
 
-  // 見せる吹き出しは末尾の 3 個。押せる欄の数は、見せている吹き出しの中で数える
   it("確定した相手のラベルの欄だけが押せる要素。自分の欄・同じ人が続く欄は押せない", () => {
     meetingScene(init(false),
       snapshotFrame(PEOPLE),
       heard(said("a1", "相手 A", 1), said("a2", "相手 A", 2), mine),
       tap((sim) => {
         expect(captionNames(sim)).toEqual(["相手 A", "", ""]);
-        expect(findAll(sim.html, "button.captions__name")).toHaveLength(1); // 押せるのは先頭の 相手 A だけ
+        expect(findAll(sim.html, "button.captions__name")).toHaveLength(1);
         expect(findAll(sim.html, ".captions__name")).toHaveLength(3);
       }),
       heard(said("a2", "相手 A", 2), mine, said("b", "相手 B", 4)),
       tap((sim) => {
         expect(captionNames(sim)).toEqual(["相手 A", "", "相手 B"]);
-        expect(findAll(sim.html, "button.captions__name")).toHaveLength(2); // 押せるのは 相手 A と 相手 B の 2 つ
+        expect(findAll(sim.html, "button.captions__name")).toHaveLength(2);
         expect(findAll(sim.html, ".captions__name")).toHaveLength(3);
       }),
     );
@@ -1126,8 +1105,8 @@ describe("会議中の Scene: 話者の名前（Issue #1026）", () => {
     meetingScene(init(false),
       snapshotFrame(PEOPLE),
       heard(said("a", "相手 A", 1), said("b", "相手 B", 2), mine),
-      click(selector("button.captions__name")), // 先頭の押せる欄 = 相手 A
-      settle, // 入力へのフォーカスの Command を解く
+      click(selector("button.captions__name")),
+      settle,
       tap((sim) => {
         expect(findAll(sim.html, ".captions__name input")).toHaveLength(1);
         expect(speakerNameRequests(sim)).toEqual([]);
@@ -1136,8 +1115,8 @@ describe("会議中の Scene: 話者の名前（Issue #1026）", () => {
       submit(selector(".captions form")),
       tap((sim) => {
         expect(speakerNameRequests(sim)).toEqual([{ label: "相手 A", name: "田中" }]);
-        expect(findAll(sim.html, ".captions input")).toHaveLength(0); // 送った後は入力を閉じる
-        expect(captionNames(sim)).toEqual(["相手 A", "相手 B", ""]); // まだ名前は出ない
+        expect(findAll(sim.html, ".captions input")).toHaveLength(0);
+        expect(captionNames(sim)).toEqual(["相手 A", "相手 B", ""]);
       }),
       settle,
       names(["相手 A", "田中"]),

@@ -6,7 +6,6 @@ import { Effect } from "effect";
 import { InvalidTruthFile, readScreenTruthFile, readTextFile, readTruthFile } from "../src/truthFile.ts";
 import { temporaryDirectory } from "./benchRun.ts";
 
-// 読み込みの下地。失敗は文字列ではなく PlatformError で表し、呼び出し側が自分のタグ付きの失敗に包む
 describe("readTextFile", () => {
   it.effect("読めたら中身の文字列を返す", () => Effect.gen(function* () {
     const dir = yield* temporaryDirectory;
@@ -22,7 +21,6 @@ describe("readTextFile", () => {
   }).pipe(Effect.scoped, Effect.provide(NodeFileSystem.layer)));
 });
 
-// cli の eval --truth と bench の sttReplay --truth が共有する、正解ファイルの読み込み
 describe("正解ファイルを読む（cli と bench の共有）", () => {
   it.effect("正しいファイルは Truth として読める", () => Effect.gen(function* () {
     const dir = yield* temporaryDirectory;
@@ -87,7 +85,6 @@ describe("正解ファイルを読む（cli と bench の共有）", () => {
   }).pipe(Effect.scoped, Effect.provide(NodeFileSystem.layer)));
 });
 
-// cli の eval --screen-truth が使う、共有画面の正解ファイルの読み込み
 describe("共有画面の正解ファイルを読む", () => {
   const point = { from: 1, to: 2, keywords: ["求人"] };
 

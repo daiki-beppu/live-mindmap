@@ -3,7 +3,6 @@ import type { Op, Remark } from "../src/core/index.ts";
 import { earliestRemark } from "../src/core/index.ts";
 import { attributePeople } from "../src/core/people.ts";
 
-// 発言の表（id → 発言）。ID の順と開始時刻の順をわざとずらす（r3 がいちばん早い）
 const remark = (id: string, start: number, extra: Partial<Remark> = {}): Remark => ({ id, track: "相手", start, end: start + 1, text: "発言", ...extra });
 const table = (...remarks: Remark[]): ReadonlyMap<string, Remark> => new Map(remarks.map((r) => [r.id, r]));
 
@@ -11,9 +10,9 @@ const remarks = table(
   remark("r1", 10, { speaker: "相手 A" }),
   remark("r2", 20, { speaker: "相手 B" }),
   remark("r3", 5, { speaker: "相手 C" }),
-  remark("r4", 30), // 話者なしの相手
-  remark("r5", 40, { track: "自分" }), // 話者なしの自分のトラック
-  remark("r6", 5, { speaker: "相手 D" }), // r3 と同じ開始時刻
+  remark("r4", 30),
+  remark("r5", 40, { track: "自分" }),
+  remark("r6", 5, { speaker: "相手 D" }),
 );
 
 const addPlan = (evidence: string[], extra: Partial<Extract<Op, { op: "add" }>> = {}): Op => ({ op: "add", ref: "t1", parent: "root", kind: "案", text: "案", evidence, ...extra });

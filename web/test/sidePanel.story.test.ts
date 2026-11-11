@@ -10,16 +10,11 @@ import { layout } from "../src/layout.ts";
 import { INITIAL_VIEWING, reduceViewing, type ViewingEvent, type ViewingState, type VisibleTree } from "../src/viewing.ts";
 import { foldingActions } from "./foldingActions.ts";
 
-// 右の列（Issue #821）の update。変わったことの項目を押した事実が、見る状態（選んだノード・開いた祖先）とビューポートを、今の画面（SessionView の point）と同じにすること、
-// 右の列の出す・隠すが見る状態の sideHidden だけを変えることを見る。期待値は、純粋な関数（reduceViewing・camera.ts）を直接呼んだ値と、手で書いた値。
-// カメラの指示は update の中でその場でビューポートに当たる（Issue #819）ので、指示そのものではなく、外から見える viewport で確かめる
-
 type MapSurfaceModel = typeof Model.Type;
 
 const node = (id: string, parent: string | null, kind: Exclude<SnapshotNode["kind"], "補足"> = "議題", extra: Partial<Exclude<SnapshotNode, { kind: "補足" }>> = {}): Exclude<SnapshotNode, { kind: "補足" }> => ({ id, parent, kind, text: id, evidence: parent ? ["r1"] : [], ...extra });
 const snap = (nodes: SnapshotNode[], extra: Partial<Snapshot> = {}): Snapshot => ({ nodes, round: 3, changes: [], remarks: [], ...extra });
 
-// 済みの議題 A（論点 A1 を持つ）は畳まれ、話し中の今の議題 B は畳まれない
 const single = (): Snapshot =>
   snap([node("root", null, "会議"), node("A", "root", "議題", { talkStatus: "済み" }), node("A1", "A", "論点", { pointStatus: "未決" }), node("B", "root", "議題")], { currentTopic: "B", now: 100 });
 const HEIGHTS = { root: 40, A: 50, A1: 60, B: 70 };
@@ -32,13 +27,11 @@ const measuredModel = (snapshot: Snapshot, viewing: ViewingState = INITIAL_VIEWI
   viewing,
   camera: { ...initialCamera(), ...camera },
 });
-// 更新後の見る状態で見せるノードを、実寸の高さで並べた目標の位置から、ノード id の箱を測って寄せた位置（倍率は今のまま）
 const focusedOn = (m: MapSurfaceModel, id: string, zoom: number): Viewport => {
   const shown = foldView(m.snapshot, Option.getOrUndefined(m.viewing.humanFolds), Option.getOrUndefined(m.viewing.selection)?.id ?? null).nodes;
   const dims = Object.fromEntries(Object.entries(HEIGHTS).map(([k, height]) => [k, { height }]));
   return nodeFocusViewport(nodeRect(id, layout(shown, HEIGHTS), dims), zoom, Option.getOrThrow(m.size));
 };
-// 自動のカメラが今の議題へ寄せた位置（話し中の議題 B）
 const focusBoxes = (m: MapSurfaceModel): { rects: Rect[]; center: Rect } => {
   const view = foldView(m.snapshot, Option.getOrUndefined(m.viewing.humanFolds), Option.getOrUndefined(m.viewing.selection)?.id ?? null);
   const focus = cameraFocus(m.snapshot)!;
@@ -60,7 +53,6 @@ const differs = (a: Viewport, b: Viewport) => Math.abs(a.x - b.x) + Math.abs(a.y
 const clickChange = (nodeId: string) => message(Message.ClickedChangeItem({ nodeId }));
 const toggleSide = (isOpen: boolean) => message(Message.ToggledSide({ isOpen }));
 
-// pointChange は実際の表示を渡し、select と side は同じ reducer を使う。
 const reduced = (state: ViewingState, event: ViewingEvent, snapshot: Snapshot) => {
   const fold = foldView(snapshot, Option.getOrUndefined(state.humanFolds), Option.getOrUndefined(state.selection)?.id ?? null);
   const tree: VisibleTree = { ids: fold.nodes.map((n) => n.id), targets: {}, parents: Object.fromEntries(fold.nodes.map((n) => [n.id, n.parent])), fold, currentTopic: snapshot.currentTopic };
@@ -134,7 +126,6 @@ describe("mapSurface の update: 変わったことの項目を押す（reduceVi
         expect(m.viewing).toEqual(expected.state);
         expect(m.viewing).toEqual({ ...INITIAL_VIEWING, selection: Option.some({ id: "gone", byKey: false }) });
         expect(m.camera.mode).toBe("auto");
-        // mode が auto のままなので、自動のカメラが今の議題へ寄せる（消えたノードへは寄らない）
         expectViewport(m.camera.viewport, autoFocused(m));
       }),
     );
@@ -177,7 +168,6 @@ describe("mapSurface の update: 変わったことの項目を押す（reduceVi
       clickChange("gone"),
       model((m) => {
         expect(m.viewing.selection).toEqual(Option.some({ id: "gone", byKey: false }));
-        // 手動のまま（select は mode を変えない）なので、消えたノードへは寄らず、B へ寄せた位置のまま
         expect(m.camera.mode).toBe("manual");
         expectViewport(m.camera.viewport, atB!);
       }),
@@ -302,7 +292,6 @@ describe("mapSurface の update: 右の列の出す・隠す（reduceViewing の
     const hidden: MapSurfaceModel = { ...measuredModel(snapshot, { ...INITIAL_VIEWING, sideHidden: true }), camera: { ...initialCamera(), viewport: { x: 100, y: 0, zoom: 1 } } };
     const narrow = { width: 300, height: 600 };
     const expected = shiftIntoView(hidden.camera.viewport, focusBoxes(hidden).rects, narrow);
-    // 前提: ずらしの量が 0 でない
     expect(differs(expected, hidden.camera.viewport)).toBe(true);
     story(
       update,

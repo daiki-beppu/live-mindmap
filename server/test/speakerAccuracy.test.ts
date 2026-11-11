@@ -1,10 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
 import { assignSpeakers, assignOneToOne, computeDer, countUnsplit, groundTruthSpeaker, remarkLatency, scoreAttribution, tentativeChangeRate } from "../bench/speakerAccuracy.ts";
 
-// Issue #1031: Eval speakerAccuracy の計算（純関数）。
-// 正解の人の決め方、ラベルと人の 1 対 1 の対応、分類（正解 / 取り違え / 話者なし）、DER（collar 0.25 秒）、
-// 仮から確定で枠が替わった割合、切れなかった発言の数。CLI の出力と本文を出さないことは speakerAccuracy.it.test.ts。
-
 const truth = (speaker: string, start: number, end: number) => ({ speaker, start, end });
 const said = (start: number, end: number, speaker?: string, track: "相手" | "自分" = "相手") => ({ track, start, end, ...(speaker === undefined ? {} : { speaker }) });
 
@@ -99,7 +95,6 @@ describe("分類（正解 / 取り違え / 話者なし）", () => {
   });
 
   it("1 発言ごとに対応を取り直さない: 対応は会議全体で 1 つ。合計が最大の対応で数える（貪欲な対応は 正解 1・取り違え 2）", () => {
-    // 相手 X: 甲 3 秒 + 乙 2 秒、相手 Y: 甲 3 秒。X→乙・Y→甲（合計 5）が最大
     const input = {
       self: "森川",
       timeline: [truth("森川", 100, 101), truth("甲", 0, 3), truth("乙", 10, 12), truth("甲", 20, 23)],
@@ -211,7 +206,6 @@ describe("DER（collar 0.25 秒）", () => {
 });
 
 describe("仮のラベルが確定で替わった割合", () => {
-  // 仮のラベルは replayOffline が付ける（speakerReplay.test.ts で確かめる）。ここでは、ラベルの比較と分母の扱いを確かめる
   it("仮のラベルと確定のラベルが同じなら替わっていない。違えば替わった", () => {
     const result = tentativeChangeRate({
       remarks: [{ tentative: "相手 A", speaker: "相手 A" }, { tentative: "相手 B", speaker: "相手 A" }, { tentative: "相手 A", speaker: "相手 B" }],

@@ -128,7 +128,6 @@ struct AppleResponseValidationTests {
         return (sentences[0], repaired)
     }
 
-    // Issue #795: 文字列の終わりで `"` の代わりに `」` を出し、`}], ` まで文字列の中に書いた形
     @Test("「」}」から後ろを捨てて受理する")
     func repairsBrokenClosing() throws {
         let (sentence, repaired) = try repair(response(title: "題", sentences: [["種類": "説明", "text": "最初から試す」}], "]]))

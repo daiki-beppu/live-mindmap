@@ -143,7 +143,6 @@ describe("ライブの開始前の確かめ", () => {
   }).pipe(Effect.scoped));
 
   it.live("Issue #983: start --judge は知らない名前をサーバーへの要求より前に断り、鍵が無ければ server が 1 行知らせて判定なしで開始する", () => Effect.gen(function* () {
-    // 鍵は layer を作る server のプロセスで確かめる。名指ししない start は routed になる
     vi.stubEnv("TYPESAFE_AI_API_KEY", "");
     yield* Effect.addFinalizer(() => Effect.sync(() => vi.unstubAllEnvs()));
     const r = yield* resource(true);

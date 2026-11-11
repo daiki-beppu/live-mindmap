@@ -3,11 +3,6 @@ import Foundation
 import Testing
 @testable import HelperCore
 
-// 本物の WeSpeaker（FluidAudio 同梱の CoreML の声の埋め込み。Issue #1024）を使う。
-// モデルは helper/scripts/fetch-speaker-models.sh が Sortformer と同じ段で前もって取得する。会議中（prepare）には取りに行かない。
-// モデルが無い環境では prepare() が modelMissing で失敗し、テストも失敗する（環境の問題として報告する）。
-// 声は `say` の Kyoko（macOS 同梱の日本語の声）。処理する音声は短く保つ。
-
 private let sampleRate = 16_000.0
 
 private func synthesize(_ text: String, voice: String, in directory: URL) throws -> [Float] {

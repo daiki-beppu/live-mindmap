@@ -56,7 +56,6 @@ export function lockedPublishPage(sealed: Sealed): string {
     + `<script type="application/json" id="${SEALED_SCRIPT_ID}">${JSON.stringify(sealed).replaceAll("<", "\\u003c")}</script><script>${unlockPageScript()}</script></body></html>`;
 }
 
-// 文面を toString() で Worker に埋め込むので、外の名前を参照しない
 const isPastExpiryAt = (expiresAtMs: number, nowMs: number): boolean => expiresAtMs <= nowMs;
 
 export function publishWorkerScript(expiresAtMs: number): string {

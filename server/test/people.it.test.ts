@@ -11,9 +11,6 @@ import { SessionSinks } from "../src/sessionSinks.ts";
 import { fakeExportServices } from "./fixtures/exportServices.ts";
 import { trackedFileSystem } from "./fixtures/trackedFileSystem.ts";
 
-// Issue #1023: 実物の SessionSinks（話者のラベルを振る本物の仕組み）に、ヘルパーの speaker と発言を流し、
-// 偽の AI が台本どおりの操作を返す。案の出した人・TODO の担当の話者が、画面へ公開するスナップショットと log.jsonl に出ることを確かめる。
-
 const fileIo = trackedFileSystem();
 const { settle, settleUntil } = fileIo;
 const sinksLayer = (updaterLayer: Layer.Layer<DiffUpdater>) =>
@@ -23,7 +20,6 @@ const segment = (slot: number, start: number, end: number) => ({ type: "speaker"
 const settledAt = (to: number) => ({ type: "speaker-settled", track: "相手", to }) as const;
 const logEvents = (dir: string) => readFileSync(join(dir, "log.jsonl"), "utf8").split("\n").filter((l) => l !== "").map((l) => JSON.parse(l));
 
-// i 回目の差分更新の呼び出しに script[i] の操作を返す偽の AI。入力も記録する
 const scripted = (script: Op[][]) => {
   const calls: DiffInput[] = [];
   const updaterLayer = Layer.succeed(DiffUpdater, DiffUpdater.of({ update: (input) => Effect.sync(() => ({ ops: script[calls.push(input) - 1] ?? [] })) }));
@@ -33,19 +29,16 @@ const scripted = (script: Op[][]) => {
 describe("案の出した人と TODO の担当の話者（実物の SessionSinks + 偽の AI）", () => {
   it.effect("出した人は追加時の最初の根拠の話者になり、更新では変わらず、統合では早いほうが残る。log.jsonl と公開したスナップショットの両方に出る", () => {
     const { calls, updaterLayer } = scripted([
-      // 1 回目 r1（相手 A）: 論点と、r1 を根拠にした案、話者なしの自分のトラックの案は 3 回目
       [
-        { op: "add", ref: "t1", parent: "root", kind: "論点", text: "開催頻度", evidence: ["r1"] }, // n1
-        { op: "add", ref: "t2", parent: "t1", kind: "案", text: "週 1", evidence: ["r1"] }, // n2
+        { op: "add", ref: "t1", parent: "root", kind: "論点", text: "開催頻度", evidence: ["r1"] },
+        { op: "add", ref: "t2", parent: "t1", kind: "案", text: "週 1", evidence: ["r1"] },
       ],
-      // 2 回目 r2（相手 B）: 相手 B の案。前からある r1 を根拠に足す更新は出した人を変えない
       [
-        { op: "add", ref: "t3", parent: "n1", kind: "案", text: "月 1", evidence: ["r2"] }, // n3
+        { op: "add", ref: "t3", parent: "n1", kind: "案", text: "月 1", evidence: ["r2"] },
         { op: "update", node: "n3", evidence: ["r1"] },
       ],
-      // 3 回目 r3（自分）: 自分の案、統合（統合元 n3 は根拠の最も早い発言が r1 なので、統合先 n4 の r3 より早い）
       [
-        { op: "add", ref: "t4", parent: "n1", kind: "案", text: "隔週", evidence: ["r3"] }, // n4
+        { op: "add", ref: "t4", parent: "n1", kind: "案", text: "隔週", evidence: ["r3"] },
         { op: "combine", from: "n3", into: "n4" },
       ],
     ]);
@@ -60,18 +53,17 @@ describe("案の出した人と TODO の担当の話者（実物の SessionSinks
         yield* sink.final({ track, start, end: start + 2, text: `発言${n}です` });
         yield* settleUntil(() => logEvents(dir).filter((e) => e.type === "diff").length === n);
       });
-      yield* say(1, 5, 10); // 相手 A
-      yield* say(2, 6, 20); // 相手 B
+      yield* say(1, 5, 10);
+      yield* say(2, 6, 20);
       yield* say(3, 0, 30, "自分");
-      yield* settleUntil(() => published.at(-1)?.nodes.some((n) => n.id === "n4") === true); // 3 回目の反映（統合を含む）の公開を待つ
+      yield* settleUntil(() => published.at(-1)?.nodes.some((n) => n.id === "n4") === true);
       yield* settle;
 
       expect(calls).toHaveLength(3);
       const nodes = published.at(-1)!.nodes;
       const byId = (id: string) => nodes.find((n) => n.id === id);
       expect(byId("n2")?.proposer).toBe("相手 A");
-      expect(byId("n3")).toBeUndefined(); // 統合で消えた
-      // n3（相手 B の案。r1 を後から根拠に足したが、出した人は 相手 B のまま）が、n4（自分）に統合される。n3 の根拠 r1 のほうが早いので、統合先の出した人は n3 のもの
+      expect(byId("n3")).toBeUndefined();
       expect(byId("n4")?.proposer).toBe("相手 B");
       expect(byId("n4")?.evidence).toEqual(["r3", "r2", "r1"]);
 
@@ -102,10 +94,10 @@ describe("案の出した人と TODO の担当の話者（実物の SessionSinks
 
   it.effect("TODO の担当の話者: セッションにいる話者は担当者になり、いない話者は捨てる。名前があれば名前が優先。log.jsonl には検査後の値だけが残る", () => {
     const { updaterLayer } = scripted([[
-      { op: "add", ref: "t1", parent: "root", kind: "TODO", text: "いる話者", evidence: ["r1"], assigneeSpeaker: "相手 A" }, // n1
-      { op: "add", ref: "t2", parent: "root", kind: "TODO", text: "自分", evidence: ["r1"], assigneeSpeaker: "自分" }, // n2
-      { op: "add", ref: "t3", parent: "root", kind: "TODO", text: "いない話者", evidence: ["r1"], assigneeSpeaker: "相手 Z" }, // n3
-      { op: "add", ref: "t4", parent: "root", kind: "TODO", text: "名前優先", evidence: ["r1"], assignee: "田中", assigneeSpeaker: "相手 A" }, // n4
+      { op: "add", ref: "t1", parent: "root", kind: "TODO", text: "いる話者", evidence: ["r1"], assigneeSpeaker: "相手 A" },
+      { op: "add", ref: "t2", parent: "root", kind: "TODO", text: "自分", evidence: ["r1"], assigneeSpeaker: "自分" },
+      { op: "add", ref: "t3", parent: "root", kind: "TODO", text: "いない話者", evidence: ["r1"], assigneeSpeaker: "相手 Z" },
+      { op: "add", ref: "t4", parent: "root", kind: "TODO", text: "名前優先", evidence: ["r1"], assignee: "田中", assigneeSpeaker: "相手 A" },
     ]]);
     return Effect.scoped(Effect.gen(function* () {
       const sinks = yield* SessionSinks;
@@ -135,13 +127,12 @@ describe("案の出した人と TODO の担当の話者（実物の SessionSinks
   });
 });
 
-// Issue #1028: 書き出し（map.md・map.json）に人と名前が載る。偽の AI の台本で案・TODO を作り、本物の sink で名前を付けてから書き出す。
 describe("書き出しの話者と名前（実物の SessionSinks + 偽の AI）", () => {
   it.effect("map.md と map.json に出した人・担当の話者・名前が載り、名前は書き出しの時点の最後の名前になる", () => {
     const { updaterLayer } = scripted([
-      [{ op: "add", ref: "t1", parent: "root", kind: "案", text: "週 1", evidence: ["r1"] }], // n1: 相手 A の案
-      [{ op: "add", ref: "t2", parent: "root", kind: "TODO", text: "資料を送る", evidence: ["r2"], assigneeSpeaker: "相手 B", due: "10/15" }], // n2
-      [{ op: "add", ref: "t3", parent: "root", kind: "案", text: "隔週", evidence: ["r3"] }], // n3: 自分の案
+      [{ op: "add", ref: "t1", parent: "root", kind: "案", text: "週 1", evidence: ["r1"] }],
+      [{ op: "add", ref: "t2", parent: "root", kind: "TODO", text: "資料を送る", evidence: ["r2"], assigneeSpeaker: "相手 B", due: "10/15" }],
+      [{ op: "add", ref: "t3", parent: "root", kind: "案", text: "隔週", evidence: ["r3"] }],
     ]);
     return Effect.scoped(Effect.gen(function* () {
       const sinks = yield* SessionSinks;
@@ -153,14 +144,13 @@ describe("書き出しの話者と名前（実物の SessionSinks + 偽の AI）
         yield* sink.final({ track, start, end: start + 2, text: `発言${n}です` });
         yield* settleUntil(() => logEvents(dir).filter((e) => e.type === "diff").length === n);
       });
-      yield* say(1, 5, 10); // 相手 A
-      yield* say(2, 6, 20); // 相手 B
+      yield* say(1, 5, 10);
+      yield* say(2, 6, 20);
       yield* say(3, 0, 30, "自分");
       yield* settle;
       const md = () => readFileSync(join(dir, "map.md"), "utf8");
       const json = () => JSON.parse(readFileSync(join(dir, "map.json"), "utf8"));
 
-      // 名前を付ける前: ラベルで出る。json はラベルを持ち、対応表は無い
       const { writeOut } = yield* sink.end({ kind: "入れ切る" });
       yield* writeOut;
       expect(md()).toContain("- 週 1 — 相手 A（00:10）");
@@ -168,15 +158,13 @@ describe("書き出しの話者と名前（実物の SessionSinks + 偽の AI）
       expect(md()).toContain("- 資料を送る（担当：相手 B・期限：10/15）（00:20）");
       expect(json()).not.toHaveProperty("speakerNames");
 
-      // 相手 B に名前を付けてから書き出す（TODO は名前を付ける前にできている）
       yield* sink.nameSpeaker({ label: "相手 B", name: "田中" });
       yield* writeOut;
       expect(md()).toContain("- 資料を送る（担当：田中・期限：10/15）（00:20）");
-      expect(md().match(/資料を送る（担当：田中・期限：10\/15）（00:20）/g)).toHaveLength(2); // 冒頭の TODO 一覧とアウトライン
-      expect(md()).toContain("- 週 1 — 相手 A（00:10）"); // 名前の無いラベルはそのまま
+      expect(md().match(/資料を送る（担当：田中・期限：10\/15）（00:20）/g)).toHaveLength(2);
+      expect(md()).toContain("- 週 1 — 相手 A（00:10）");
       expect(json().speakerNames).toEqual({ "相手 B": "田中" });
 
-      // 付け替えた後に書き出せば、最後の名前になる。json のノードはラベルのまま
       yield* sink.nameSpeaker({ label: "相手 B", name: "高橋" });
       yield* sink.nameSpeaker({ label: "相手 A", name: "佐藤" });
       yield* writeOut;

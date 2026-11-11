@@ -81,7 +81,6 @@ struct IsDuplicateTests {
     @Test("相手の 2 つの発言をまたぐ 3-gram も数える（start 順に区切りなしで連結）")
     func spansAdjacentRemarks() {
         let mine = result("abcdef", 0, 2)
-        // 渡す順序が start 順でなくても、start 順に連結される。
         let theirs = [result("efgh", 1, 2), result("abcd", 0, 1)]
         #expect(isDuplicate(mine, among: theirs))
     }

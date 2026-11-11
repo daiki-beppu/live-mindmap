@@ -9,9 +9,6 @@ import { ObserveMapSurface } from "../src/app/mapSurface/mount.ts";
 import { layout, NODE_WIDTH } from "../src/layout.ts";
 import type { VNode } from "./sceneTree.ts";
 
-// 撮影（map.png）の Foldkit プログラム（Issue #827）の Scene。描いた view から入り、表示面を実測で解いて、ready / overflow の属性と、静止した 1 枚の中身を見る。
-// 比べる相手は @xyflow の getViewportForBounds（全体を収める式。撮影の下限 0.02）と、server が共有する属性名（server/src/core/capture.ts）
-
 
 const node = (id: string, parent: string | null, kind: Exclude<SnapshotNode["kind"], "補足">, text: string, extra: Partial<Exclude<SnapshotNode, { kind: "補足" }>> = {}): Exclude<SnapshotNode, { kind: "補足" }> => ({
   id,

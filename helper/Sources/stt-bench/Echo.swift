@@ -1,25 +1,14 @@
 import Foundation
 import HelperCore
 
-// AEC3（`WebRTCEchoCanceller`）が、開始直後に話者の声（ダブルトーク）を削るかを測る部分（Issue #118）。
-// ファイルの入出力は EchoRun.swift。ここは、配列だけで決まる純粋な部分。
-//
-// 1 つの条件（遅れ・漏れの減衰・候補）につき canceller を 1 つだけ作り、
-// 会議の音を参照にして、遅れと減衰をかけた漏れ + 既知の発話（開始 5 / 30 / 60 秒など）を 1 本の連続した流れで通す。
-// 発話の残り方は、出力を入力の遅れだけ進めたうえで、元の発話と同じ向きの成分のエネルギーで比べる
-// （手法は Tests/HelperCoreTests/EchoCancellerHeavyTests.swift と同じ）。
-
-/// 合成したマイクの信号。`leak` と `utterances` は、`microphone` に足した成分そのもの（全長）。
 struct EchoMicrophone {
     var microphone: [Float]
     var leak: [Float]
-    /// 挿入位置ごとの発話。発話だけが入った、`microphone` と同じ長さの列。
     var utterances: [[Float]]
     var utteranceLength: Int
     var insertAt: [Int]
 }
 
-/// 漏れ `leak[i] = gain * reference[i - d]`（i < d では 0）と、`insertAt` の各位置に置いた発話を足したマイクの信号を作る。
 func buildMicrophone(reference: [Float], utterance: [Float], delaySamples: Int, leakGain: Float, insertAt: [Int]) -> EchoMicrophone {
     let count = reference.count
     var leak = [Float](repeating: 0, count: count)
@@ -37,15 +26,10 @@ func buildMicrophone(reference: [Float], utterance: [Float], delaySamples: Int, 
     return EchoMicrophone(microphone: microphone, leak: leak, utterances: utterances, utteranceLength: utterance.count, insertAt: insertAt)
 }
 
-/// 台本の最初の行の start が `atSeconds` に来るようにする、発話の置き始め（先頭の無音の分だけ早める）。
 func insertionSamples(atSeconds: [Double], firstLineStartSeconds: Double, sampleRate: Int) -> [Int] {
     atSeconds.map { Int(((($0 - firstLineStartSeconds) * Double(sampleRate))).rounded()) }
 }
 
-/// 1 つの canceller に、10 ms（480 サンプル）ごとに reverse → capture を渡し、全区間を連続して処理する。
-/// 先頭 `bypassSamples` 未満の区間は、AEC にはそのまま渡して収束を進めるが、返す出力は入力のまま（AEC をかけない候補）。
-/// 端数のフレームは 0 で埋めて渡し、出力は `microphone` と同じ長さにする。
-/// `windowResults` は出力を `outputDelay` だけ進めて比べるので、AEC をかけない区間の出力にも同じ遅れを付ける（`bypassDelaySamples`）。
 func runCanceller(_ canceller: some EchoCanceller, reference: [Float], microphone: [Float], bypassSamples: Int, bypassDelaySamples: Int = 0) -> [Float] {
     var output = microphone
     for i in 0..<min(bypassSamples, microphone.count) { output[i] = i >= bypassDelaySamples ? microphone[i - bypassDelaySamples] : 0 }
@@ -65,9 +49,6 @@ func runCanceller(_ canceller: some EchoCanceller, reference: [Float], microphon
     return output
 }
 
-// MARK: 出力の遅れ
-
-/// 決定的な擬似乱数（SplitMix64）。範囲は −1〜1。
 private struct DeterministicNoise {
     var state: UInt64
 
@@ -81,11 +62,9 @@ private struct DeterministicNoise {
     }
 }
 
-private let maximumOutputDelaySamples = 960  // 20 ms
+private let maximumOutputDelaySamples = 960
 
-/// 参照を無音にして雑音だけをマイクに通し、出力が入力より何サンプル遅れるかを測る（相関が最大になる遅れ）。
 /// AEC3 の出力は帯域分割などの内部の遅れで入力より遅れる。そのまま比べると、無関係な信号まで消えて見える。
-/// `correlationSamples` は相関を取る区間の長さ。本番は既定の 1 秒を使う。
 func measureOutputDelay(correlationSamples: Int = echoSampleRate, makeCanceller: () throws -> any EchoCanceller) throws -> Int {
     let count = 2 * echoSampleRate
     var noise = DeterministicNoise(state: 9)
@@ -111,19 +90,13 @@ func measureOutputDelay(correlationSamples: Int = echoSampleRate, makeCanceller:
     return best.delay
 }
 
-// MARK: 窓ごとの数字
-
 struct WindowResult: Equatable {
     var insertAtSamples: Int
-    /// 発話の成分のエネルギーが、出力でどれだけ残ったか（dB。0 なら全部残る、負なら削られた）。
     var retentionDb: Double
-    /// 同じ区間の漏れの成分のエネルギーが、どれだけ下がったか（dB。正なら下がった）。漏れが無い条件では nan。
     var leakReductionDb: Double
-    /// その区間の参照の RMS（dBFS）。
     var referenceRmsDbfs: Double
 }
 
-/// `signal` のうち `basis` と同じ向きの成分のエネルギー（区間 `range`）。
 private func projectionEnergy(_ signal: [Float], onto basis: [Float], range: Range<Int>) -> Double {
     var dot = 0.0
     var basisEnergy = 0.0
@@ -136,8 +109,6 @@ private func projectionEnergy(_ signal: [Float], onto basis: [Float], range: Ran
 
 private func decibels(_ ratio: Double) -> Double { 10 * log10(ratio) }
 
-/// 挿入位置ごとに、その位置から発話の長さ分の窓で、発話の残り方・漏れの低下量・参照の RMS を求める。
-/// 出力は `outputDelay` サンプル進めてから比べる。他の挿入位置の発話は、窓の外なので影響しない。
 func windowResults(built: EchoMicrophone, output: [Float], outputDelay: Int, reference: [Float]) -> [WindowResult] {
     let count = built.microphone.count
     let processed = (0..<count).map { $0 + outputDelay < output.count ? output[$0 + outputDelay] : 0 }
@@ -179,7 +150,6 @@ func buildMicrophone(reference: [Float], microphone: [Float], utterance: [Float]
     return RecordedEchoMicrophone(microphone: mixed, utterance: utterance, insertAt: insertAt)
 }
 
-/// 短い発話を range.lowerBound に置き、発話あり・なしの応答の差を射影する。
 func recordedRetentionDb(utterance: [Float], outputWithVoice: [Float], outputWithoutVoice: [Float], range: Range<Int>, outputDelay: Int) -> Double {
     let end = min(range.upperBound, outputWithVoice.count - outputDelay, outputWithoutVoice.count - outputDelay)
     guard end > range.lowerBound else { return .nan }

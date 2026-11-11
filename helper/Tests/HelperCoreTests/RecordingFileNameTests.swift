@@ -1,7 +1,6 @@
 import Testing
 @testable import HelperCore
 
-// Issue #161: 起動し直すたびに録音ファイルの番号を増やす（CT-AUDIO-NAME）。1 回目の名前は変えない（order.md:68）。
 @Suite("録音ファイルの名前（起動し直しの番号）")
 struct RecordingFileNameTests {
     @Test("1 回目（attempt == 1）は番号を付けない")

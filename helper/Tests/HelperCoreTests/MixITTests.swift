@@ -82,7 +82,6 @@ enum MixTestSupport {
         let directory: URL
         var output: URL { directory.appendingPathComponent("out").appendingPathComponent("mix.m4a") }
 
-        /// 相手 3 秒・440 Hz（最長）、自分 2 秒・1320 Hz、相手-2 1 秒・880 Hz、自分-3 0.5 秒・1760 Hz。入力ごとに周波数が違う。
         static func make() throws -> Session {
             let directory = try MixTestSupport.temporaryDirectory()
             try FileManager.default.createDirectory(at: directory.appendingPathComponent("out"), withIntermediateDirectories: true)
@@ -112,8 +111,6 @@ struct MixITTests {
         let mdat = try #require(types.firstIndex(of: "mdat"))
         #expect(moov < mdat)
     }
-
-    // MARK: 入力の選択
 
     private func makeNamedFiles(_ names: [String]) throws -> URL {
         let directory = try Support.temporaryDirectory()
@@ -153,8 +150,6 @@ struct MixITTests {
         let names = try mixInputs(inSession: directory, track: .自分).map(\.lastPathComponent).sorted()
         #expect(names == ["自分-10.m4a", "自分.m4a"].sorted())
     }
-
-    // MARK: 失敗
 
     @Test("セッションのフォルダが無ければ throw する")
     func missingSessionThrows() {
@@ -211,8 +206,6 @@ struct MixITTests {
         }
     }
 
-    // MARK: 空の録音
-
     @Test("既定の報告先は標準エラーで、飛ばしたファイル名が 1 ファイル 1 行で届く")
     func defaultReportGoesToStandardError() async throws {
         let session = try Support.Session.make()
@@ -222,7 +215,6 @@ struct MixITTests {
         let capture = session.directory.appendingPathComponent("stderr.txt")
         let inputs = try mixInputs(inSession: session.directory, track: nil)
 
-        // 標準エラー（fd 2）を一時ファイルへ向けて、既定のクロージャの出力を受ける。
         let saved = dup(2)
         let fd = open(capture.path, O_WRONLY | O_CREAT | O_TRUNC, 0o600)
         #expect(saved >= 0 && fd >= 0)

@@ -6,32 +6,18 @@ import { CRITERIA_OUTPUT_SCHEMA, OUTPUT_SCHEMA, DIFF_SYSTEM as SYSTEM } from "..
 import { applyOps, DiffUpdater, DiffUpdatePaused } from "../src/core/index.ts";
 import { emptyMap, type DiffInput, type MeetingMap, type Op, type ScreenChange } from "../src/core/index.ts";
 
-// 偽の query()。prompt（AsyncIterable）から user メッセージを 1 つ読むたびに、behave の指示どおり 1 回分の応答を返す。
-//   ok: success の result（structured_output つき） / fail: success 以外の result / throw: iterator が例外 / end: result を出さずにストリームが終わる
-//   missing: success だが structured_output が無い / invalid: success だが structured_output が DiffOutput の形に合わない
-//   extra: success で、structured_output の操作に余分なキーがある
-//   names: success で、話者の名前（Issue #1027。label・name・evidence・basis）を持つ structured_output / badBasis: 同じで basis が 2 値の外
-//   hang: 何も返さない（Scope を閉じても待ち続ける偽物。呼び出し側が中断で離れられることを確かめる）
-//   retried: success。構造化出力のやり直しで要求が 2 回。同じ message.id の assistant が 2 つ、別の id の assistant が 1 つ流れ、result の usage がその turn の全要求分を持つ
-//   nullcache: success。result の usage の cache_creation_input_tokens が null（SDK の型では number | null）、cache_read_input_tokens は欠けている
 // 実際の SDK は 1 つの応答を内容のブロックごとに別の assistant として流し、同じ message.id・同じ入力とキャッシュの usage を持つ。
 // その output_tokens は仮の小さい値で、その turn の正しい usage は result が持つ。modelUsage・total_cost_usd は query 全体の累計
-//   readings: success で、英字の語のカタカナの読み（Issue #642）の structured_output を返す
-//   limit: rate_limit_event（rejected、resetsAt あり）の後に失敗の result / limitNoReset: 同じで resetsAt が無い
-//   warned: allowed_warning と allowed の rate_limit_event を流してから success の result
 type Behavior = "supplement" | "supplementMany" | "supplementNone" | "limit" | "limitNoReset" | "warned" | "readings" | "ok" | "fail" | "throw" | "end" | "missing" | "invalid" | "extra" | "names" | "badBasis" | "hang" | "retried" | "nullcache";
 type Message = { type: string; message?: { role?: string; content?: unknown }; parent_tool_use_id?: unknown };
 
-// assistant メッセージ 1 つ分（内容のブロックごとに 1 つ）。SDK では message が BetaMessage で、id・usage・model を持つ
 const assistant = (id: string, outputTokens: number, model = "claude-haiku-5-5") => ({
   type: "assistant",
   message: { id, model, usage: { input_tokens: 100, cache_creation_input_tokens: 20, cache_read_input_tokens: 3000, output_tokens: outputTokens } },
 });
-// result の usage。assistant の usage の和とは一致しない値にしてある
 const RESULT_USAGE = { input_tokens: 100, cache_creation_input_tokens: 20, cache_read_input_tokens: 3000, output_tokens: 520 };
 const RETRIED_RESULT_USAGE = { input_tokens: 230, cache_creation_input_tokens: 45, cache_read_input_tokens: 6100, output_tokens: 1040 };
 type Created = { messages: Message[]; closeCalls: number; options: Options };
-// query() に渡された options（systemPrompt・effort・出力スキーマ・env）
 type Options = { model: string; systemPrompt: string; effort?: string; outputFormat: { type: string; schema: unknown }; env?: Record<string, string | undefined> };
 
 // SDK の resetsAt はエポック秒
@@ -39,9 +25,7 @@ const RESETS_AT_SECONDS = 1791316800;
 const NAME = { label: "相手 B", name: "田中", evidence: "r1", basis: "名乗り" };
 const noopOutput = (reason: string) => ({ ops: [{ op: "noop", reason }] });
 
-// 1 つの user メッセージに対して流す応答の列（hang・throw・end は流さないので、ここには来ない）
 function responsesFor(behavior: Behavior, queryIndex: number, messageIndex: number): unknown[] {
-  // modelUsage・total_cost_usd は、数え方の根拠にしないことを確かめるための別の値
   const result = {
     type: "result",
     usage: RESULT_USAGE,
@@ -62,7 +46,6 @@ function responsesFor(behavior: Behavior, queryIndex: number, messageIndex: numb
       { ...result, usage: { input_tokens: 5, cache_creation_input_tokens: null, output_tokens: 6 }, subtype: "success", structured_output: noopOutput("nullcache") },
     ];
   }
-  // rejected の後に失敗の result が続いても、イベントの時点で一時停止になる
   if (behavior === "limit") return [{ type: "rate_limit_event", rate_limit_info: { status: "rejected", resetsAt: RESETS_AT_SECONDS } }, { ...result, subtype: "error_during_execution" }];
   if (behavior === "limitNoReset") return [{ type: "rate_limit_event", rate_limit_info: { status: "rejected" } }, { ...result, subtype: "error_during_execution" }];
   if (behavior === "warned") {
@@ -106,8 +89,6 @@ const fakeQuery = (created: Created[], behave: (queryIndex: number, messageIndex
     return Object.assign(gen, { close: () => void record.closeCalls++ });
   }) as unknown as AgentSdk["Service"]["query"];
 
-// 偽の AgentSdk を layerClaude に渡し、手で作った Scope（セッションの Scope の代わり）の中で build する。
-// close は Scope を閉じる操作（旧 updater.close() の代わり）。何度呼んでもよい
 function setup(behave: (queryIndex: number, messageIndex: number) => Behavior = () => "ok", model: string = defaultClaude.model) {
   return Effect.gen(function* () {
     const created: Created[] = [];
@@ -120,7 +101,6 @@ function setup(behave: (queryIndex: number, messageIndex: number) => Behavior = 
   });
 }
 
-// 呼び出しごとに内容の違う入力（マップ全体と発言が毎回変わる）
 const input = (n: number): DiffInput => ({
   map: emptyMap(`会議${n}`),
   recent: [],
@@ -129,13 +109,11 @@ const input = (n: number): DiffInput => ({
 const noop = (reason: string): Op[] => [{ op: "noop", reason }];
 const contents = (c: Created) => c.messages.map((m) => m.message?.content);
 const texts = (c: Created) => contents(c) as string[];
-// メッセージのうち、マップ全体または前回からの変更の節だけ（議題の一覧は毎回今の話し中の議題を載せるので除く）
 const mapPartOf = (prompt: string) => {
   const start = prompt.search(/^## (現在のマップ|前回からのマップの変更)/m);
   return prompt.slice(start, prompt.indexOf("\n\n## 直前の発言", start));
 };
 
-// 発言 id r1〜r40 を、根拠に使える既知の発言として applyOps に渡す
 const KNOWN = new Set(Array.from({ length: 40 }, (_, i) => `r${i + 1}`));
 const evolve = (map: MeetingMap, ops: Op[]) => applyOps(map, ops, KNOWN, { round: 1, at: 0 }, new Map());
 const inputOf = (map: MeetingMap, n: number): DiffInput => ({
@@ -144,7 +122,6 @@ const inputOf = (map: MeetingMap, n: number): DiffInput => ({
   fresh: [{ id: `r${n}`, track: "相手", start: n, end: n + 1, text: `新しい発言${n}` }],
 });
 
-// n 回目の呼び出しの入力。n 回目までに「議題A」「議題B」…を 1 つずつ足したマップ（呼び出しごとに 1 ノード増える）
 const SUBJECTS = Array.from({ length: 26 }, (_, i) => `議題${String.fromCharCode(65 + i)}`);
 const growingMaps: MeetingMap[] = [emptyMap("会議")];
 for (const text of SUBJECTS) {
@@ -152,7 +129,6 @@ for (const text of SUBJECTS) {
 }
 const growing = (n: number): DiffInput => inputOf(growingMaps[n]!, n);
 
-// メッセージが偽の query に届くまで、実時間の 1 周を待つ
 const nextTick = Effect.promise(() => new Promise<void>((resolve) => setImmediate(resolve)));
 
 describe("差分更新の query の使い回し", () => {
@@ -233,7 +209,7 @@ describe("差分更新の query の使い回し", () => {
       expect(created).toHaveLength(2);
       expect(created.map((query) => query.options.model)).toEqual(["claude-haiku-5-5", "claude-haiku-5-5"]);
       expect(created[0]!.closeCalls).toBeGreaterThanOrEqual(1);
-      expect(created[0]!.messages).toHaveLength(QUERY_RENEW_CALLS); // 古い query には流し込まない
+      expect(created[0]!.messages).toHaveLength(QUERY_RENEW_CALLS);
       expect(contents(created[1]!)).toEqual([buildPrompt(input(next))]);
       expect(output.ops).toEqual(noop("q1-m0"));
     }));
@@ -262,7 +238,7 @@ describe("差分更新の失敗後の開き直し", () => {
 
       expect(created).toHaveLength(2);
       expect(created[0]!.closeCalls).toBeGreaterThanOrEqual(1);
-      expect(created[0]!.messages).toHaveLength(2); // 失敗後に古い query へは流し込まない
+      expect(created[0]!.messages).toHaveLength(2);
       expect(contents(created[1]!)).toEqual([buildPrompt(input(3))]);
       expect(output.ops).toEqual(noop("q1-m0"));
     }));
@@ -404,7 +380,6 @@ describe("トークン数の数え方（result の usage）", () => {
 });
 
 describe("outputFormat の JSON Schema（DiffOutput から作る）", () => {
-  // JSON Schema のノードを再帰的にたどる
   const walk = (node: unknown, visit: (n: Record<string, unknown>) => void): void => {
     if (Array.isArray(node)) return node.forEach((item) => walk(item, visit));
     if (node === null || typeof node !== "object") return;
@@ -427,7 +402,7 @@ describe("outputFormat の JSON Schema（DiffOutput から作る）", () => {
       });
 
       expect(format.type).toBe("json_schema");
-      expect(objects.length).toBeGreaterThanOrEqual(7); // 最上位 1 つと 7 操作
+      expect(objects.length).toBeGreaterThanOrEqual(7);
       for (const object of objects) expect(object.additionalProperties).toBe(false);
     }));
 
@@ -470,7 +445,6 @@ describe("outputFormat の JSON Schema（DiffOutput から作る）", () => {
       });
 
       expect([...operations.keys()].sort()).toEqual(["add", "close", "combine", "delete", "move", "noop", "update"]);
-      // close は対象 ID のみ（根拠・理由は持たない）
       const close = operations.get("close")!;
       expect(Object.keys(close.properties as object).sort()).toEqual(["node", "op"]);
       expect([...(close.required as string[])].sort()).toEqual(["node", "op"]);
@@ -553,8 +527,8 @@ describe("差分更新の query の後片付け（セッションの Scope）", 
   it.effect("呼び出しの途中（応答待ち）で Scope を閉じると、その呼び出しは待つのをやめて中断される。query は閉じられる", () =>
     Effect.gen(function* () {
       const { created, updater, scope, close } = yield* setup(() => "hang");
-      const fiber = yield* Effect.forkIn(updater.update(input(1)), scope); // セッションの Scope に属する呼び出し
-      yield* nextTick; // メッセージが query に届くまで待つ
+      const fiber = yield* Effect.forkIn(updater.update(input(1)), scope);
+      yield* nextTick;
       expect(created[0]!.messages).toHaveLength(1);
 
       yield* close;
@@ -581,7 +555,7 @@ describe("差分更新: 開いた query の最初のメッセージだけがマ�
       expect(third).not.toContain("## 現在のマップ");
       expect(third).toContain("議題C");
       expect(mapPartOf(third!)).not.toContain("議題A");
-      expect(mapPartOf(third!)).not.toContain("議題B"); // 前回送った時点からの変更なので、2 通目の追加は載らない
+      expect(mapPartOf(third!)).not.toContain("議題B");
     }));
 
   it.effect("2 通目（変更だけの回）にも、議題の一覧・直前の発言・新しい発言の節が載る。一覧は今のマップの話し中の議題を出す", () =>
@@ -617,7 +591,7 @@ describe("差分更新: 開いた query の最初のメッセージだけがマ�
       for (const subject of SUBJECTS.slice(0, QUERY_RENEW_CALLS + 1)) expect(reopened).toContain(subject);
       expect(after).not.toContain("## 現在のマップ");
       expect(after).toContain(SUBJECTS[QUERY_RENEW_CALLS + 1]);
-      expect(mapPartOf(after!)).not.toContain("議題A"); // 開き直す前に送ったマップは持ち越さない
+      expect(mapPartOf(after!)).not.toContain("議題A");
     }));
 
   it.effect.each(["fail", "throw", "end"] as const)("%s の後に開いた query の最初のメッセージには、再びマップ全体が載る。失敗した回の入力は送った扱いにならない", (failure) =>
@@ -641,7 +615,6 @@ describe("差分更新: 開いた query の最初のメッセージだけがマ�
 });
 
 describe("差分更新: 変更の中身", () => {
-  // root > n1 議題 > n2 論点 > (n3 案, n4 案)、n2 の下に n5 TODO（担当・期限つき）、n1 の下に n6 課題・n7 議題、n7 の下に n8 課題 > n9 案
   const base = (() => {
     const ev = ["r1"];
     const { map, dropped } = evolve(emptyMap("会議"), [
@@ -659,7 +632,6 @@ describe("差分更新: 変更の中身", () => {
     return map;
   })();
 
-  // base の次の呼び出しで届くメッセージ（同じ query の 2 通目）と、そのときの applyOps の捨てた操作
   const second = (from: MeetingMap, ops: Op[]) =>
     Effect.gen(function* () {
       const { created, updater } = yield* setup();
@@ -747,7 +719,6 @@ describe("差分更新: 変更の中身", () => {
 
   it.effect("更新（TODO の担当の話者）: 変わった担当の話者が載る", () =>
     Effect.gen(function* () {
-      // 名前の無い TODO（担当の話者だけ）を変更前にする。名前の差が混ざらず、話者の比較だけで更新行が出る
       const { assignee: _assignee, ...unnamed } = base.nodes.n5!;
       const before: MeetingMap = { ...base, nodes: { ...base.nodes, n5: { ...unnamed, assigneeSpeaker: "相手 A" } } };
       const { message, dropped } = yield* second(before, [{ op: "update", node: "n5", evidence: ["r1"], assigneeSpeaker: "相手 B" }]);
@@ -812,7 +783,7 @@ describe("差分更新: 変更の中身", () => {
       const { message, dropped } = yield* second(base, [
         { op: "add", ref: "x", parent: "n99", kind: "課題", text: "幻の課題", evidence: ["r2"] },
         { op: "add", ref: "y", parent: "n2", kind: "課題", text: "本物の課題", evidence: ["r2"] },
-        { op: "delete", node: "n1" }, // 子を持つので捨てられる
+        { op: "delete", node: "n1" },
       ]);
 
       expect(dropped).toHaveLength(2);
@@ -837,7 +808,6 @@ describe("差分更新: 変更の中身", () => {
     }));
 });
 
-// query() に渡された options（systemPrompt・出力スキーマ・env）を取り出す
 const capturedOptions = (calls = 1) =>
   Effect.gen(function* () {
     const { created, updater, close } = yield* setup();
@@ -933,7 +903,7 @@ describe("system プロンプト: 共有・雑談型の会議で話題と要点�
       for (const old of ["60 分", "50 ノード", "深さ 4", "4 段", "6 つを超え", "3 つまで", "閉じられない", "直前・今回触れた", "マップの状態"]) {
         expect(sys, old).not.toContain(old);
       }
-      expect(sys).not.toContain("1 つの対象についての"); // 入れ子の説明を否定の形で書かない
+      expect(sys).not.toContain("1 つの対象についての");
     }));
 
   it.effect("出力スキーマの add の kind に要点が入る", () =>
@@ -1032,7 +1002,6 @@ describe("system プロンプト: 補足は子の要点に置き、本文の書�
 
       expect(sys).toContain("親の要点を言い直さず");
       expect(sys).toContain("その要点の子の要点として add");
-      // 補足を update で済ませる旧い指示は 2 か所とも残らない
       expect(sys).not.toContain("ノードを作らず既存ノードに根拠を足す update");
       expect(sys).not.toContain("新しい要点にせず、既存の要点に根拠を足す");
       expect(sys).not.toContain("本文に収まるものだけ短く言い直す");
@@ -1093,10 +1062,6 @@ describe("system プロンプト: 補足は子の要点に置き、本文の書�
 
 describe("毎回のメッセージの議題の一覧", () => {
   const ev = ["r1"];
-  // root > n1 議題「本の届け先」(38 分) > (n2 論点 > (n3 案, n4 論点[済み] > n5 案), n6 要点)
-  //      > n7 議題「写真の振り返り」(41 分) > (n8 議題「写真: 船」(40 分) > (n9 論点 > n10 案, n11 要点), n12 議題「写真: 山」[済み] > n13 要点,
-  //                                         n14 論点 > (n15 要点, n16 議題「並び順の候補」(41 分) > n17 要点))
-  //      > n18 議題「予算」[済み] > n19 議題「社内報」(話し中のまま) > n20 要点
   const built = (() => {
     const step = (map: MeetingMap, ops: Op[], at: number) => {
       const r = applyOps(map, ops, KNOWN, { round: 1, at }, new Map());
@@ -1133,7 +1098,6 @@ describe("毎回のメッセージの議題の一覧", () => {
     ], 1800);
     return d;
   })();
-  // 済みにする。根拠が足された反映（round 1）から 2 つ後の反映で閉じる
   const closed = (() => {
     const r = applyOps(built, ["n4", "n12", "n18"].map((node) => ({ op: "close" as const, node })), KNOWN, { round: 4, at: 9999 }, new Map());
     expect(r.dropped).toEqual([]);
@@ -1163,7 +1127,7 @@ describe("毎回のメッセージの議題の一覧", () => {
     expect(list[0]).toBe("## 議題の一覧（話し中 4・済み 2。済みと、済みの議題の下は省略）");
     expect(prompt).not.toContain("## マップの状態");
     expect(prompt).not.toMatch(/経過 \d+ 分|最大の深さ|60 分で 50/);
-    expect(prompt.indexOf("## 議題の一覧")).toBeLessThan(prompt.indexOf("## 現在のマップ")); // 先頭の節
+    expect(prompt.indexOf("## 議題の一覧")).toBeLessThan(prompt.indexOf("## 現在のマップ"));
   });
 
   it("話し中の議題を木のまま字下げして出す。論点をはさんだ子の議題も、最も近い祖先の議題の下に字下げする", () => {
@@ -1175,18 +1139,14 @@ describe("毎回のメッセージの議題の一覧", () => {
   it("各行は id・議題名・話し中の部分のノード数・最後に触れた分。子の議題の下と済みの論点の下は数えない（済みの論点自身は数える）", () => {
     const list = listOf(closed);
 
-    // n1: n2（論点自身）・n6 = 2。n2 の配下は数えない
     expect(list).toContain("- n1 本の届け先（話し中 2 ノード・最後に触れた 38 分）");
-    // n8: n9（論点自身）・n11 = 2
     expect(list).toContain("  - n8 写真: 船（話し中 2 ノード・最後に触れた 40 分）");
-    // n16: n17 = 1
     expect(list).toContain("  - n16 並び順の候補（話し中 1 ノード・最後に触れた 41 分）");
   });
 
   it("子の議題を持つ議題の行に「まとまり・子の議題 話し中 N・済み M・まとまり自体の話し中 K ノード」。K は子の議題（話し中・済み）の下を数えない", () => {
     const list = listOf(closed);
 
-    // n7 の子の議題: 話し中 n8・n16、済み n12。まとまり自体は論点 n14 の 1 ノード
     expect(list).toContain("- n7 写真の振り返り（まとまり・子の議題 話し中 2・済み 1・まとまり自体の話し中 1 ノード・最後に触れた 41 分）");
   });
 
@@ -1194,8 +1154,7 @@ describe("毎回のメッセージの議題の一覧", () => {
     const list = listOf(closed).join("\n");
 
     for (const hidden of ["n12", "n18", "n19", "写真: 山", "予算", "社内報", "雪が残っていた", "月次で出す"]) expect(list, hidden).not.toContain(hidden);
-    expect(list).toContain("話し中 4・済み 2"); // n19 はどちらにも入らない
-    // 一覧を作ってもデータの済みの状態は変わらない
+    expect(list).toContain("話し中 4・済み 2");
     expect(closed.nodes.n18!.talkStatus).toBe("済み");
     expect(closed.nodes.n19!.talkStatus).toBeUndefined();
   });
@@ -1205,7 +1164,6 @@ describe("毎回のメッセージの議題の一覧", () => {
 
     expect(before[0]).toBe("## 議題の一覧（話し中 7・済み 0。済みと、済みの議題の下は省略）");
     for (const id of ["n12", "n18", "n19"]) expect(before.some((l) => new RegExp(`^ *- ${id} `).test(l))).toBe(true);
-    // 済みにしたあとの一覧には出ない
     expect(listOf(closed).some((l) => /^ *- n12 /.test(l))).toBe(false);
   });
 
@@ -1224,7 +1182,6 @@ describe("毎回のメッセージの議題の一覧", () => {
     expect(closedP.map.nodes.n2!.talkStatus).toBe("済み");
     expect(closedP.map.nodes.n4!.talkStatus).toBeUndefined();
 
-    // 済みにする前も、A のまとまり自体は論点 P の 1 ノード
     expect(listOf(added.map)).toContain("- n1 議題A（まとまり・子の議題 話し中 1・済み 0・まとまり自体の話し中 1 ノード・最後に触れた 10 分）");
     const list = listOf(closedP.map);
     expect(list[0]).toBe("## 議題の一覧（話し中 2・済み 0。済みと、済みの議題の下は省略）");
@@ -1260,7 +1217,6 @@ describe("毎回のメッセージの議題の一覧", () => {
     expect(extract(second)).toBe(extract(first));
   });
 
-  // 話し中の子が上限に近い・超えた親の名指し（#167）。「話し中の子 N」の数だけを確かめ、ほかの書式は決めない。親の id を含む行を一覧から探して、本文と数を確かめる
   describe("話し中の子が上限に近い・超えた親の名指し", () => {
     const build = (specs: Array<{ ref: string; parent: string; kind: "議題" | "論点" | "要点"; text: string }>) => {
       const r = applyOps(emptyMap("講演"), specs.map((s) => ({ op: "add" as const, ...s, evidence: ev })), KNOWN, { round: 1, at: 600 }, new Map());
@@ -1268,10 +1224,8 @@ describe("毎回のメッセージの議題の一覧", () => {
       return r.map;
     };
     const rowOf = (map: MeetingMap, id: string) => listOf(map).find((l) => new RegExp(`(?<![\\w])${id}(?![\\w])`).test(l));
-    // 「話し中の子 N」の N を取り出す（状態の文言「上限 5 に達した」の数字と混同しない）。無ければ NaN
     const openKidsOf = (line: string) => Number(line.match(/話し中の子 (\d+)/)?.[1]);
 
-    // root > n1 議題「講演」 > (n2 要点「紹介甲」> 話し中の要点 n3〜n7 の 5 つ, n8 要点「紹介乙」> 話し中の要点 n9〜n14 の 6 つ, n15 要点「紹介丙」> 話し中の要点 n16〜n18 の 3 つ)
     const crowded = (() => {
       const kids = (parent: string, prefix: string, n: number) => Array.from({ length: n }, (_, i) => ({ ref: `${prefix}${i}`, parent, kind: "要点" as const, text: `${prefix}の補足${"あいうえおかきくけこ"[i]}` }));
       return build([
@@ -1322,7 +1276,6 @@ describe("毎回のメッセージの議題の一覧", () => {
         { ref: `${prefix}c1`, parent, kind: "論点" as const, text: `${prefix}の済み二` },
       ];
       const added = build([{ ref: "t", parent: "root", kind: "議題", text: "会議" }, ...spec("pa", "甲", 4), ...spec("pb", "乙", 5)]);
-      // n1 議題, n2 甲の論点(話し中の子 4・済み 2), n3〜n6 要点, n7・n8 済みにする論点, n9 乙の論点(話し中の子 5・済み 2), n10〜n14 要点, n15・n16 済みにする論点
       expect(["n2", "n9"].map((id) => added.nodes[id]!.text)).toEqual(["甲の論点", "乙の論点"]);
       const r = applyOps(added, ["n7", "n8", "n15", "n16"].map((node) => ({ op: "close" as const, node })), KNOWN, { round: 3, at: 9999 }, new Map());
       expect(r.dropped).toEqual([]);
@@ -1349,7 +1302,7 @@ describe("毎回のメッセージの議題の一覧", () => {
       const map = build([
         { ref: "t", parent: "root", kind: "議題", text: "混んだ議題" },
         ...Array.from({ length: 6 }, (_, i) => ({ ref: `k${i}`, parent: "t", kind: "要点" as const, text: `補足${"あいうえおか"[i]}` })),
-        { ref: "g", parent: "k0", kind: "要点", text: "孫の補足" }, // 議題の行のノード数は 7、直下の子は 6
+        { ref: "g", parent: "k0", kind: "要点", text: "孫の補足" },
       ]);
       const rows = listOf(map).filter((l) => /(?<![\w])n1(?![\w])/.test(l));
       const topicRow = rows.find((l) => /話し中 \d+ ノード/.test(l));
@@ -1365,14 +1318,10 @@ describe("毎回のメッセージの議題の一覧", () => {
 
       expect(extract(first)).toContain("紹介乙");
       expect(extract(second)).toBe(extract(first));
-      // 話し中の子が最も多い親でも 3 つの既存のマップでは、見出し・議題の 4 行・目安の 1 行のほかに行は足されない
-      // listOf は一覧の後ろの空行も含むので、空行を除いて数える
       expect(listOf(closed).filter((l) => l !== "")).toHaveLength(1 + 4 + 1);
     });
   });
 
-  // 目安（20 ノード）を超えたものの名指し（#843）。数は #840 の数え方。名指しの行は、議題の木の行（「- n1 」始まり）以外で対象の id を含む行として探し、
-  // id・数（「N ノード」）・一番近い議題の id だけを確かめる。文面の一言一句は決めない
   describe("目安を超えた議題・論点・案・課題・要点の名指し", () => {
     type Spec = { ref: string; parent: string; kind: "議題" | "論点" | "案" | "課題" | "要点"; text: string };
     const build = (specs: Spec[], closeTexts: string[] = []) => {
@@ -1393,9 +1342,7 @@ describe("毎回のメッセージの議題の一覧", () => {
     const kids = (parent: string, kind: Spec["kind"], prefix: string, n: number): Spec[] =>
       Array.from({ length: n }, (_, i) => ({ ref: `${prefix}${i}`, parent, kind, text: `${prefix}${i}` }));
     const idIn = (line: string, id: string) => new RegExp(`(?<![\\w])${id}(?![\\w])`).test(line);
-    // 議題の木の行・見出し・目安の 1 行・（なし）を除いた、名指しの行
     const namedRows = (map: MeetingMap) => listOf(map).filter((l) => l !== "" && !l.startsWith("##") && !l.startsWith("目安") && l !== "（なし）" && !/^ *- n\d+ /.test(l));
-    // 「N ノード」の行で id を含むもの（兄弟の合図の行は「話し中の子 N」で、ノード数を持たない）
     const sizedRow = (map: MeetingMap, id: string) => namedRows(map).find((l) => idIn(l, id) && /\d+ ノード/.test(l));
     const sizeOf = (line: string) => Number(line.match(/(\d+) ノード/)?.[1]);
 
@@ -1684,7 +1631,6 @@ describe("議題・論点の「済み」（close）の経路", () => {
       { round: 1, at: 0 },
       new Map(),
     ).map;
-    // 根拠が足された反映の 2 つ後の反映で閉じる（直前の反映なら捨てられる）
     const closed = applyOps(opened, [{ op: "close", node: "n1" }, { op: "close", node: "n2" }], known, { round: 3, at: 0 }, new Map());
     expect(closed.dropped).toEqual([]);
 
@@ -1692,7 +1638,7 @@ describe("議題・論点の「済み」（close）の経路", () => {
 
     expect(prompt).toMatch(/^ {2}- n1 議題: 採用（済み）$/m);
     expect(prompt).toMatch(/^ {4}- n2 論点\(未決\): 面接は何回か（済み）$/m);
-    expect(prompt).toMatch(/^ {2}- n3 議題: 予算$/m); // 話し中の行には付けない
+    expect(prompt).toMatch(/^ {2}- n3 議題: 予算$/m);
     expect(count(prompt, "（済み）")).toBe(2);
   });
 
@@ -1707,7 +1653,6 @@ describe("議題・論点の「済み」（close）の経路", () => {
 
 describe("済みの議題・論点を AI へ畳んで渡す", () => {
   const ev = ["r1"];
-  // root > n1 議題 > (n2 論点 > (n3 案 > n4 論点 > n5 決定, n8 TODO), n6 課題, n7 要点, n9 議題 > n10 要点)、root > n11 議題 > n12 案
   const opened = (() => {
     const { map, dropped } = evolve(emptyMap("定例"), [
       { op: "add", ref: "a", parent: "root", kind: "議題", text: "採用", evidence: ev },
@@ -1726,7 +1671,6 @@ describe("済みの議題・論点を AI へ畳んで渡す", () => {
     expect(dropped).toEqual([]);
     return map;
   })();
-  // 根拠が足された反映の 2 つ後（round 3）で閉じ、その次（round 4）で ops を当てる
   const closeAt = (map: MeetingMap, nodes: string[]) => {
     const r = applyOps(map, nodes.map((node) => ({ op: "close" as const, node })), KNOWN, { round: 3, at: 0 }, new Map());
     expect(r.dropped).toEqual([]);
@@ -1737,7 +1681,6 @@ describe("済みの議題・論点を AI へ畳んで渡す", () => {
     expect(r.dropped).toEqual([]);
     return r.map;
   };
-  // maps を順に 1 つの query へ送り、届いたメッセージを返す
   const sendAll = (maps: MeetingMap[]) =>
     Effect.gen(function* () {
       const { created, updater } = yield* setup();
@@ -1754,7 +1697,7 @@ describe("済みの議題・論点を AI へ畳んで渡す", () => {
     expect(prompt).toMatch(/^ {2}- n1 議題: 採用（済み）$/m);
     expect(prompt).toMatch(/^ {4}- n2 論点\(未決\): 面接は何回か$/m);
     expect(prompt).toMatch(/^ {6}- n8 TODO: 候補日を出す$/m);
-    expect(prompt).toMatch(/^ {8}- n4 論点\(決定済み\): 誰が面接官か$/m); // 省いた案（n3）の段も字下げに数える
+    expect(prompt).toMatch(/^ {8}- n4 論点\(決定済み\): 誰が面接官か$/m);
     expect(prompt).toMatch(/^ {10}- n5 決定: 部長と人事$/m);
     expect(prompt).toMatch(/^ {4}- n9 議題: 社内報$/m);
     for (const id of ["n3", "n6", "n7", "n10"]) expect(shown(prompt, id)).toBe(false);
@@ -1812,22 +1755,18 @@ describe("済みの議題・論点を AI へ畳んで渡す", () => {
 
       const [first, message] = yield* sendAll([closed, reopened]);
 
-      expect(first).not.toContain("二回"); // 1 通目は畳んだ形
+      expect(first).not.toContain("二回");
       expect(line(message!, "n1")).toContain("- n1 話し中に戻った。畳んでいた中身:");
       expect(line(message!, "n2")).toContain("- n2 話し中に戻った。畳んでいた中身:");
       expect(message).not.toContain("済みにした");
       expect(message).not.toContain("（変更なし）");
-      // 畳んでいた案・課題・要点が、字下げされた行で載る
       expect(message).toMatch(/^ +- n6 課題: 日程が合わない$/m);
       expect(message).toMatch(/^ +- n7 要点: 去年は三回だった$/m);
       expect(message).toMatch(/^ +- n10 要点: 月次で出す$/m);
       expect(message).toMatch(/^ +- n4 論点\(決定済み\): 誰が面接官か$/m);
       expect(message).toMatch(/^ +- n5 決定: 部長と人事$/m);
-      // 論点（n2）の配下の案は、議題（n1）の中身と論点の中身の両方に出る
       expect(message!.split("\n").filter((l) => /^ +- n3 案: 二回$/.test(l))).toHaveLength(2);
-      // 同じ反映で足したノードは、追加の行にも載る
       expect(line(message!, "n13").some((l) => l.includes("追加") && l.includes("面接官が足りない"))).toBe(true);
-      // 開き直した議題・論点それぞれの展開部分にも、同じ反映で足した n13 が字下げされた行で載る
       const lines = message!.split("\n");
       const n1Head = lines.findIndex((l) => l.startsWith("- n1 話し中に戻った"));
       const n2Head = lines.findIndex((l) => l.startsWith("- n2 話し中に戻った"));
@@ -1871,7 +1810,6 @@ describe("済みの議題・論点を AI へ畳んで渡す", () => {
       expect(message).not.toContain("（変更なし）");
     }));
 
-  // 見出し行（行頭が「- {id} 」。「- 移動 {id} …」や字下げされた中身の行とは区別される）
   const heading = (message: string, id: string) => message.split("\n").filter((l) => l.startsWith(`- ${id} `));
   const emerged = "畳んだ中から出た";
 
@@ -1895,7 +1833,6 @@ describe("済みの議題・論点を AI へ畳んで渡す", () => {
       expect(body.some((l) => /^ +- n4 論点\(決定済み\): 誰が面接官か$/.test(l))).toBe(true);
       expect(body.some((l) => /^ +- n5 決定: 部長と人事$/.test(l))).toBe(true);
       expect(body.some((l) => /^ +- n8 TODO: 候補日を出す$/.test(l))).toBe(true);
-      // 字下げは見出しより深く、子は親より深い
       const indent = (id: string) => body.find((l) => new RegExp(`^ +- ${id} `).test(l))!.search(/-/);
       expect(indent("n2")).toBeGreaterThan(0);
       expect(indent("n3")).toBeGreaterThan(indent("n2"));
@@ -1934,7 +1871,6 @@ describe("済みの議題・論点を AI へ畳んで渡す", () => {
   it.effect("済みの議題の中に留まった移動、話し中の場所どうしの移動では、見出しは出ず「- 移動」の 1 行だけ", () =>
     Effect.gen(function* () {
       const closed = closeAt(opened, ["n1", "n2"]);
-      // applyOps は移動先の祖先を話し中に戻すので、済みの中に留まった結果は手で作る
       const stayed: MeetingMap = { ...closed, nodes: { ...closed.nodes, n7: { ...closed.nodes.n7!, parent: "n2" } } };
       const [, stayedMessage] = yield* sendAll([closed, stayed]);
       expect(line(stayedMessage!, "n7")).toEqual(["- 移動 n7 → 親: n2"]);
@@ -1974,7 +1910,7 @@ describe("済みの議題・論点を AI へ畳んで渡す", () => {
       const [, , message] = yield* sendAll([withNote.map, closed, moved]);
 
       expect(heading(message!, "n2")).toHaveLength(1);
-      expect(message).toMatch(/^ +- n3 案: 二回$/m); // 済みの外の案は出る
+      expect(message).toMatch(/^ +- n3 案: 二回$/m);
       expect(message).toMatch(/^ +- n4 論点\(決定済み\): 誰が面接官か（済み）$/m);
       expect(message).toMatch(/^ +- n5 決定: 部長と人事$/m);
       expect(message).not.toContain("補足メモ");
@@ -1991,7 +1927,7 @@ describe("済みの議題・論点を AI へ畳んで渡す", () => {
       expect(sys.indexOf(body)).toBeGreaterThan(sys.indexOf(section));
       expect(sys.indexOf(section)).toBeGreaterThan(sys.indexOf(NOOP_SCOPE));
       expect(sys.indexOf(section)).toBeLessThan(sys.indexOf("# 会話の扱い"));
-      expect(sys).toContain("話が戻ってきたら、畳まれていても見えている id にそのまま add・update する"); // 差分操作の close の行は残る
+      expect(sys).toContain("話が戻ってきたら、畳まれていても見えている id にそのまま add・update する");
     }));
 });
 
@@ -2117,12 +2053,11 @@ describe("共有画面（DiffInput.screens）の描画", () => {
 
       const blocks = blocksOf(created[0]!);
       expect(blocks.map((b) => b.type)).toEqual(["text", "image", "text", "text", "image", "text"]);
-      expect(blocks[0]!.text!.trim()).toBe("## 共有画面 [12:34] から"); // 754.2 秒 = 12:34
+      expect(blocks[0]!.text!.trim()).toBe("## 共有画面 [12:34] から");
       expect(blocks[1]).toEqual({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: Buffer.from(screenBytes(1)).toString("base64") } });
       expect(blocks[2]!.text!.trim()).toBe("## 共有画面：なし（[13:20] から）");
       expect(blocks[3]!.text!.trim()).toBe("## 共有画面 [01:05] から");
       expect(Buffer.from(blocks[4]!.source!.data, "base64")).toEqual(Buffer.from(screenBytes(2)));
-      // 最後に buildPrompt の文字列（マップ・発言）。buildPrompt の中身は共有画面で変わらない
       expect(blocks[5]).toEqual({ type: "text", text: buildPrompt(given) });
     }));
 
@@ -2140,7 +2075,7 @@ describe("共有画面（DiffInput.screens）の描画", () => {
       yield* updater.update(withScreens(1, [shot(5, 1)]));
       yield* updater.update(input(2));
 
-      expect(created).toHaveLength(1); // 同じ query を使い続ける（query の開閉・回数は共有画面で変わらない）
+      expect(created).toHaveLength(1);
       expect(Array.isArray(created[0]!.messages[0]!.message?.content)).toBe(true);
       expect(typeof created[0]!.messages[1]!.message?.content).toBe("string");
     }));
@@ -2297,10 +2232,7 @@ describe("adapter が覚えて開き直しで送り直す共有画面", () => {
     }));
 });
 
-// Issue #642: 英字の語のカタカナの読みを聞く katakana は、差分更新（update）の query とは別の、1 回きりの query を開く。
-// 差分の query の使い回し（current）・開き直しの回数（QUERY_RENEW_CALLS）に影響させない
 describe("英字の語のカタカナの読み（katakana。Issue #642）", () => {
-  // 1 つ目の query（差分の update）は ok、読みを聞く query は readings を返す
   const diffThenReadings = (queryIndex: number) => (queryIndex === 0 ? "ok" : "readings") as Behavior;
 
   it.effect("update とは別の query を 1 本開いて結果を返し、その query を閉じる。語は 1 通のメッセージにまとめて載り、system と出力の schema は差分とは別のものになる", () =>
@@ -2316,7 +2248,7 @@ describe("英字の語のカタカナの読み（katakana。Issue #642）", () =
       const prompt = texts(created[1]!)[0]!;
       expect(prompt).toContain("Notion");
       expect(prompt).toContain("Figma");
-      expect(created[1]!.closeCalls).toBe(1); // 1 回きりなので、答えを受け取ったら閉じる
+      expect(created[1]!.closeCalls).toBe(1);
       expect(created[1]!.options.systemPrompt).not.toBe(SYSTEM);
       expect(created[1]!.options.outputFormat).toMatchObject({ type: "json_schema" });
       expect(created[1]!.options.outputFormat.schema).not.toEqual(created[0]!.options.outputFormat.schema);
@@ -2356,7 +2288,7 @@ describe("英字の語のカタカナの読み（katakana。Issue #642）", () =
 
       const failure = yield* Effect.flip(updater.katakana!(["Notion"]));
       expect(failure._tag).toBe("ClaudeResultFailed");
-      expect(created[1]!.closeCalls).toBe(1); // 失敗しても閉じる
+      expect(created[1]!.closeCalls).toBe(1);
 
       yield* updater.update(input(2));
       expect(created).toHaveLength(2);
@@ -2377,7 +2309,6 @@ describe("英字の語のカタカナの読み（katakana。Issue #642）", () =
 });
 
 describe("前回の応答の仮 ID と捨てた操作（buildPrompt）", () => {
-  // 1 回目の応答: 議題 n1。2 回目の応答（前回の応答）: 仮 ID u2 の論点（→ n2）と、仮 ID の無い…ではなく ref が対応表に無い追加 n3
   const prevMap = evolve(emptyMap("会議"), [{ op: "add", ref: "t1", parent: "root", kind: "議題", text: "送料", evidence: ["r1"] }]).map;
   const lastResponse = evolve(prevMap, [
     { op: "add", ref: "u2", parent: "n1", kind: "TODO", text: "送料を調べる", evidence: ["r1"] },
@@ -2416,7 +2347,6 @@ describe("前回の応答の仮 ID と捨てた操作（buildPrompt）", () => {
       expect(rows[i]).toContain(JSON.stringify(d.op));
       expect(rows[i]).toContain(d.reason);
     }
-    // 節は変更の行より後ろ
     expect(part.findIndex((l) => l.startsWith("- 追加 n2 "))).toBeLessThan(at);
   });
 

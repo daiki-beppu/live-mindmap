@@ -11,7 +11,6 @@ import type { UpdaterUnavailable } from "../src/updaterUnavailable.ts";
 
 const model = { name: "compatible", route: "openai-compatible" as const, model: "synthetic-model", url: "http://test.invalid/v1", local: false as const };
 type CompatibleModel = typeof model & { apiKeyEnv?: string; maxTokens?: number; extraBody?: Record<string, unknown> };
-// 計画の「選択済みモデル→開始前準備→実行Layer」を使う。関数名は後続実装の境界名に合わせられる。
 const prepareUpdaterLayer: (selected: CompatibleModel) => Effect.Effect<Layer.Layer<DiffUpdater, UpdaterUnavailable>, UpdaterUnavailable, HttpClient.HttpClient | Scope.Scope> =
   (selected) => prepare(selected).pipe(Effect.provide(forbiddenManagedDeps), Effect.provide(unusedApple), Effect.provideService(FileSystem.FileSystem, FileSystem.makeNoop({})));
 const remark = (text: string, id = "r1"): Remark => ({ id, track: "相手", start: 0, end: 10, text });
@@ -251,7 +250,6 @@ describe("OpenAI互換の要求とv5変換（C02・C03）", () => {
   }));
 });
 
-// 外形が不正な応答（200 で choices が空）と、分類 Schema の decode 失敗は別の文言で返る
 describe("分類の失敗の文言", () => {
   const rawClient = (bodyAt: (call: number) => unknown) => {
     let calls = 0;
@@ -279,7 +277,6 @@ describe("分類の失敗の文言", () => {
   }));
 });
 
-// Issue #642: 英字の語のカタカナの読み（katakana）は、分類とは別の system・schema で 1 回きりの要求を送る
 describe("英字の語のカタカナの読み（Issue #642）", () => {
   const readingsAnswer = { readings: [{ word: "Notion", katakana: "ノーション" }, { word: "Figma", katakana: "フィグマ" }] };
   const answerBy = (body: Body, call: number) => (call === 1 || body.response_format.json_schema.schema.properties?.readings === undefined ? none : readingsAnswer);
@@ -289,7 +286,7 @@ describe("英字の語のカタカナの読み（Issue #642）", () => {
     const updater = yield* open(model).pipe(Effect.provideService(HttpClient.HttpClient, fake.client));
     const answer = yield* updater.katakana!(["Notion", "Figma"]);
     expect(answer).toEqual([{ surface: "Notion", katakana: "ノーション" }, { surface: "Figma", katakana: "フィグマ" }]);
-    expect(fake.requests).toHaveLength(2); // 開始時の接続確認 1 回 + 読みの要求 1 回（語ごとには送らない）
+    expect(fake.requests).toHaveLength(2);
     const probe = fake.requests[0]!.body;
     const { request, body } = fake.requests[1]!;
     expect([request.method, request.url]).toEqual(["POST", "http://test.invalid/v1/chat/completions"]);

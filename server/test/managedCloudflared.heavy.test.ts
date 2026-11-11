@@ -11,7 +11,6 @@ const installed = { name: "cloudflared", need: "optional", state: "ready" } as c
 
 const transientNames = (names: string[]) => names.filter((name) => name.startsWith(".work-") || name.startsWith("install.lock"));
 
-// tar の展開で値が決まる契約（導入した中身と実行ビット）の代表。ハッシュ不一致などは managedCloudflared.it.test.ts に残す
 describe("管理 cloudflared の導入（tar の展開）", () => {
   it.live("831 C2・C4・C5: 合成 tgz を管理ルートに導入し実行可能なパスを返す", () => Effect.gen(function* () {
     const dir = yield* temporaryDeps;

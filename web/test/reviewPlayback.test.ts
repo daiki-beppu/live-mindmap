@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { AUDIO_RATE, AUDIO_RATES, initialPlayback, PLAYBACK_RATE, PLAYBACK_RATES, playbackReducer, rateItemLabel, rateOptionLabel, type PlaybackEvent, type PlaybackState } from "../src/reviewPlayback.ts";
 
-// 見返しの再生の状態（純粋な reducer）。時刻の元（rAF や音声の currentTime）は知らず、経過の秒だけを受け取る。
 const ctx = { duration: 100, reflectionTimes: [10, 40, 70], rates: [10, 30, 60, 120] };
 const run = (state: PlaybackState, ...events: PlaybackEvent[]) => events.reduce((s, e) => playbackReducer(s, e, ctx), state);
 const start = initialPlayback(ctx.duration);
@@ -70,14 +69,14 @@ describe("反映 1 つ戻る・進む（prev / next）", () => {
     const at = (t: number) => run(start, { type: "seek", time: t });
     expect(run(at(50), { type: "prev" }).time).toBe(40);
     expect(run(at(50), { type: "next" }).time).toBe(70);
-    expect(run(at(40), { type: "prev" }).time).toBe(10); // ちょうどの時刻は「小さい」に入らない
+    expect(run(at(40), { type: "prev" }).time).toBe(10);
     expect(run(at(40), { type: "next" }).time).toBe(70);
   });
 
   it("前後に反映の時刻が無ければ、動かない（状態も変わらない）", () => {
     const first = run(start, { type: "seek", time: 10 });
     expect(run(first, { type: "prev" })).toEqual(first);
-    expect(run(start, { type: "next" })).toEqual(start); // 100 より大きい反映は無い
+    expect(run(start, { type: "next" })).toEqual(start);
     const early = run(start, { type: "seek", time: 5 });
     expect(run(early, { type: "prev" })).toEqual(early);
   });
@@ -176,11 +175,10 @@ describe("版ごとに渡す速さの並び", () => {
     const s = step(initialPlayback(100, 1), { type: "seek", time: 0 }, { type: "toggle" }, { type: "faster" });
     expect(s.rate).toBe(1.5);
     expect(step(s, { type: "elapsed", seconds: 2 }).time).toBe(3);
-    expect(step(s, { type: "setRate", rate: 30 })).toEqual(s); // 音声なしの並びの値は、この並びに無い
+    expect(step(s, { type: "setRate", rate: 30 })).toEqual(s);
   });
 });
 
-// 音声つきの版。時刻の元は <audio> の currentTime だけで、通知（audioTime）が画面の時刻を決める。速さは 0.5〜2 倍
 describe("音声の時刻の通知（audioTime）", () => {
   const audioCtx = { duration: 100, reflectionTimes: [10, 40, 70], rates: AUDIO_RATES };
   const audioStart = initialPlayback(audioCtx.duration, 1);
@@ -189,7 +187,6 @@ describe("音声の時刻の通知（audioTime）", () => {
   it("進めている間は、通知された currentTime がそのまま画面の時刻になる（前の時刻や速さからは計算しない）", () => {
     const playing = step(audioStart, { type: "seek", time: 5 }, { type: "toggle" });
     expect(step(playing, { type: "audioTime", time: 5.25 })).toMatchObject({ time: 5.25, playing: true });
-    // 前の通知から飛んだ値でも、その値になる（足し算ではない）
     expect(step(playing, { type: "audioTime", time: 5.25 }, { type: "audioTime", time: 42 }).time).toBe(42);
     expect(step(playing, { type: "audioTime", time: 3 }).time).toBe(3);
   });
@@ -197,7 +194,6 @@ describe("音声の時刻の通知（audioTime）", () => {
   it("止まっている間の通知では、時刻も状態も変わらない", () => {
     const paused = step(audioStart, { type: "seek", time: 20 });
     expect(step(paused, { type: "audioTime", time: 50 })).toEqual(paused);
-    // 止めた直後に届いた通知で、止めた時刻から戻らない
     const stopped = step(paused, { type: "toggle" }, { type: "audioTime", time: 21 }, { type: "toggle" });
     expect(step(stopped, { type: "audioTime", time: 20.5 })).toEqual(stopped);
   });
@@ -226,15 +222,15 @@ describe("音声の時刻の通知（audioTime）", () => {
     expect(state).toMatchObject({ time: 0, playing: true });
     state = step(state, { type: "audioTime", time: 3 });
     expect(state.time).toBe(3);
-    state = step(state, { type: "seek", time: 60 }); // シークは行き先の時刻になり、進めたまま
+    state = step(state, { type: "seek", time: 60 });
     expect(state).toMatchObject({ time: 60, playing: true });
-    state = step(state, { type: "audioTime", time: 60.5 }); // 音声が新しい時刻から鳴り、通知が続く
+    state = step(state, { type: "audioTime", time: 60.5 });
     expect(state.time).toBe(60.5);
-    state = step(state, { type: "next" }); // 反映 1 つ進む: 今の通知の時刻の次の反映（70）が行き先
+    state = step(state, { type: "next" });
     expect(state).toMatchObject({ time: 70, playing: true });
     state = step(state, { type: "audioTime", time: 70.25 });
     expect(state.time).toBe(70.25);
-    state = step(state, { type: "prev" }); // 戻る: 70.25 より小さい反映の最大（70）
+    state = step(state, { type: "prev" });
     expect(state.time).toBe(70);
     state = step(state, { type: "toggle" }, { type: "audioTime", time: 71 });
     expect(state).toMatchObject({ time: 70, playing: false });
@@ -363,7 +359,6 @@ describe("ミュートと音量（toggleMute / setVolume）", () => {
   });
 });
 
-// 速さのメニューの項目の文言（Issue #825 で React の操作の行から移した純粋な関数。操作の行（app/review/controls.ts）が使う）
 describe("速さの項目の文言（rateOptionLabel / rateItemLabel）", () => {
   it("rateOptionLabel は「N 倍（会議の分数 を 所要の分数 で）」。所要は小数 1 桁", () => {
     expect(rateOptionLabel(60, 9660)).toBe("60 倍（161 分を 2.7 分で）");

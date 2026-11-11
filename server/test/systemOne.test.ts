@@ -5,9 +5,6 @@ import { HttpClient, HttpClientError, HttpClientResponse, type HttpClientRequest
 import type { JudgeModel } from "../src/judgeSelection.ts";
 import { makeSystemOne } from "../src/systemOne.ts";
 
-// 判定の口（System One API の形）。偽の HttpClient で、送るものと応答の写し方と「判定できなかった」を固定する。
-// 応答の JSON の形（answers.<名前>.noul）は二次資料による想定。実 API の形が違えば、ここと systemOne.ts を合わせて直す。
-
 const judge: JudgeModel = { name: "jev", route: "system-one", apiKeyEnv: "TYPESAFE_AI_API_KEY", timeoutMs: 1000 };
 const questions = { route: { type: "noul", instructions: "含まれるか" } } as const;
 const state = "# 新しい発言\n来週までにやります";

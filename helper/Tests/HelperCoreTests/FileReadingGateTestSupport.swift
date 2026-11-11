@@ -4,8 +4,6 @@ import Speech
 import Testing
 @testable import HelperCore
 
-// FileReadingGate のテストが共有する道具（Issue #1092）。測る量は「これまでに読んだ一番先の位置」（invNoReadWhilePaused）。
-
 struct GatePulled: Equatable {
     let reader: String
     let start: Double
@@ -28,7 +26,6 @@ final class GateFlag: @unchecked Sendable {
     var isRaised: Bool { lock.withLock { set } }
 }
 
-/// 引いた入力の位置を記録し、引くたびに `afterPull` を呼ぶ偽の役。
 final class GateRecordingTranscriber: FileTranscriber, @unchecked Sendable {
     private let name: String
     private let log: GatePullLog
@@ -79,7 +76,6 @@ func gateWaitUntilAsync(_ condition: String, _ check: @Sendable () async -> Bool
     }
 }
 
-/// 音声の入力を裏で読み、`transcribe` はすぐ戻る偽の役。映像の読みを、音声が止められている間に走らせるために使う。
 final class GateBackgroundTranscriber: FileTranscriber, @unchecked Sendable {
     private let name: String
     private let log: GatePullLog

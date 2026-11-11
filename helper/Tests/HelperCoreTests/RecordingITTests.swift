@@ -4,13 +4,10 @@ import Foundation
 import Testing
 @testable import HelperCore
 
-// トラックごとの録音（AAC・モノラル）。0 秒は発言の時刻の基準（origin）と同じ時点。
-
 private func hostTime(after origin: UInt64, nanos: UInt64) -> UInt64 {
     origin + AudioConvertNanosToHostTime(nanos)
 }
 
-/// 440 Hz のサイン波を `seconds` 秒分入れたバッファ。
 private func tone(sampleRate: Double, channels: AVAudioChannelCount, seconds: Double) throws -> AVAudioPCMBuffer {
     let format = try #require(AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: channels))
     let frames = AVAudioFrameCount(sampleRate * seconds)
@@ -29,7 +26,6 @@ private func temporaryDirectory() throws -> URL {
     return url
 }
 
-/// 録音ファイルの長さ（秒）。
 private func duration(of url: URL) throws -> Double {
     let file = try AVAudioFile(forReading: url)
     return Double(file.length) / file.processingFormat.sampleRate
@@ -70,7 +66,6 @@ struct RecordingITTests {
         let recorder = try TrackRecorder(url: url, origin: origin)
         let timeline = TrackTimeline(origin: origin)
 
-        // バッファ 1: 基準 + 0.5 秒、バッファ 2: 基準 + 5.5 秒（5 秒の取得の空白）。同じ入力を録音と発言の時刻の両方へ渡す
         let first = CapturedAudio(buffer: try tone(sampleRate: 48_000, channels: 1, seconds: 0.1), hostTime: hostTime(after: origin, nanos: 500_000_000))
         let second = CapturedAudio(buffer: try tone(sampleRate: 48_000, channels: 1, seconds: 0.1), hostTime: hostTime(after: origin, nanos: 5_500_000_000))
         for audio in [first, second] {
@@ -79,13 +74,10 @@ struct RecordingITTests {
         }
         try recorder.finish()
 
-        // アナライザは空白なしでつないだ音声を受け取るので、バッファ 2 の中の発言は 0.1〜0.2 秒になる
         let aligned = timeline.align(TranscriptionResult(text: "はい", isFinal: true, start: 0.1, end: 0.2))
 
-        // 録音の中のバッファ 2 の位置 = 先頭の無音 + バッファ 1 の長さ
         let silence = Double(leadingSilenceFrames(origin: origin, firstHostTime: first.hostTime, sampleRate: 48_000)) / 48_000
         #expect(abs(aligned.start - (silence + 0.1)) < 0.01)
-        // 発言の終わりが、録音の終わり（空白は埋めない）と一致する
         #expect(abs(aligned.end - (try duration(of: url))) < 0.1)
     }
 }

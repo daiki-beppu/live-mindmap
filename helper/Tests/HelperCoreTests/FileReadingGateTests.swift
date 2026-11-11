@@ -2,10 +2,6 @@ import Foundation
 import Testing
 @testable import HelperCore
 
-// Issue #1092: 差分更新の一時停止の間、サーバーの指示（`{"type":"reading-pause","paused":boolean,"token":string}`）で
-// 録画ファイルの読み手を止める（FileReadingGate）。測る量は「これまでに読んだ一番先の位置」（invNoReadWhilePaused）。
-// ファイルはテストの中で作った合成の WAV。文字にする役は偽物で、引いた入力の位置を記録する。
-
 private let token = String(repeating: "a", count: 64)
 private func message(type: String = "reading-pause", paused: Bool, token: String?) -> String {
     token.map { #"{"type":"\#(type)","paused":\#(paused),"token":"\#($0)"}"# } ?? #"{"type":"\#(type)","paused":\#(paused)}"#
@@ -66,7 +62,6 @@ struct FileReadingGateTests {
         await gate.resume()
         for task in tasks { try await task.value }
         #expect(passed.values.count == 3)
-        // 解いた後は、また待たずに通る
         try await gate.waitOpen()
     }
 

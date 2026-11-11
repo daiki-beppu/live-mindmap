@@ -138,7 +138,6 @@ struct RecordedEchoHeavyTests {
         for file in files {
             let output = try readMono48k(file)
             try #require(output.count == raw.count)
-            // AEC の効果を合否条件にせず、全区間 bypass で入力の受け渡しだけを観測する。
             #expect(zip(output[..<rate], recordedMicrophone[..<rate]).allSatisfy { abs(Double($0 - $1)) <= pcm16Step })
             var dot = 0.0
             for i in 0..<speechEnd { dot += Double(output[rate + i] - recordedMicrophone[rate + i]) * Double(recordedSpeech[i]) }
@@ -178,7 +177,6 @@ struct RecordedEchoHeavyTests {
             SynthesizedLine(speaker: "自分", text: "会議を確認します。", start: 0, end: 0.05),
             SynthesizedLine(speaker: "自分", text: "資料を送ります。", start: 0.1, end: 0.15),
         ]).write(to: lines)
-        // 候補ごとの設定の中身は RecordedEchoTests が見る。ここは bypass と AEC3 を通す候補を 1 つずつにして、CI の時間に収める。
         let names = ["bypass-10", "delay-hint-40"]
         let result = try runEchoCommand([
             "echo", reference.path, voice.path, "--self-lines", lines.path,

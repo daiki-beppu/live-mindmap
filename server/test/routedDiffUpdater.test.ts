@@ -8,20 +8,15 @@ import { DiffUpdatePaused, DiffUpdater, emptyMap, makeSession, type LogEvent, ty
 import { HAIKU, routedUpdater, SONNET } from "../src/routedDiffUpdater.ts";
 import type { JudgeAsk, JudgeOutcome } from "../src/systemOne.ts";
 
-// 振り分け（DiffUpdater の口の 1 段）。偽の判定と偽の Sonnet / Haiku の差分更新で、行き先・質問・state・
-// query ごとの前回の応答の持ち主・判定の記録を固定する。
-
 
 const remark = (n: number, text = `発言${n}`): Remark => ({ id: `r${n}`, track: "相手", start: n, end: n + 1, text });
 const response = (label: string): PreviousResponse => ({ refs: { [label]: `n-${label}` }, dropped: [{ op: { op: "noop", reason: label }, reason: label }] });
 
-// p は「含む」の確からしさ（distribution.yes）。confidence は選んだ側の確からしさ（p<0.5 では 1-p）
 const answered = (p: number): JudgeOutcome => ({
   ok: true, usage: { input_tokens: 1 },
   answers: { route: { distribution: { yes: p, no: 1 - p }, chosen: p >= 0.5 ? "yes" : "no", confidence: Math.max(p, 1 - p) } },
 });
 type Scripted = number | "fail";
-// ask は呼ばれるたびに script の次の値を返す。質問名は送られた質問の名前をそのまま使う
 const fakeAsk = (script: readonly Scripted[], delay = 0) => {
   const calls: { state: string; questions: Record<string, { type: string; instructions: string }> }[] = [];
   const ask: JudgeAsk = (state, questions) => Effect.gen(function* () {
@@ -36,7 +31,6 @@ const fakeAsk = (script: readonly Scripted[], delay = 0) => {
   return { ask, calls };
 };
 
-// 偽の差分更新。渡された入力を記録し、台本どおり成功（応答 label）か失敗を返す
 const fakeUpdater = (label: string, failures: ReadonlySet<number> = new Set()) => {
   const inputs: DiffInput[] = [];
   const update = (input: DiffInput): Effect.Effect<DiffResult, DiffUpdateError> => Effect.suspend(() => {
@@ -212,11 +206,8 @@ describe("振り分け: 各 query には自分の前回の応答だけを渡す"
     yield* router.update(input([remark(2)], { previousResponse: r1 }));
     yield* router.update(input([remark(3)], { previousResponse: r2 }));
     yield* router.update(input([remark(4)], { previousResponse: r3 }));
-    // Sonnet: 1 回目は何も無し、2 回目（全体の 3 回目）は自分の r1。Haiku の r2 は来ない
     expect(handed(sonnet.inputs)).toEqual([undefined, r1]);
-    // Haiku: 1 回目（全体の 2 回目）は自分の前回が無いので何も無し（Sonnet の r1 は来ない）、2 回目は自分の r2
     expect(handed(haiku.inputs)).toEqual([undefined, r2]);
-    // 受け取らない回はキーごと付けない
     expect(sonnet.inputs[0]).not.toHaveProperty("previousResponse");
     expect(haiku.inputs[0]).not.toHaveProperty("previousResponse");
   }));
@@ -231,7 +222,6 @@ describe("振り分け: 各 query には自分の前回の応答だけを渡す"
   }));
 
   it.effect("query の回が失敗した後は、その query に前回の応答を渡さない", () => Effect.gen(function* () {
-    // Haiku が 1 回目は成功（r1）、2 回目に失敗。3 回目はセッションがキーを外した入力で、Haiku に渡さない
     const { router, haiku } = yield* setup([0.1, 0.1, 0.1], { haikuFails: new Set([2]) });
     const r1 = response("h1");
     yield* router.update(input([remark(1)]));
@@ -269,7 +259,6 @@ describe("振り分け: 判定の記録", () => {
     const second = yield* Effect.forkChild(router.update(input([remark(2)])));
     yield* TestClock.adjust(25);
     const low = yield* Fiber.join(second);
-    // confidence は「含む」の確からしさ（p）。選んだ側（0.9）ではない
     expect(low.judge).toEqual({ model: HAIKU, ms: 25, confidence: 0.1 });
   }));
 
@@ -300,7 +289,6 @@ describe("振り分け: 利用上限の一時停止", () => {
   }).pipe(Effect.scoped));
 
   const shot = (start: number) => ({ start, image: { id: `img${start}`, bytes: new Uint8Array([start]) } });
-  // Haiku へ 2 枚を送って Sonnet の未送にためる → Sonnet の回が上限で止まる → retried の確からしさで再試行する
   const retryAfterLimit = (retried: number) => Effect.gen(function* () {
     let limited = false;
     const seen: (number[] | undefined)[] = [];
@@ -406,7 +394,6 @@ describe("振り分け: 共有画面", () => {
     yield* router.update(input([remark(2)], { screens: [shot(20)] }));
     yield* router.update(input([remark(3)]));
     expect(starts(haiku.inputs[0]!.screens)).toEqual([10, 20]);
-    // Sonnet の 2 回目: 自分がまだ受け取っていない B
     expect(starts(sonnet.inputs[1]!.screens)).toEqual([20]);
   }));
 

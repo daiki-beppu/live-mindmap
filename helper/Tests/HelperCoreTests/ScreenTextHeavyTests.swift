@@ -4,10 +4,6 @@ import Foundation
 import Testing
 import HelperCore
 
-// 共有画面の文字を読む（Issue #643）。実際の Vision（VNRecognizeTextRequest）を通す。
-// 画面収録の許可は使わない。テストの中で文字を描いた CGImage に OCR をかける。
-
-/// 白地に黒の文字を 1 行ずつ描いた画像。`lines` の上から順に並べる。
 private func drawnImage(_ lines: [String], width: Int = 1280, height: Int = 720) throws -> CGImage {
     let space = CGColorSpaceCreateDeviceRGB()
     let context = try #require(CGContext(

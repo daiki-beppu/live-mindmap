@@ -2,8 +2,6 @@ import { describe, expect, it, vi } from "vitest";
 import { generatePassphrase, openSealed, sealWithPassphrase } from "../src/core/index.ts";
 import { SEALED_SCRIPT_ID, type Sealed, unlockPageScript } from "../src/core/passphrase.ts";
 
-// 合言葉の生成と、暗号化・復号（Issue #1251）。往復、認証つき暗号であること、時間のかかる鍵の導出であること。鍵の導出は 1 回に数百 ms かかるので、暗号化・復号の回数は絞る
-
 const SECRET = "ここは外に出してはいけない発言 <title>罠</title>";
 const decode = (value: string) => Buffer.from(value, "base64");
 
@@ -109,7 +107,6 @@ describe("sealWithPassphrase / openSealed", () => {
   });
 });
 
-// new Function は大域で評価するので、モジュールの束縛（import・定数）や const に入れた関数を参照すると ReferenceError になる
 function bootUnlockPage(sealed: Sealed) {
   let submit: ((event: { preventDefault(): void }) => void) | undefined;
   const { promise: settled, resolve: settle } = Promise.withResolvers<{ written: string } | { alert: string }>();

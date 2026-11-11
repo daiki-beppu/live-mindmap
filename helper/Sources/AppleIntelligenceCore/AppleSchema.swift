@@ -46,7 +46,7 @@ private struct SchemaOrder {
                 guard !order.contains(key) else { throw AppleError.invalid("重複したプロパティ: \(key)") }
                 order.append(key)
                 whitespace()
-                index += 1 // コロンは事前の JSON 検証で保証される
+                index += 1
                 try value(path: path + "/" + key.replacingOccurrences(of: "~", with: "~0").replacingOccurrences(of: "/", with: "~1"))
                 whitespace()
                 if bytes[index] == 44 { index += 1; whitespace() } else { break }

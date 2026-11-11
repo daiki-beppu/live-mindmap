@@ -5,10 +5,6 @@ import Speech
 import Testing
 @testable import HelperCore
 
-// `cli recorded` の組み立て（relayFileSession）の IT。本番と同じ関数に、合成したファイルと台本どおりに結果を流す偽の文字にする役を渡し、
-// WebSocket に流れたイベントを観測する（映像の `screen` は、映像つきの mov を渡して選択規則を確かめる）。確かめること: 保留が音声の時刻で解ける（壁時計では解けない）/
-// 入力の終わりの後に届く `相手` の確定結果も `自分` の判定の文脈に入る / トラック名と重複の印がライブと同じに付く。
-
 private typealias Support = FileAudioTestSupport
 
 private final class Gate: @unchecked Sendable {
@@ -27,31 +23,24 @@ private final class Flag: @unchecked Sendable {
 }
 
 private struct Step {
-    /// 引いた入力の終わりがこの秒に達したら、`results` を流す。
     let after: Double
     let results: [TranscriptionResult]
 }
 
 private struct ScriptedFailure: Error {}
 
-/// 引いた入力の位置に応じて、台本どおりに結果を流す偽の役。入力が終わったら、`tailDelay` 待ってから `tail` を流して終わる
-/// （実際の認識が、入力の終わりの後に残りを確定して流すことの代わり）。`pauseAfter` に達したら、`gate` が開くまで次の入力を引かない。
 private final class ScriptedTranscriber: FileTranscriber, @unchecked Sendable {
     private let steps: [Step]
     private let tail: [TranscriptionResult]
     private let tailDelay: Duration
     private let pause: (after: Double, gate: Gate)?
-    /// 渡されたら、これが真になった時点で結果の流れを `ScriptedFailure` で終える（入力を引いているかに関わらず）。
     private let failWhen: (@Sendable () -> Bool)?
-    /// 台本の結果をすべて流し終えたら立つ。`pause` に達して止まったときも立つ。
     let reachedScript = Flag()
     private let startsLock = NSLock()
     private var _firstStart: Double?
     private var _lastEnd = 0.0
     private var _firstResultInputEnd: Double?
-    /// 引いた最初の入力の開始位置（ファイルの秒）。1 つも引いていなければ nil。
     var firstStart: Double? { startsLock.withLock { _firstStart } }
-    /// 引いた入力の終わりの最大値（ファイルの秒）。
     var lastEnd: Double { startsLock.withLock { _lastEnd } }
     var firstResultInputEnd: Double? { startsLock.withLock { _firstResultInputEnd } }
 
@@ -137,7 +126,6 @@ private struct Received: Equatable {
     let duplicate: Bool
 }
 
-/// 届いたテキストフレームを集める。待ちには壁時計の期限を付ける。
 private final class Inbox: @unchecked Sendable {
     private let lock = NSLock()
     private var items: [Received] = []
@@ -145,7 +133,6 @@ private final class Inbox: @unchecked Sendable {
     var values: [Received] { lock.withLock { items } }
 }
 
-/// 届いた `screen`・`partial`・`remark` を、届いた順に 1 列で記録する（`screen` は start、それ以外は track）。
 private final class Arrivals: @unchecked Sendable {
     private let lock = NSLock()
     private var items: [(name: String, start: Double, end: Double?)] = []
@@ -154,7 +141,6 @@ private final class Arrivals: @unchecked Sendable {
     var timedValues: [(name: String, start: Double, end: Double?)] { lock.withLock { items } }
 }
 
-/// 届いた `screen` の start と、画像の有無。
 private final class ScreenInbox: @unchecked Sendable {
     private let lock = NSLock()
     private var items: [(start: Double, hasImage: Bool)] = []
@@ -183,7 +169,6 @@ private func startReceiving(_ task: URLSessionWebSocketTask, into inbox: Inbox, 
     }
 }
 
-/// OCR を温めるための、白い 64x64 の画像。
 private func blankImage() -> CGImage? {
     let context = CGContext(
         data: nil, width: 64, height: 64, bitsPerComponent: 8, bytesPerRow: 0,
@@ -193,9 +178,9 @@ private func blankImage() -> CGImage? {
     return context?.makeImage()
 }
 
-// Why: 上限は 30 秒。CI のランナーは混むと、すぐ終わるテストでも 12 秒かかり、10 秒の待ちでは映像の判定と OCR が間に合わなかった（#1091）。
-// 条件が成り立てばすぐ抜けるので、手元の速さは変わらない。スイートの時間制限（1 分）の内に収める
-private func waitUntil(_ condition: String, within limit: Duration = .seconds(30), _ check: @Sendable () -> Bool) async throws {
+private let busyRunnerWaitLimit: Duration = .seconds(30)
+
+private func waitUntil(_ condition: String, within limit: Duration = busyRunnerWaitLimit, _ check: @Sendable () -> Bool) async throws {
     let deadline = ContinuousClock.now + limit
     while !check() {
         if ContinuousClock.now >= deadline { throw WaitTimedOut(condition: condition) }
@@ -214,7 +199,6 @@ private struct Rig {
     let mine: URL?
     let directory: URL
 
-    /// `theirsWhiteFrom` / `mineWhiteFrom` を渡した側は、その秒から白になる映像つきの mov（`videoSeconds` 秒、既定は 4 秒）。nil の側は WAV。
     init(includeMine: Bool = true, theirsWhiteFrom: Double? = nil, mineWhiteFrom: Double? = nil, videoSeconds: Int = 4, videoFrameRate: Int = 10, audioSampleRate: Double = Support.sampleRate, smallChanges: Bool? = nil, theirsVideo: Support.Video? = nil) async throws {
         let directory = try Support.temporaryDirectory()
         self.directory = directory
@@ -246,7 +230,7 @@ private struct Rig {
         let port = try await server.start()
         socket = URLSession.shared.webSocketTask(with: URL(string: "ws://127.0.0.1:\(port)")!)
         socket.resume()
-        let deadline = ContinuousClock.now + .seconds(30)
+        let deadline = ContinuousClock.now + busyRunnerWaitLimit
         while await server.clientCount != 1 {
             if ContinuousClock.now >= deadline { throw WaitTimedOut(condition: "WebSocket が接続する") }
             try await Task.sleep(for: .milliseconds(25))
@@ -276,7 +260,6 @@ private struct Rig {
     }
 }
 
-/// 成功・失敗を問わず、relay を止めて Rig を片付ける。
 private func withRig(includeMine: Bool = true, theirsWhiteFrom: Double? = nil, mineWhiteFrom: Double? = nil, videoSeconds: Int = 4, videoFrameRate: Int = 10, audioSampleRate: Double = Support.sampleRate, smallChanges: Bool? = nil, theirsVideo: Support.Video? = nil, _ body: (Rig) async throws -> Void) async throws {
     let rig = try await Rig(includeMine: includeMine, theirsWhiteFrom: theirsWhiteFrom, mineWhiteFrom: mineWhiteFrom, videoSeconds: videoSeconds, videoFrameRate: videoFrameRate, audioSampleRate: audioSampleRate, smallChanges: smallChanges, theirsVideo: theirsVideo)
     do {
@@ -288,8 +271,6 @@ private func withRig(includeMine: Bool = true, theirsWhiteFrom: Double? = nil, m
     await rig.stop()
 }
 
-// Why: 映像の読み出しと OCR はどのテストもプロセスに 1 本の直列キュー fileScreenQueue を通る。並列に流しても速くならず、
-// 各テストの 30 秒の期限が一斉に数え始める間にフレームが他のテストの後ろで待つ（#1681）
 @Suite("録画のセッションの組み立て（relayFileSession）", .serialized, .timeLimit(.minutes(1)))
 struct FileSessionRelayITTests {
     @Test("入力の終わりの後に届く 相手 の確定結果も、保留中の 自分 の判定の文脈に入る。相手 は track 相手・印なし、自分 は track 自分・印あり")
@@ -314,7 +295,6 @@ struct FileSessionRelayITTests {
             defer { relaying.cancel() }
             try await waitUntil("両方の確定結果が届く") { rig.inbox.values.count == 2 }
             try await relaying.value
-            // 0 秒から読み直していない。2 本とも 2 秒から 4 秒の最後まで読む
             #expect(abs(try #require(theirsTranscriber.firstStart) - 2.0) < 0.001)
             #expect(abs(try #require(mineTranscriber.firstStart) - 2.0) < 0.001)
             #expect(abs(theirsTranscriber.lastEnd - 4.0) < 0.01)
@@ -344,7 +324,6 @@ struct FileSessionRelayITTests {
 
     @Test("映像つきの 2 本を正の開始位置（2.0）から読むと、開始位置以降の screen だけが届き、音声と映像は止まらずに最後まで読み切る")
     func pairWithVideoStartingAtPositiveFrom() async throws {
-        // 変化は 1 秒後のフレームで判定されるので、3.0 の変化を判定できるよう映像は 5 秒にする
         try await withRig(theirsWhiteFrom: 3.0, videoSeconds: 5) { rig in
             let theirsTranscriber = ScriptedTranscriber()
             let mineTranscriber = ScriptedTranscriber()
@@ -392,12 +371,10 @@ struct FileSessionRelayITTests {
     func partialHoldReleasesWhenAudioClockAdvances() async throws {
         try await withRig { rig in
             let gate = Gate()
-            // 両方の結果の流れは、入力の終わりの後も 5 秒開いたままにする（流れの終了で保留が解けたのではないことを分ける）
             let theirs = ScriptedTranscriber(tailDelay: .seconds(5), pause: (after: 1.6, gate: gate))
             let mine = ScriptedTranscriber(steps: [Step(after: 1.6, results: [partial("では私から", 0.5, 1.5)])], tailDelay: .seconds(5))
             let relaying = rig.relay(theirs: theirs, mine: mine)
             defer { relaying.cancel(); gate.open() }
-            // 相手 が止まり、自分 の途中結果が流れたことを確かめてから、保留中であることを見る
             try await waitUntil("相手 が止まり、自分 の途中結果が流れる") { theirs.reachedScript.isRaised && mine.reachedScript.isRaised }
             try await Task.sleep(for: .milliseconds(300))
             #expect(rig.inbox.values.isEmpty)
@@ -423,13 +400,10 @@ struct FileSessionRelayITTests {
         }
     }
 
-    /// 映像の選択規則。`relayFileSession` が戻った後に届いた `screen` の start を見る。画面全体の変化は 1 秒間比べる対象から外れるので、
-    /// 白に変わった秒の 1 秒後に判定され、start は変化した時刻になる。
     private func screenStarts(theirsWhiteFrom: Double?, mineWhiteFrom: Double?) async throws -> [Double] {
         var starts: [Double] = []
         try await withRig(theirsWhiteFrom: theirsWhiteFrom, mineWhiteFrom: mineWhiteFrom) { rig in
             try await rig.relay(theirs: ScriptedTranscriber(), mine: ScriptedTranscriber()).value
-            // relay が戻った時点で server.broadcast は済んでいる。届くのを待つ（映像がなければ待たずに 0 件）
             if theirsWhiteFrom != nil || mineWhiteFrom != nil {
                 try await waitUntil("screen が届く") { rig.screens.values.count >= 2 }
             }
@@ -466,7 +440,6 @@ struct FileSessionRelayITTests {
             let gate = Gate()
             let screenWaiting = Flag()
             let server = rig.server
-            // 画面の変化（1.0 秒）は 2.0 秒のフレームで判定される。判定の時刻まで音声の入力を渡さない
             let relaying = rig.relay(
                 theirs: ScriptedTranscriber(steps: [Step(after: 1.6, results: [final(sentence, 1.1, 1.6)])]),
                 mine: includeMine ? ScriptedTranscriber(steps: [Step(after: 1.7, results: [final(second, 1.2, 1.7)])]) : nil,
@@ -593,7 +566,6 @@ struct FileSessionRelayITTests {
                 for x in 0..<screenGridWidth {
                     let expected = (60..<80).contains(x) && (20..<40).contains(y) ? (step % 2 == 0 ? 40 : 200)
                         : slot > 0 && x == column && (4..<52).contains(y) ? 0 : 100
-                    // 色変換の丸めで固定領域が動き扱いにならないようにする。
                     try #require(abs(Int(luma[y * screenGridWidth + x]) - expected) <= screenMotionLumaDifferenceThreshold)
                 }
             }
@@ -602,7 +574,6 @@ struct FileSessionRelayITTests {
 
     private func verifyVideoProgress(includeMine: Bool, whiteFrom: Double, firstPause: Double,
                                      remarkEnd: Double, expected: [String], smallChanges: Bool? = nil) async throws {
-        // 20 fpsは0.75・1.75秒を含む。48 kHzの入力単位はend 1.6秒を1.75秒以内で生成できる。
         try await withRig(includeMine: includeMine, theirsWhiteFrom: whiteFrom, videoSeconds: smallChanges == nil ? 4 : 5, videoFrameRate: 20, audioSampleRate: 48_000, smallChanges: smallChanges) { rig in
             if let smallChanges { try await validateSmallChanges(rig.theirs, grows: smallChanges) }
             let firstRelease = Gate(), remainingVideo = Gate()
@@ -703,7 +674,6 @@ struct FileSessionRelayITTests {
 
     @Test("映像の読み出し中に音声の認識が失敗すると、映像を最後まで読まずに音声のエラーで戻り、戻った後は screen が増えない")
     func audioFailureCancelsVideoReadingAndStopsScreens() async throws {
-        // 長い映像（300 秒、295 秒で白）。最初の screen（start 0）が届いた後に音声を失敗させる
         try await withRig(theirsWhiteFrom: 295, videoSeconds: 300) { rig in
             let screens = rig.screens
             let relaying = rig.relay(
@@ -725,7 +695,6 @@ struct FileSessionRelayITTests {
         }
     }
 
-    /// base64 の JPEG の平均の明るさ（0〜255）。件数が合わないときに、どんな画面が出たかを示すためだけに使う。
     private func meanBrightness(_ base64: String) -> Int? {
         guard let data = Data(base64Encoded: base64), let image = CIImage(data: data) else { return nil }
         let context = CIContext()
@@ -740,7 +709,7 @@ struct FileSessionRelayITTests {
         let dir = try Support.temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: dir) }
         let movie = try await FileScreenTestSupport.makeMovie(in: dir, video: .slides(switchAt: 2))
-        #expect(try await AVURLAsset(url: movie).loadTracks(withMediaType: .video).count == 1) // 前提: 映像つき
+        #expect(try await AVURLAsset(url: movie).loadTracks(withMediaType: .video).count == 1)
 
         let events = try await FileScreenTestSupport.collect(movie)
 
@@ -763,7 +732,7 @@ struct FileSessionRelayITTests {
         let dir = try Support.temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: dir) }
         let movie = try await FileScreenTestSupport.makeMovie(in: dir, video: .undecodable)
-        let track = try #require(try await AVURLAsset(url: movie).loadTracks(withMediaType: .video).first) // 前提: 映像のトラックはある
+        let track = try #require(try await AVURLAsset(url: movie).loadTracks(withMediaType: .video).first)
         let reader = try AVAssetReader(asset: AVURLAsset(url: movie))
         let output = AVAssetReaderTrackOutput(track: track, outputSettings: [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA])
         var readable = false
@@ -771,7 +740,7 @@ struct FileSessionRelayITTests {
             reader.add(output)
             readable = reader.startReading() && output.copyNextSampleBuffer() != nil
         }
-        #expect(!readable) // 前提: BGRA では読めない
+        #expect(!readable)
 
         let events = try await FileScreenTestSupport.collect(movie)
 
@@ -789,7 +758,7 @@ struct FileSessionRelayITTests {
         defer { try? FileManager.default.removeItem(at: dir) }
         let wav = dir.appendingPathComponent("meeting.wav")
         try Support.writeWAV(wav, loudSeconds: 2, silentSeconds: 4)
-        #expect(try await AVURLAsset(url: wav).loadTracks(withMediaType: .video).isEmpty) // 前提: 映像なし
+        #expect(try await AVURLAsset(url: wav).loadTracks(withMediaType: .video).isEmpty)
 
         let events = try await FileScreenTestSupport.collect(wav)
 
@@ -821,12 +790,11 @@ enum FileScreenTestSupport {
         let socket = URLSession.shared.webSocketTask(with: URL(string: "ws://127.0.0.1:\(port)")!)
         socket.resume()
         do {
-            let deadline = ContinuousClock.now + .seconds(30)
+            let deadline = ContinuousClock.now + busyRunnerWaitLimit
             while await server.clientCount != 1 {
                 if ContinuousClock.now >= deadline { throw WaitTimedOut(condition: "WebSocket が接続する") }
                 try await Task.sleep(for: .milliseconds(25))
             }
-            // 送信完了後の目印まで受け取り、最後のイベントも届いたことを確認する。
             let end = HelperEvent.partial(track: .相手, start: 0, end: 0, text: "file-screen-test-complete", duplicate: false, words: [], wordTimes: [])
             let events = try await withThrowingTaskGroup(of: [ReceivedEvent]?.self) { group in
                 group.addTask {

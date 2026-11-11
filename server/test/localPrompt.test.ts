@@ -4,8 +4,6 @@ import { DiffUpdater, emptyMap, type DiffInput, type Remark } from "../src/core/
 import { localUpdaterLayer } from "../src/localDiffUpdater.ts";
 import { classificationRequest, splitSentences, type Classification } from "../src/localPrompt.ts";
 
-// Issue #1021: ローカルのモデルへのプロンプトも、直前の発言と新しい発言の文の行を、クラウドと同じ書式（話者つき）で出す。
-
 const remark = (fields: Partial<Remark> & Pick<Remark, "id" | "start">): Remark => ({ track: "相手", end: fields.start + 1, text: "本文", ...fields });
 const lineOf = (prompt: string, section: string) => prompt.split(`## ${section}`)[1]!.split("\n\n## ")[0]!.split("\n").filter(Boolean);
 
@@ -52,7 +50,6 @@ describe("classificationRequest: 発言の行に話者が出る", () => {
     ]);
   });
 
-  // Issue #1026: ローカルのモデルへのプロンプトも、名前が付いたラベルの行は「相手 B（田中）」。第 4 引数が ラベル → 名前 の表
   it("speakerNames があれば、直前の発言の行と新しい発言の文の行の両方で、ラベルのある相手の話者が 相手 B（田中） になる。名前の無いラベル・話者なし・自分は今の形のまま", () => {
     const recent = [
       remark({ id: "r1", start: 194.9, text: "前の発言", speaker: "相手 B" }),
@@ -85,7 +82,6 @@ describe("classificationRequest: 発言の行に話者が出る", () => {
   });
 });
 
-// Issue #1026: localUpdaterLayer（Apple Intelligence もここを通る）が DiffInput.speakerNames を classificationRequest へ渡す。受け渡しが欠けると名前がローカルのモデルに届かない
 describe("localUpdaterLayer: DiffInput.speakerNames の受け渡し", () => {
   const run = (speakerNames: DiffInput["speakerNames"]) => {
     const prompts: string[] = [];
@@ -113,7 +109,6 @@ describe("localUpdaterLayer: DiffInput.speakerNames の受け渡し", () => {
   });
 });
 
-// Issue #1027: 分類経路の名前。スキーマに必須の名前の配列が出て、分類結果の名前は DiffOutput.names になる（空なら付かない）
 describe("分類経路の名前", () => {
   const name = { label: "相手 B", name: "田中", evidence: "r2", basis: "名乗り" } as const;
   const classification = (名前: Classification["名前"]) => ({ 議題: { id: "新しい議題", 題: "" }, 文: [{ 種類: "なし" }], 済み: "なし", 名前 }) as unknown as Classification;

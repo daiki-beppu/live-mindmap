@@ -6,10 +6,6 @@ import { subscriptions } from "../src/app/meeting/subscription.ts";
 import { element, eventOfBinding, fakeDocument, keydown, settleKeyEvents, type KeyInit } from "./keysHarness.ts";
 import { FIRST, HEIGHTS, init, Message, SIZE, snapshotMessage, surfaceMessage, update, type MeetingMessage, type Model } from "./meetingHarness.ts";
 
-// 会議中の Subscription のうち、キー（文書の keydown。Issue #829）。画面は会議中の表（"live"）で決まり、スナップショットが届くまで（表示面が無い間）は流れを空にする。
-// 依存は選択の有無（Enter を開閉に使うかの判断に要る）。意味は update が決める（meeting.story.test.ts・meeting.scene.test.ts）。
-// WebSocket・表示面の rAF・ポインタの Subscription は、実ブラウザの meeting.mount.heavy.test.ts が確かめる（見返しの 10 秒のタイマーは会議中に無い）
-
 const NO_MODIFIERS = { metaKey: false, ctrlKey: false, altKey: false };
 const pressed = (key: string) => Message.PressedKey({ key: key as never, ...NO_MODIFIERS });
 
@@ -20,7 +16,6 @@ const selected = (): Model => run([snapshotMessage(FIRST), measured, surfaceMess
 
 afterEach(() => vi.unstubAllGlobals());
 
-// keys の stream は target を取らず、グローバルの document に付ける。偽の document に差し替えて走らせ、モデルから導いた依存で開く
 const pressEachOn = (model: Model, inits: readonly KeyInit[]) =>
   Effect.runPromise(
     Effect.gen(function* () {
@@ -67,7 +62,6 @@ describe("会議中の Subscription の keys", () => {
     expect(perEvent.flat()).toEqual([]);
   });
 
-  // Issue #1069: M は会議中では自分の休止・再開のキー（見返しのミュートとは別の行）
   it("M は、スナップショットが届いた後なら PressedKey(M) になる。待ち表示の間は Message にならない", async () => {
     expect((await pressEachOn(shown(), [{ key: "m" }, { key: "M", shiftKey: true }])).perEvent).toEqual([[pressed("M")], []]);
     expect((await pressEachOn(init(false), [{ key: "m" }])).perEvent).toEqual([[]]);
@@ -80,7 +74,6 @@ describe("会議中の Subscription の keys", () => {
     expect((await pressEachOn(selected(), inCircle)).perEvent).toEqual([[pressed("Enter")]]);
   });
 
-  // Issue #1133: 張り直すのはセッションの有無が変わったときだけ。選択の有無は keydown のたびに readDependencies から読む
   it("セッションの有無が変わったときだけ張り直す（選択の有無だけの変化では張り直さない）", () => {
     const { keepAliveEquivalence } = subscriptions.keys;
     expect(keepAliveEquivalence?.({ hasSession: true, hasSelection: false }, { hasSession: true, hasSelection: true })).toBe(true);

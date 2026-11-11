@@ -1,4 +1,3 @@
-// portOf（httpServing.ts）: 待受けのアドレスからポートを読む。throw せず Effect を返し、TCP でないときは defect にする
 import { describe, expect, it } from "@effect/vitest";
 import { Cause, Effect, Exit, Result } from "effect";
 import { NetAddress } from "effect/net";
@@ -20,7 +19,7 @@ describe("portOf", () => {
     const exit = yield* Effect.exit(portOf(address));
     expect(Exit.isFailure(exit)).toBe(true);
     if (!Exit.isFailure(exit)) return;
-    expect(Result.isFailure(Cause.findError(exit.cause))).toBe(true); // 型付きの失敗は無い
+    expect(Result.isFailure(Cause.findError(exit.cause))).toBe(true);
     expect(Cause.squash(exit.cause)).toMatchObject({ message: "TCP のポートで待ち受けていない" });
   }));
 });

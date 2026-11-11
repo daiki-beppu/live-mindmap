@@ -47,7 +47,7 @@ struct FileAudioExportHeavyTests {
         let movie = dir.appendingPathComponent("meeting.mov")
         try await Support.writeMovie(movie, audio: wav, videoSeconds: 3)
         let sources = try await AVURLAsset(url: movie).loadTracks(withMediaType: .video)
-        #expect(sources.count == 1) // 前提: 入力は映像つき
+        #expect(sources.count == 1)
         let output = dir.appendingPathComponent("相手.m4a")
 
         try await exportFileAudio(from: movie, to: output)
@@ -62,13 +62,13 @@ struct FileAudioExportHeavyTests {
     func firstOfTwoAudioTracksIsExported() async throws {
         let dir = try Support.temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: dir) }
-        let first = dir.appendingPathComponent("first.wav") // 前半が音、後半が無音
+        let first = dir.appendingPathComponent("first.wav")
         try Support.writeWAV(first, loudSeconds: 2, silentSeconds: 2)
-        let second = dir.appendingPathComponent("second.wav") // 全体が音（混ぜた場合も 2 本目を読んだ場合も、後半の rms が上がる）
+        let second = dir.appendingPathComponent("second.wav")
         try Support.writeWAV(second, loudSeconds: 4, silentSeconds: 0)
         let movie = dir.appendingPathComponent("meeting.mov")
         try await Support.writeMovie(movie, audio: first, videoSeconds: 4, moreAudio: [second])
-        #expect(try await AVURLAsset(url: movie).loadTracks(withMediaType: .audio).count == 2) // 前提: 音声のトラックが 2 本ある
+        #expect(try await AVURLAsset(url: movie).loadTracks(withMediaType: .audio).count == 2)
         let output = dir.appendingPathComponent("相手.m4a")
 
         try await exportFileAudio(from: movie, to: output)
@@ -95,11 +95,8 @@ struct FileAudioExportHeavyTests {
         try await exportFileAudio(from: movie, to: output)
 
         let duration = try await AVURLAsset(url: output).load(.duration).seconds
-        // 出力の長さはトラック自身の範囲の長さ（入力の 0 秒始まりを仮定して切り詰めない）
         #expect(abs(duration - range.duration.seconds) < 0.3)
-        // 末尾の無音まで残っている: 前提の音声は 4 秒分ある
         #expect(duration > 3.7)
-        // 音声の位置: 冒頭 1 秒の空きは出力にも残る（FileAudioInputs が読む PCM も、1 秒から音が始まる）。1 秒の音は 1〜3 秒、末尾の無音は 3 秒以降
         #expect(try Support.rms(of: output, from: 0.1, to: 0.8) < 0.02)
         #expect(try Support.rms(of: output, from: 1.3, to: 2.7) > 0.1)
         #expect(try Support.rms(of: output, from: 3.3, to: 3.9) < 0.02)
@@ -109,12 +106,11 @@ struct FileAudioExportHeavyTests {
     func exportsBothTracksUnderLiveNames() async throws {
         let dir = try Support.temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: dir) }
-        let theirs = dir.appendingPathComponent("them.wav") // 前半が音、後半が無音
+        let theirs = dir.appendingPathComponent("them.wav")
         try Support.writeWAV(theirs, loudSeconds: 2, silentSeconds: 2)
         let session = dir.appendingPathComponent("session", isDirectory: true)
         try FileManager.default.createDirectory(at: session, withIntermediateDirectories: true)
 
-        // 自分用: 0〜2 秒が無音、2〜4 秒が音（相手用と逆）
         let mineSilentThenLoud = dir.appendingPathComponent("me-silent-then-loud.wav")
         try writeSilentThenLoud(mineSilentThenLoud, silentSeconds: 2, loudSeconds: 2)
 

@@ -3,9 +3,6 @@ import Foundation
 import Testing
 @testable import stt_bench
 
-// Issue #1031: `stt-bench tracks` の本体 buildTracks をファイルで通す。会議のフォルダ（timeline.tsv・voices.json・lines/）を一時フォルダに作り、
-// 出力の 自分.wav に進行役の行の音声だけ、相手.wav に残りの行の音声だけが、start の位置で入り、2 本の長さが同じことを読み戻して確かめる。
-
 private func constant(_ value: Float, seconds: Double) -> [Float] {
     [Float](repeating: value, count: Int(seconds * synthSampleRate))
 }
@@ -38,10 +35,8 @@ struct TracksITTests {
         let rate = Int(synthSampleRate)
         #expect(mine.count == others.count)
         #expect(mine.count == (1.5 + 3).intValue(rate))
-        // 自分: 森川の行（0.25）が 0 秒の位置、甲の行は入らない
         #expect(abs(mine[100] - 0.25) < 1e-3)
         #expect(mine[rate + 100] == 0)
-        // 相手: 甲の行（0.125）が 1 秒の位置、森川の行は入らない
         #expect(abs(others[rate + 100] - 0.125) < 1e-3)
         #expect(others[100] == 0)
     }

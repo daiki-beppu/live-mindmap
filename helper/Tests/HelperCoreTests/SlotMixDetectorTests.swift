@@ -1,9 +1,6 @@
 import Testing
 @testable import HelperCore
 
-// 枠への混入の検出（Issue #1024）。偽の埋め込み（8 次元の単位ベクトル）を `SlotMixDetector` に直接入れて、モデルなしで確かめる。
-// 方向 e0..e7 は互いに直交（cos 0）。「cos c の声」は、e0 に c、別の直交方向に √(1-c²) を持つベクトルで作る。
-
 private let dimension = 8
 
 private func normalized(_ values: [Float]) -> [Float] {
@@ -15,7 +12,6 @@ private func cosine(_ a: [Float], _ b: [Float]) -> Float {
     zip(a, b).reduce(0) { $0 + $1.0 * $1.1 } / (a.reduce(0) { $0 + $1 * $1 }.squareRoot() * b.reduce(0) { $0 + $1 * $1 }.squareRoot())
 }
 
-/// 軸 `axis` の向きに、7・6 番目の軸へごく小さな決まったゆらぎを足した声。`index` でゆらぎが変わる（同じ声の別の区間）。
 private func voice(axis: Int, index: Int = 0) -> [Float] {
     var v = [Float](repeating: 0, count: dimension)
     v[axis] = 1
@@ -24,7 +20,6 @@ private func voice(axis: Int, index: Int = 0) -> [Float] {
     return normalized(v)
 }
 
-/// 軸 `base` の方向と cos が `similarity` になる声（残りは `other` の軸）。
 private func voice(axis base: Int, similarity: Float, other: Int, index: Int = 0) -> [Float] {
     var v = [Float](repeating: 0, count: dimension)
     v[base] = similarity
@@ -95,7 +90,6 @@ struct SlotMixDetectorTests {
     func shareBelowTenPercentDoesNotMix() {
         var detector = SlotMixDetector()
         _ = feed(&detector, slot: 0, (0..<60).map { voice(axis: 0, index: $0) })
-        // 5 区間（5/65）・6 区間（6/66 ≈ 9.1%）では出ない。7 区間（7/67 ≈ 10.4%）で出る
         let second = feed(&detector, slot: 0, (0..<7).map { voice(axis: 3, index: $0) })
         #expect(second == [false, false, false, false, false, false, true])
     }
@@ -105,7 +99,6 @@ struct SlotMixDetectorTests {
         var near = SlotMixDetector()
         _ = feed(&near, slot: 0, (0..<20).map { voice(axis: 0, index: $0) })
         _ = feed(&near, slot: 1, (0..<10).map { voice(axis: 2, index: $0) })
-        // 枠 0 の主な塊（e0）と cos 0.7、枠 1 の主な塊（e2）とは直交
         #expect(!feed(&near, slot: 1, (0..<10).map { voice(axis: 0, similarity: 0.7, other: 3, index: $0) }).contains(true))
 
         var far = SlotMixDetector()
@@ -146,7 +139,6 @@ struct SlotMixDetectorTests {
     func closeToOwnMainClusterDoesNotSplit() {
         var detector = SlotMixDetector()
         _ = feed(&detector, slot: 0, (0..<20).map { voice(axis: 0, index: $0) })
-        // 主な塊（e0）と cos 0.5（距離 0.5 < 0.6）。別の塊にならない
         #expect(!feed(&detector, slot: 0, (0..<10).map { voice(axis: 0, similarity: 0.5, other: 3, index: $0) }).contains(true))
     }
 
@@ -163,7 +155,7 @@ struct SlotMixDetectorTests {
         #expect(detector.centroids.isEmpty)
         _ = feed(&detector, slot: 0, (0..<20).map { voice(axis: 0, index: $0) })
         _ = feed(&detector, slot: 2, (0..<10).map { voice(axis: 2, index: $0) })
-        _ = feed(&detector, slot: 2, (0..<5).map { voice(axis: 3, index: $0) }) // 混入が出る
+        _ = feed(&detector, slot: 2, (0..<5).map { voice(axis: 3, index: $0) })
 
         #expect(Set(detector.centroids.keys) == [0, 2])
         let first = detector.centroids[0] ?? []

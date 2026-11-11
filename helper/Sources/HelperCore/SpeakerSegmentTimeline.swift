@@ -3,7 +3,6 @@ struct SpeakerSegmentUpdate {
     let settled: Double
 }
 
-/// 確率は確定済みでも、塊の末尾の活動はまだ閉じていない。開始位置だけを次の塊へ持ち越す。
 struct SpeakerSegmentTimeline {
     private var processedFrames = 0
     private var openStarts: [Int?] = Array(repeating: nil, count: 8)

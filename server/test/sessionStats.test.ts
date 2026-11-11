@@ -78,7 +78,6 @@ describe("セッションの数だけの集計", () => {
     expect(formatRow("s", s, null).join("\n")).not.toContain("本文");
   }));
 
-  // Issue #863: helper が相手のタップに音声が届かないと流した回数（log.jsonl の tap-silent の行）
   it.effect("tap-silent の行を数える。無ければ 0、他の intake の数・発言には混ざらない", () => Effect.gen(function* () {
     const lines = [
       JSON.stringify({ type: "tap-silent", start: 10.5 }),

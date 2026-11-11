@@ -5,14 +5,9 @@ import { makeSubscriptions } from "../src/app/review/subscription.ts";
 import { Message } from "../src/app/review/message.ts";
 import { plainApp, plainContext, stateAt } from "./reviewHarness.ts";
 
-// 見返しの表示面のポインタ（Issue #826）。何も無い所を押して動かすパンは、押している間だけ文書全体の pointermove・pointerup・pointercancel を受ける Subscription が要る。
-// 見返しの Subscription に表示面の pointer が組み込まれていないと、押しても動かせない（stream の中身は mapSurface 側の Subscription が持つ）。
-// 開く条件は modelToDependencies で確かめる。ドラッグでビューポートが実際に動くことは、同じ表示面の部品を使う会議中の画面の heavy IT（meeting.mount.heavy.test.ts の「ポインタ（文書全体の pointermove・pointerup）: 何も無い所のドラッグ…」）が見る
-
 const subscriptions = makeSubscriptions(plainContext);
 const surface = (message: MapSurfaceMessage) => Message.GotMapSurfaceMessage({ message });
 
-// 押している最中（isPressing: true）として開く Subscription の名前。親に包んだ（lift した）Subscription の依存は maybeDependencies の中にある
 type Dependencies = { isPressing?: boolean; maybeDependencies?: { _tag: string; value?: { isPressing?: boolean } } };
 const isPressing = (dependencies: Dependencies): boolean => (dependencies.maybeDependencies === undefined ? dependencies.isPressing : dependencies.maybeDependencies.value?.isPressing) === true;
 const pressing = (model: ReturnType<typeof stateAt>): string[] =>
@@ -36,7 +31,6 @@ describe("見返しの表示面のポインタの Subscription", () => {
     expect(pressing(pressedSlider)).toEqual(["sliderRelease"]);
   });
 
-  // 補間の rAF（Issue #826）。測定済みで反映をまたぐ移動の直後は補間中で、Tick 合計 500 の後に閉じる
   const motionActive = (model: ReturnType<typeof stateAt>): boolean => {
     const dependencies = subscriptions.mapSurfaceAnimationFrame!.modelToDependencies(model) as { maybeDependencies?: { value?: { isActive?: boolean } } };
     return dependencies.maybeDependencies?.value?.isActive === true;

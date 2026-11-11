@@ -53,7 +53,6 @@ struct MixHeavyTests {
         #expect(file.fileFormat.settings[AVFormatIDKey] as? UInt32 == kAudioFormatMPEG4AAC)
         #expect(file.fileFormat.channelCount == 1)
         #expect(file.fileFormat.sampleRate == 24_000)
-        // 一番長い入力（相手 3 秒）の長さ。足し算（3 + 1 + 2 + 0.5）や、一番短い入力の長さにはならない
         #expect(abs(try duration(of: session.output) - 3.0) < 0.1)
     }
 
@@ -66,7 +65,6 @@ struct MixHeavyTests {
         #expect(inputs.map(\.lastPathComponent).sorted() == ["自分-3.m4a", "自分.m4a"])
         try await mixRecordings(inputs, to: session.output)
 
-        // 相手（3 秒）を混ぜたら 3 秒になる。絞り込みが効いていれば 2 秒
         #expect(abs(try duration(of: session.output) - 2.0) < 0.1)
     }
 
@@ -77,20 +75,16 @@ struct MixHeavyTests {
 
         try await mixRecordings(mixInputs(inSession: session.directory, track: nil), to: session.output)
 
-        // 先頭 0.1〜0.4 秒は 4 本すべてが鳴っている（0 秒から重なっている）
         for frequency in [440.0, 880, 1320, 1760] {
             #expect(try amplitude(of: session.output, at: frequency, from: 0.1, to: 0.4) > 0.05)
         }
-        // 0.7〜0.9 秒: 1760 Hz（0.5 秒）は終わり、残り 3 本は鳴っている
         #expect(try amplitude(of: session.output, at: 1760, from: 0.7, to: 0.9) < 0.02)
         for frequency in [440.0, 880, 1320] {
             #expect(try amplitude(of: session.output, at: frequency, from: 0.7, to: 0.9) > 0.05)
         }
-        // 1.2〜1.8 秒: 880 Hz（1 秒）が終わり、440 と 1320 が鳴っている
         #expect(try amplitude(of: session.output, at: 880, from: 1.2, to: 1.8) < 0.02)
         #expect(try amplitude(of: session.output, at: 440, from: 1.2, to: 1.8) > 0.05)
         #expect(try amplitude(of: session.output, at: 1320, from: 1.2, to: 1.8) > 0.05)
-        // 2.2〜2.8 秒: 440 Hz（相手 3 秒）だけ
         #expect(try amplitude(of: session.output, at: 1320, from: 2.2, to: 2.8) < 0.02)
         #expect(try amplitude(of: session.output, at: 440, from: 2.2, to: 2.8) > 0.05)
     }

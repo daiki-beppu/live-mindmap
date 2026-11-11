@@ -22,12 +22,10 @@ import { startedServer } from "./fixtures/startedServer.ts";
 
 type Message = { message: { content: unknown } };
 type QueryRecord = { model: string; messages: Message[]; closed: number };
-// ライブ開始後の sessionsDir には、セッションのフォルダのほかに、全セッション共通の語彙の溜まりのファイルがある。セッションのフォルダだけを数える
 const sessionFolders = (sessionsDir: string) => readdirSync(sessionsDir, { withFileTypes: true }).filter((entry) => entry.isDirectory());
 
 const sdk = vi.hoisted(() => ({ created: [] as QueryRecord[], responses: [] as DiffOutput[], afterMessage: () => {} }));
 
-// 実装前の通常依存経路でも、本物のモデルを呼ばない。
 vi.mock("@anthropic-ai/claude-agent-sdk", () => ({ query: () => { throw new Error("通常依存の SDK を呼びました"); } }));
 const managedSdk = {
   query: (params: { prompt: AsyncIterable<Message>; options: { model: string; outputFormat: { schema: { properties: Record<string, unknown> } } } }) => {
@@ -152,7 +150,7 @@ describe("選択したモデルの実行と記録（Issue #663）", () => {
     const root = yield* temporaryDirectory;
     writeConfig(root);
     const sessionsDir = join(root, "sessions");
-    const helpers = fakeHelpers([{ type: "speaker-off", start: 0, reason: "モデルなし" }, { type: "remark", track: "相手", start: 0, end: 9, text: "合成の発言です" }]) // 相手の発言は話者の確定を待つので、話者分離を使えない helper にして待たせない（Issue #1021）;
+    const helpers = fakeHelpers([{ type: "speaker-off", start: 0, reason: "モデルなし" }, { type: "remark", track: "相手", start: 0, end: 9, text: "合成の発言です" }])
     const server = yield* startedServer({ port: 0, sessionsDir }, {
       helpers: helpers.layer,
       managedDeps,

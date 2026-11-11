@@ -2,10 +2,6 @@ import { Schema } from "effect";
 import { describe, expect, it } from "vitest";
 import { bindingsOf, KeyId, keyListRows, POINTER_ROWS, type Screen } from "../src/app/keys/table.ts";
 
-// キーの表（Issue #822）。Subscription（bindingsOf）とキーの一覧（keyListRows）は、同じ表を画面で絞って作る。
-// 一覧の文言と順の正解は、React 版（KeyList.tsx の KEY_LIST・REVIEW_KEY_LIST・AUDIO_KEY_LIST。Issue #829 で React と一緒に消した）から、文言をそのまま写して下に持つ（行の追加・変更は、利用者に見える文言の変更になるので、このテストを意図して直す）。「マウス・トラックパッド」の行は、キーの行と同じ形の静的な表（POINTER_ROWS）から作る
-
-// ---- 一覧の文言と順の正解（React 版の KeyList.tsx から写したもの） ----
 const KEY_LIST = [
   { group: "キー", keys: "Esc", action: "今の議題へ戻る（一覧が開いているときは閉じるだけ）" },
   { group: "キー", keys: "F", action: "全体を見る・もう一度で変わったところへ寄る" },
@@ -18,7 +14,6 @@ const KEY_LIST = [
   { group: "キー", keys: "E", action: "右の列（変わったこと・根拠）を出す・隠す" },
   { group: "キー", keys: "C", action: "字幕を出す・隠す" },
   { group: "キー", keys: "?", action: "このキー一覧を開閉する" },
-  // Issue #1069: 会議中だけの行（見返しの M＝ミュートとは別の行）
   { group: "キー", keys: "M", action: "自分を休止・再開" },
   { group: "マウス・トラックパッド", keys: "スクロール", action: "縦横に移動する" },
   { group: "マウス・トラックパッド", keys: "何もないところをドラッグ", action: "移動する" },
@@ -30,7 +25,6 @@ const KEY_LIST = [
   { group: "マウス・トラックパッド", keys: "縁の点", action: "そのノードへ寄る" },
 ] as const;
 
-// 見返しの一覧にだけ載せる行（C は KEY_LIST の行を使う）
 const REVIEW_KEY_LIST = [
   { group: "キー", keys: "Space・K", action: "進める・止める" },
   { group: "キー", keys: "J / L", action: "10 秒戻る・進む" },
@@ -39,13 +33,11 @@ const REVIEW_KEY_LIST = [
   { group: "キー", keys: "Home / End", action: "最初・最後の時点へ" },
 ] as const;
 
-// 音声つきの見返しの一覧にだけ載せる行
 const AUDIO_KEY_LIST = [{ group: "キー", keys: "M", action: "ミュート・戻す" }] as const;
 
 
 const SCREENS: readonly Screen[] = ["live", "review", "reviewAudio"];
 const keyRows = KEY_LIST.filter((row) => row.group === "キー");
-// 見返しの一覧には、会議中だけの M の行（自分の休止）を載せない
 const liveOnlyRows = keyRows.filter((row) => row.keys === "M");
 const sharedKeyRows = keyRows.filter((row) => row.keys !== "M");
 const mouseRows = KEY_LIST.filter((row) => row.group !== "キー");
@@ -63,7 +55,6 @@ describe("キーの一覧: React 版から写した文言・同じ順", () => {
 
   it("見返し（音声つき）: キーの行 → 見返しの行 → M の行 → マウスの行", () => {
     expect(pair(keyListRows("reviewAudio"))).toEqual(pair([...sharedKeyRows, ...REVIEW_KEY_LIST, ...AUDIO_KEY_LIST, ...mouseRows]));
-    // 音声つきの見返しの M は「ミュート・戻す」だけ。会議中の M の行（自分を休止・再開）は載らない
     expect(keyListRows("reviewAudio").filter((row) => row.keys === "M").map((row) => row.action)).toEqual(["ミュート・戻す"]);
   });
 
@@ -90,7 +81,6 @@ describe("マウス・トラックパッドの行: キーの行と同じ形の�
 });
 
 describe("キーの表: 一覧の 1 行が受けるバインディング", () => {
-  // 一覧の行の見出し → 受けるバインディング。JIS の ^ と US の + は表の行として持つ。? < > は Shift 付きでも受ける（Shift は厳密に照合されるため、行が無いと発火しない）
   const EXPECTED: ReadonlyArray<readonly [label: string, keys: readonly string[]]> = [
     ["Esc", ["Escape"]],
     ["F", ["F"]],

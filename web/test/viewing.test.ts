@@ -54,8 +54,6 @@ describe("reduceViewing: 右の列の出し入れ", () => {
   });
 });
 
-// 矢印での選択用の木。深さ 2 の同じ段は y 順に A1(0) < A2(100) < B1(200) で、A1・A2 は A の子、B1 は B の子（親をまたぐ）。
-// 子への移りは y の近さで決まる: root(150) の子は B(200) が A(0) より近く、A(80) の子は A2(100) が A1(0) より近い
 const arrowTree = (currentTopic: string | undefined, over: Partial<VisibleTree> = {}): VisibleTree => ({
   ids: ["root", "A", "B", "A1", "A2", "B1"],
   targets: {
@@ -113,8 +111,8 @@ describe("reduceViewing: 矢印の移り先（見せるノードの中で、目�
   });
 
   it("→ は、子のうち目標の位置の y が今のノードに一番近い子へ（先頭の子ではない）", () => {
-    expect(Option.getOrUndefined(selectionOf(reduceViewing(selected("root", true), arrow("right"), arrowTree("A")).state))?.id).toBe("B"); // root(150): A は 150、B は 50
-    expect(Option.getOrUndefined(selectionOf(reduceViewing(selected("A", true), arrow("right"), arrowTree("A")).state))?.id).toBe("A2"); // A(80): A1 は 80、A2 は 20
+    expect(Option.getOrUndefined(selectionOf(reduceViewing(selected("root", true), arrow("right"), arrowTree("A")).state))?.id).toBe("B");
+    expect(Option.getOrUndefined(selectionOf(reduceViewing(selected("A", true), arrow("right"), arrowTree("A")).state))?.id).toBe("A2");
     expect(Option.getOrUndefined(selectionOf(reduceViewing(selected("B", true), arrow("right"), arrowTree("A")).state))?.id).toBe("B1");
   });
 
@@ -250,10 +248,10 @@ describe("reduceViewing: 選択は他の出来事では外れず、今の議題�
 
   it("同じ状態の上で、矢印 → 議題が変わる反映（自動に戻る）→ 次の矢印、と続けても、選択から続きカメラは選んだノードへ戻る", () => {
     const { state } = run([
-      [arrow("down"), arrowTree("A")], // 今の議題 A を選ぶ（manual, topic A）
-      [arrow("right"), arrowTree("A")], // A → A2
-      [reflect, arrowTree("B")], // 議題が B に変わり自動に戻る。選択 A2 は残る
-      [arrow("down"), arrowTree("B")], // A2 → B1。画面の外なら寄せるのは revealNode
+      [arrow("down"), arrowTree("A")],
+      [arrow("right"), arrowTree("A")],
+      [reflect, arrowTree("B")],
+      [arrow("down"), arrowTree("B")],
     ]);
 
     expect(state).toEqual({ ...INITIAL_VIEWING, selection: Option.some({ id: "B1", byKey: true }) });
@@ -348,8 +346,6 @@ describe("reduceViewing: 選択でも入力を書き換えない", () => {
   });
 });
 
-// ---- #319: 選択と畳む見せ方のつなぎ ----
-
 const fnode = (id: string, parent: string | null, kind: Exclude<SnapshotNode["kind"], "補足">, evidence: string[], extra: Partial<Exclude<SnapshotNode, { kind: "補足" }>> = {}): Exclude<SnapshotNode, { kind: "補足" }> => ({
   id,
   parent,
@@ -369,7 +365,6 @@ const fsnap = (nodes: SnapshotNode[], round: number, currentTopic?: string): Sna
 const finished = { talkStatus: "済み" } as const;
 const froot = fnode("root", null, "会議", []);
 
-// 本番と同じく、畳む見せ方の結果から見えている木を組み立てる
 const visibleOf = (
   snapshot: Snapshot,
   selectedId: string | null,
@@ -387,7 +382,6 @@ const visibleOf = (
 };
 
 describe("reduceViewing: Esc で選択を外した直後は、普段どおりに畳まれる", () => {
-  // 済みの議題 A の下の論点 A1 を選んでいる間は A は開き、Esc で外れた次の描画で畳まれる
   const snapshot = fsnap([froot, fnode("A", "root", "議題", ["r1"], finished), fnode("A1", "A", "論点", ["r1"]), fnode("B", "root", "議題", ["r1"])], 4, "B");
   const sel = selected("A1", true);
 
@@ -467,7 +461,6 @@ describe("reduceViewing: 選んだノードが統合・削除・時刻の巻き�
     return reduceViewing(state, { type: "reflect", replaced }, visibleOf(a, null));
   };
 
-  // 今の議題は B。人の畳み（A）で選択ノード P2 が前の木から隠れた状態で、反映が起きる。選択は移り先へ移り、根拠欄も移り先を出す
   const withB = (nodes: SnapshotNode[], round: number, changes: Snapshot["changes"] = []): Snapshot => ({ ...fsnap([...nodes, fnode("B", "root", "議題", ["r3"])], round, "B"), changes });
   const reflectHidden = (b: Snapshot, a: Snapshot) => {
     const humanFolds = foldingActions(b, [{ type: "toggle", id: "A" }]).human;

@@ -5,8 +5,6 @@ import { Effect, Fiber, Stream } from "effect";
 import { TestClock } from "effect/testing";
 import { openHelperSocket } from "../src/helperSocket.ts";
 
-// ハンドシェイクの応答と、続くテキストフレームを 1 回の write で返すサーバー。
-// 遅い環境で、ヘルパーが接続直後に送ったイベントが応答と同じ塊で届く状況を、毎回起こす
 function coalescingServer(messages: string[]): Promise<Server> {
   const frame = (text: string) => {
     const payload = Buffer.from(text);
@@ -23,10 +21,6 @@ function coalescingServer(messages: string[]): Promise<Server> {
   return new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve(server)));
 }
 
-// server/src/helperSocket.ts は段 3（Issue #240、ADR 0008）で early バッファをやめ、
-// 同じ同期区間で作った Queue へ Queue.offerUnsafe し、読む側は Stream.fromQueue で読む形に書き換える
-// （order.md:33, 63）。接続できなければ失敗になり、呼び出し側（Helpers）が Schedule.spaced で再試行できる
-// （order.md:23, 63。今までは undefined を返して呼び出し側がループしていた）。
 describe("openHelperSocket（ヘルパーへの WebSocket。Queue.offerUnsafe + Stream.fromQueue）", () => {
   it.effect("ハンドシェイクと同じ塊で届いたメッセージも、Stream から届いた順に読める（early バッファ無しで取りこぼさない）", () =>
     Effect.gen(function* () {
@@ -37,8 +31,6 @@ describe("openHelperSocket（ヘルパーへの WebSocket。Queue.offerUnsafe + 
       const port = (server.address() as AddressInfo).port;
 
       const { events } = yield* openHelperSocket(`ws://127.0.0.1:${port}`);
-      // Queue.offerUnsafe は接続の時点からすぐに流れている（購読を遅らせても、
-      // ハンドシェイクと同じ塊で届いた分を取りこぼさないことを確かめるため、TestClock で少し進めてから読む）
       const waiting = yield* Effect.forkChild(Effect.sleep(50));
       yield* TestClock.adjust(50);
       yield* Fiber.join(waiting);
@@ -54,7 +46,7 @@ describe("openHelperSocket（ヘルパーへの WebSocket。Queue.offerUnsafe + 
         (s) => Effect.sync(() => s.close()),
       );
       const port = yield* Effect.promise(() => new Promise<number>((resolve) => server.listen(0, "127.0.0.1", () => resolve((server.address() as AddressInfo).port))));
-      yield* Effect.promise(() => new Promise<void>((resolve) => server.close(() => resolve()))); // listen した直後に閉じ、何も待ち受けていないポートにする
+      yield* Effect.promise(() => new Promise<void>((resolve) => server.close(() => resolve())));
 
       const exit = yield* Effect.exit(openHelperSocket(`ws://127.0.0.1:${port}`));
 

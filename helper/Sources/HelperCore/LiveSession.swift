@@ -1,6 +1,5 @@
 import Foundation
 
-/// ライブの機器とイベントの流れを所有し、配送を完了してから待ち受けを閉じる。
 public final class LiveSession {
     private let devices: LiveDevices
     private let settings: LiveSettings
@@ -137,25 +136,20 @@ public final class LiveSession {
             failure = error
         }
 
-        // 1. 止める。開始と停止は capture の同じロックで直列化する。
         capture.stop()
         stopObserving?()
         monitor?.stop()
 
-        // 2. 流し切る。すべての producer と録音が終わるまで server を残す。
         eventContinuation.finish()
         await eventTask.value
         for task in screenTasks { await task.value }
         await monitorTask?.value
         do { try await audio.finish() } catch { recordingFailure = error }
 
-        // 3. 受け手の受信を確かめて閉じる。画面の有無によらない。
         await server.stop()
 
-        // 4. 指示の流れは server を閉じて初めて終わる。
         await controlTask?.value
 
-        // 5. 本処理、相手の録音、自分の録音の順を保つ。
         if let failure { throw failure }
         if let recordingFailure { throw recordingFailure }
     }
@@ -163,7 +157,6 @@ public final class LiveSession {
     public func stop() { capture.stop() }
 }
 
-/// 同期的な stop と、非同期処理中の入力開始が交差しても、停止後の入力を残さない。
 private final class LiveCapture {
     private let lock = NSRecursiveLock()
     private let devices: LiveDevices

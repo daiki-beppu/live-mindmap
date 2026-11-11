@@ -7,10 +7,6 @@ import { Message } from "../src/app/review/message.ts";
 import { Message as MapSurfaceMessage } from "../src/app/mapSurface/message.ts";
 import { makeSubscriptions, REVIEW_IDLE_MS } from "../src/app/review/subscription.ts";
 
-// 見返しの「触らずに 10 秒で自動に戻る」（Issue #819）の Subscription。時間は Model の条件で開け閉めするタイマーで計り、update は時刻を読まない。
-// 開く条件（止めている間だけ）と、計り直しの依存（通し番号）は modelToDependencies、10 秒ちょうどで出す Message は dependenciesToStream を TestClock で確かめる。
-// ElapsedIdleTime を受けた後の update の振る舞いは、mapSurfaceCamera.story.test.ts と review.story.test.ts で確かめる
-
 const events = [
   { at: "a", type: "start", title: "定例" },
   { at: "x", type: "remark", remark: { id: "r1", track: "相手", start: 5, end: 10, text: "採用の話をします。" } },
@@ -61,7 +57,6 @@ describe("見返しの 10 秒のタイマー: キーの一覧の開閉での計�
     expect(m.mapSurface.camera.mode).toBe("manual");
     return m;
   };
-  // mode・viewport・選択・見る状態は変わらない
   const expectSameViewing = (after: Model, before: Model) => {
     expect(after.mapSurface.viewing).toEqual(before.mapSurface.viewing);
     expect(after.mapSurface.camera.viewport).toEqual(before.mapSurface.camera.viewport);
@@ -116,7 +111,6 @@ describe("見返しの 10 秒のタイマー: キーの一覧の開閉での計�
   it("開閉から 10,000ms 経つと自動に戻る（開閉の前の待ちは無効になる）", async () => {
     const before = manual();
     const opened = update(before, key("?")).model;
-    // 開閉前の依存の待ちは作り直され、開閉後の依存の待ちが 10,000ms で ElapsedIdleTime を出す
     const afterIdle = update(opened, idleMessage()).model;
     expect(afterIdle.mapSurface.camera.mode).toBe("auto");
     expect(depsOf(opened).isWaiting).toBe(true);
@@ -126,7 +120,6 @@ describe("見返しの 10 秒のタイマー: キーの一覧の開閉での計�
 
 describe("見返しの 10 秒のタイマー: stream", () => {
   const settle = Effect.forEach(Array.from({ length: 20 }), () => Effect.yieldNow, { discard: true });
-  // stream を走らせて届いた Message を集める。body は走らせている間の操作。時計は TestClock
   const run = (deps: { isWaiting: boolean; stamp: number }, body: (collected: Array<typeof Message.Type>, fiber: Fiber.Fiber<void, unknown>) => Effect.Effect<void>) =>
     Effect.runPromise(
       Effect.gen(function* () {

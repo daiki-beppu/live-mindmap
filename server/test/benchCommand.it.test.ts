@@ -1,7 +1,3 @@
-// bench の sttLatency・sessionStats を effect/cli の Command として走らせたときの契約
-// （引数の読み取り・stdout の中身と改行・タグ付きの失敗）。一時ディレクトリに書いて、同じプロセスの中で Command を動かす。
-// sttReplay は claude.ts の差し替えが要るので sttReplayCommand.it.test.ts。
-// 本物の ffmpeg 起動を伴う録音の読み取りは benchCommand.heavy.test.ts
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "@effect/vitest";
@@ -130,7 +126,7 @@ describe("sttLatency の Command", () => {
     const { result, stdout } = yield* runCommand(latencyCommand, [file, "--emit", "bogus"]);
     expect(result._tag).toBe("Failure");
     expect(taggedFailure(result)).toBeUndefined();
-    expect(stdout).not.toContain("| 方式"); // 引数の誤りでは、集計の表（handler の出力）は出ない。使い方は effect/cli の Formatter が出す
+    expect(stdout).not.toContain("| 方式");
   }).pipe(Effect.scoped));
 });
 
@@ -196,7 +192,6 @@ describe("sessionStats の Command", () => {
   }).pipe(Effect.scoped));
 });
 
-// プロセスの入口（bench/*.ts の実行）が使う Command の、--help と位置引数の欠落。実プロセスの代表は benchProcess.heavy.test.ts
 const describeEntry = <Name extends string, Input, ContextInput, E>(script: string, command: Command.Command<Name, Input, ContextInput, E, NodeServices.NodeServices>) => describe(`bench/${script} の Command の help と引数の誤り`, () => {
   it.effect("--help は使い方を stdout に出して成功する（stderr は空）", () => Effect.gen(function* () {
     const { result, stdout, stderr } = yield* runCommand(command, ["--help"]);

@@ -90,7 +90,6 @@ const dependencies = (root: string, port = 0) => {
   );
   return { stdout, stderr, layer };
 };
-// 入口（cli.ts の import.meta.main）と同じ順に、実行 → 失敗の表示（reportFailure）→ 終了コード（teardown）を通す。process.exitCode は呼び出し前の値に戻す
 const runEntry = Effect.fnUntraced(function* (root: string, port: number, argv: string[]) {
   const deps = dependencies(root, port);
   const exit = yield* runCli(argv).pipe(Effect.tapCause(reportFailure), Effect.provide(deps.layer), Effect.exit);
@@ -103,7 +102,6 @@ const runEntry = Effect.fnUntraced(function* (root: string, port: number, argv: 
     process.exitCode = saved;
   }
 });
-// CLI の HTTP クライアントの相手（常駐サーバー）の代わりに、依頼ごとに handler で応える
 const listening = Effect.fnUntraced(function* (handler: (req: IncomingMessage, res: ServerResponse) => void) {
   const server = createServer(handler);
   yield* Effect.acquireRelease(
@@ -176,7 +174,7 @@ describe("互換モデルの実行配線（C01・invRefusedIsInert）", () => {
     writeConfig("synthetic-model");
     yield* runCli(["play", fixture, "--model", "compatible"]).pipe(Effect.provide(deps.layer));
     expect(listener.open).toHaveBeenCalledOnce();
-    expect(readdirSync(join(root, "sessions"), { withFileTypes: true }).filter((entry) => entry.isDirectory())).toHaveLength(1); // 語彙の溜まりのファイルは数えない
+    expect(readdirSync(join(root, "sessions"), { withFileTypes: true }).filter((entry) => entry.isDirectory())).toHaveLength(1);
   }));
 
   it.live.each([undefined, "SYNTHETIC_TRANSFER_KEY"])("ライブ開始は未認可の読取・通信を防ぎ、認可後のモデル拒否と正常開始を保持する（apiKeyEnv=%s）", (apiKeyEnv) => Effect.gen(function* () {
@@ -186,7 +184,7 @@ describe("互換モデルの実行配線（C01・invRefusedIsInert）", () => {
     const helpers = Layer.succeed(Helpers, Helpers.of({ ...helperChecks(), apps: Effect.succeed([]), launch: (args) => Effect.gen(function* () {
       launches.push(args);
       const queue = yield* Queue.make<string, Cause.Done>();
-      Queue.offerUnsafe(queue, JSON.stringify({ type: "speaker-off", start: 0, reason: "モデルなし" })); // 相手の発言は話者の確定を待つので、話者分離を使えない helper にして待たせない（Issue #1021）
+      Queue.offerUnsafe(queue, JSON.stringify({ type: "speaker-off", start: 0, reason: "モデルなし" }));
       Queue.offerUnsafe(queue, JSON.stringify({ type: "remark", track: "相手", start: 0, end: 1, text: "採用の進め方を共有します。" }));
       const exited = yield* Deferred.make<HelperExitInfo>();
       const stop = Effect.asVoid(Effect.andThen(Queue.end(queue), Deferred.succeed(exited, { code: null, signal: "SIGTERM" })));
@@ -251,7 +249,7 @@ describe("互換モデルの実行配線（C01・invRefusedIsInert）", () => {
     const allowed = yield* post("synthetic-model", authorized);
     expect(allowed.status).toBe(200);
     expect(launches).toHaveLength(1);
-    expect(readdirSync(join(root, "sessions"), { withFileTypes: true }).filter((entry) => entry.isDirectory())).toHaveLength(1); // 語彙の溜まりのファイルは数えない
+    expect(readdirSync(join(root, "sessions"), { withFileTypes: true }).filter((entry) => entry.isDirectory())).toHaveLength(1);
     yield* Effect.promise(() => new Promise<void>((resolve, reject) => {
       if (snapshots.length) return resolve();
       const timeout = setTimeout(() => reject(new Error("正常開始の初期マップが届きません")), 2000);
@@ -266,7 +264,7 @@ describe("互換モデルの実行配線（C01・invRefusedIsInert）", () => {
     expect(snapshots).toHaveLength(1);
     const stopped = yield* Effect.tryPromise(() => fetch(`http://127.0.0.1:${server.port}/session/stop`, { method: "POST" }));
     expect(stopped.status).toBe(200);
-    expect(http.requests).toHaveLength(4); // Origin別の拒否2件、正常開始の検査、flushの本番更新
+    expect(http.requests).toHaveLength(4);
     expect(http.requests.map((r) => r.authorization)).toEqual(Array(4).fill(apiKeyEnv === undefined ? undefined : "Bearer synthetic-key"));
     expect(http.requests.map((r) => r.transferToken)).toEqual([undefined, undefined, undefined, undefined]);
     const dir = join(root, "sessions", readdirSync(join(root, "sessions"))[0]!);
@@ -308,11 +306,9 @@ describe("互換モデルの実行配線（C01・invRefusedIsInert）", () => {
         res.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ 議題: { id: "新しい議題", 題: "採用" }, 文: [{ 種類: "説明", text: "採用の進め方" }], 済み: "なし", 名前: [] }) } }] }));
       });
     });
-    // 発言は、設定を書き換えた後に流す。差分更新は発言が届いたらすぐ呼ぶので、先に流すと書き換えより前に呼ばれてしまう
     let sayRemark: (() => void) | undefined;
     const helpers = Layer.succeed(Helpers, Helpers.of({ ...helperChecks(), apps: Effect.succeed([]), launch: () => Effect.gen(function* () {
       const queue = yield* Queue.make<string, Cause.Done>();
-      // 相手の発言は話者の確定を待つので、話者分離を使えない helper にして待たせない（Issue #1021）
       sayRemark = () => {
         Queue.offerUnsafe(queue, JSON.stringify({ type: "speaker-off", start: 0, reason: "モデルなし" }));
         Queue.offerUnsafe(queue, JSON.stringify({ type: "remark", track: "相手", start: 0, end: 1, text: "採用の進め方を共有します。" }));

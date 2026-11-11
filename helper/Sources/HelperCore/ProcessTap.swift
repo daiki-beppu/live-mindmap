@@ -1,7 +1,6 @@
 import AVFoundation
 import CoreAudio
 
-/// フレームの到着の判定。サンプルの値（ゼロかどうか）は見ない。
 func bufferHasFrames(_ buffer: AVAudioPCMBuffer) -> Bool {
     buffer.frameLength > 0
 }
@@ -16,13 +15,7 @@ public enum ProcessTapError: Error, CustomStringConvertible {
     }
 }
 
-/// 選んだアプリのプロセスだけをタップして、音声バッファの流れにする。
-/// タップ → 集約デバイス → IOProc の順に作り、停止時は逆順に破棄する。Mac 全体のタップは作らない。
-/// `start()` と `stop()` は排他的に実行する。`start()` より前の `stop()` も記録し、以後の `start()` は何も作らず終わった流れを返す。
-/// 未消費のバッファが上限を超えたら、音声を捨てずに `ProcessTapError.backlogExceeded` で流れを終わらせる。
 public final class ProcessTap {
-    // 2048 個: 1 個あたり約 10 ms 前後の IO バッファを想定して約 22 秒分。通常の遅れは吸収し、処理が止まった場合だけ超える。
-    private static let backlogLimit = 2048
 
     private let lock = NSLock()
     private var stopRequested = false
@@ -33,7 +26,6 @@ public final class ProcessTap {
     private var deviceStarted = false
     private var continuation: AsyncThrowingStream<CapturedAudio, Error>.Continuation?
     private let queue = DispatchQueue(label: "live-mindmap.process-tap")
-    // IOProc のキューと他のタスクから読み書きするので、`lock` とは別に守る（`stop()` は `lock` を持ったまま AudioDeviceStop を呼ぶ）。
     private let stateLock = NSLock()
     private var receivedFrames = false
     private var mainSubDeviceUID: String?
@@ -42,14 +34,12 @@ public final class ProcessTap {
         self.targets = targets
     }
 
-    /// 集約デバイスの主のサブデバイスに使った UID。集約デバイスを作る前は nil。
     public var aggregateMainSubDeviceUID: String? {
         stateLock.lock()
         defer { stateLock.unlock() }
         return mainSubDeviceUID
     }
 
-    /// `frameLength > 0` のバッファが 1 つでも届いたか。
     public var hasReceivedFrames: Bool {
         stateLock.lock()
         defer { stateLock.unlock() }
@@ -62,8 +52,6 @@ public final class ProcessTap {
         stateLock.unlock()
     }
 
-    /// タップを開始する。途中で失敗したら、そこまでに作った資源を破棄してから throw する。
-    /// 先に `stop()` が呼ばれていた場合は、資源を作らず、要素のない終わった流れを返す。
     public func start() throws -> AsyncThrowingStream<CapturedAudio, Error> {
         lock.lock()
         defer { lock.unlock() }
@@ -81,7 +69,6 @@ public final class ProcessTap {
     }
 
     private func startUnchecked() throws -> AsyncThrowingStream<CapturedAudio, Error> {
-        // 対象のプロセスを必ず指定する（stereoMixdownOfProcesses）。全体タップの初期化は使わない。
         let description = CATapDescription(stereoMixdownOfProcesses: targets.map(\.objectID))
         description.uuid = UUID()
         description.name = "live-mindmap-helper"
@@ -119,7 +106,7 @@ public final class ProcessTap {
         status = AudioHardwareCreateAggregateDevice(aggregate as CFDictionary, &aggregateID)
         guard status == noErr else { throw CoreAudioError.status("集約デバイスの作成", status) }
 
-        let limit = Self.backlogLimit
+        let limit = downstreamBacklogLimit
         let (stream, continuation) = AsyncThrowingStream.makeStream(
             of: CapturedAudio.self, throwing: Error.self, bufferingPolicy: .bufferingOldest(limit))
         self.continuation = continuation
@@ -129,7 +116,6 @@ public final class ProcessTap {
             if bufferHasFrames(copy) { self?.markFramesReceived() }
             let hostTime = inputTime.pointee.mFlags.contains(.hostTimeValid) ? inputTime.pointee.mHostTime : AudioGetCurrentHostTime()
             let captured = CapturedAudio(buffer: copy, hostTime: hostTime)
-            // 満杯で入らなかったバッファは捨てずに、エラーで流れを終わらせる（時刻の意味を保つため）。
             if case .dropped = continuation.yield(captured) {
                 continuation.finish(throwing: ProcessTapError.backlogExceeded(limit: limit))
             }
@@ -158,8 +144,6 @@ public final class ProcessTap {
         return buffer
     }
 
-    /// 取得を止めて、作った資源を逆順に破棄する。どのスレッドから何度呼んでもよい。音声の流れは終わる。
-    /// `start()` の実行中に呼ばれたら、開始が終わるまで待ってから破棄する。
     public func stop() {
         lock.lock()
         defer { lock.unlock() }

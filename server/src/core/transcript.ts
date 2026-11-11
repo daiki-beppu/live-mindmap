@@ -15,7 +15,6 @@ export const TranscriptFile = Schema.Struct({
 });
 export type TranscriptFile = typeof TranscriptFile["Type"];
 
-// 録音サンプルは会議アプリの音を 1 本に混ぜたものなので、マイク以外は `相手` とする
 const toTrack = (track: string): Track => (track === "microphone" ? "自分" : "相手");
 
 export function fromTranscript(file: TranscriptFile): Remark[] {

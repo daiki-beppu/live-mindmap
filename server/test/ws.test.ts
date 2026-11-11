@@ -13,7 +13,6 @@ const snap = (...texts: string[]): Snapshot => ({
   round: 0, changes: [], remarks: [],
 });
 const snapFrame = (...texts: string[]): SnapshotFrame => ({ type: "snapshot", snapshot: snap(...texts) });
-// 吹き出し 1 つの字幕のフレーム。texts が空なら空の並び
 const captions = (...texts: string[]): CaptionsFrame => ({
   type: "captions",
   bubbles: texts.map((text, i) => ({ id: `c${i}`, track: "相手", label: "なし", start: i, end: i + 1, text, settledLength: text.length })),

@@ -4,8 +4,6 @@ import CoreText
 import Foundation
 import Testing
 
-// 録画のファイルから音声を書く経路（FileAudioExport）と作成日時の読み取り（FileCreationDate）の IT が共有する、合成ファイルの作り方。
-
 enum FileAudioTestSupport {
     static let sampleRate = 16_000.0
 
@@ -51,7 +49,6 @@ enum FileAudioTestSupport {
         return url
     }
 
-    /// 前半 `loudSeconds` 秒が 440 Hz のサイン波、後半 `silentSeconds` 秒が完全な無音の WAV。
     static func writeWAV(_ url: URL, loudSeconds: Double, silentSeconds: Double, sampleRate: Double = FileAudioTestSupport.sampleRate) throws {
         let format = try #require(AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1))
         let frames = AVAudioFrameCount(sampleRate * (loudSeconds + silentSeconds))
@@ -72,20 +69,14 @@ enum FileAudioTestSupport {
         try file.write(from: buffer)
     }
 
-    /// 合成する映像の中身（10 fps。`.text` だけ 1280x720、ほかは 64x64）。
     enum Video {
-        /// 全編が黒。
         case black
-        /// 0 秒から `switchAt` 秒の手前までが黒、`switchAt` 秒からが白（スライドが切り替わる）。
         case slides(switchAt: Double)
         case smallChanges(grows: Bool)
         case textBesideVideo(column: Int, stops: Bool)
-        /// 映像のトラックはあるが、コーデックを BGRA に復号できない（未知の FourCC のサンプルだけを書く）。
         case undecodable
-        /// 全編が白地で、黒い文字を `lines` の上から順に 1 行ずつ描く（1280x720。OCR が読める大きさ）。
         case text([String])
 
-        /// 映像の幅と高さ。
         var size: (width: Int, height: Int) {
             if case .text = self { return (1280, 720) }
             if case .textBesideVideo = self { return (128, 72) }
@@ -93,9 +84,6 @@ enum FileAudioTestSupport {
         }
     }
 
-    /// 音声（`audio`）と映像（既定は黒い 64x64 を `videoSeconds` 秒。`video` で中身を選ぶ）を持つ mov。`creationDate` を渡すと QuickTime の作成日時のメタデータを付ける。
-    /// `audioStartSeconds` を渡すと、音声のトラックを movie の 0 秒ではなくその秒から始める。
-    /// `moreAudio` を渡すと、`audio` の後ろに 2 本目以降の音声のトラックとして順に加える（どれも 0 秒から始める）。
     static func writeMovie(_ url: URL, audio: URL, videoSeconds: Int, creationDate: String? = nil, audioStartSeconds: Double = 0, moreAudio: [URL] = [], video content: Video = .black, videoFrameRate: Int = 10) async throws {
         let video = url.deletingLastPathComponent().appendingPathComponent("video-\(UUID().uuidString).mov")
         try await writeVideo(video, seconds: videoSeconds, content: content, frameRate: videoFrameRate)
@@ -139,7 +127,6 @@ enum FileAudioTestSupport {
             AVVideoCodecKey: AVVideoCodecType.h264, AVVideoWidthKey: width, AVVideoHeightKey: height,
         ]
         if case .smallChanges = content {
-            // 圧縮による輝度の揺れを避け、固定区間の判定を検証する。
             settings[AVVideoCodecKey] = AVVideoCodecType.proRes4444
         }
         if case .textBesideVideo = content { settings[AVVideoCodecKey] = AVVideoCodecType.proRes4444 }
@@ -213,7 +200,6 @@ enum FileAudioTestSupport {
         }
     }
 
-    /// すべての画素の B・G・R・A を `byte` で塗る。
     private static func fill(_ buffer: CVPixelBuffer, with byte: UInt8) {
         CVPixelBufferLockBaseAddress(buffer, [])
         defer { CVPixelBufferUnlockBaseAddress(buffer, []) }
@@ -221,7 +207,6 @@ enum FileAudioTestSupport {
         memset(base, Int32(byte), CVPixelBufferGetBytesPerRow(buffer) * CVPixelBufferGetHeight(buffer))
     }
 
-    /// 白地に黒い文字を 1 行ずつ描く。描き方は ScreenTextITTests と同じ（Hiragino Sans 72pt、x=80、行は上から 160 ずつ下げる）。
     private static func drawText(_ lines: [String], on buffer: CVPixelBuffer) {
         fill(buffer, with: 0xFF)
         CVPixelBufferLockBaseAddress(buffer, [])
@@ -243,7 +228,6 @@ enum FileAudioTestSupport {
         }
     }
 
-    /// 未知の FourCC（`zzzz`）のサンプルだけを書く映像のトラック。トラックとしては読めるが、BGRA には復号できない。
     private static func writeUndecodableVideo(_ writer: AVAssetWriter, seconds: Int) async throws {
         var description: CMFormatDescription?
         CMVideoFormatDescriptionCreate(allocator: nil, codecType: 0x7A7A_7A7A, width: 64, height: 64, extensions: nil, formatDescriptionOut: &description)
@@ -270,7 +254,6 @@ enum FileAudioTestSupport {
         if writer.status != .completed { throw writer.error ?? CocoaError(.fileWriteUnknown) }
     }
 
-    /// `from`〜`to` 秒の二乗平均平方根（0〜1）。
     static func rms(of url: URL, from: Double, to: Double) throws -> Double {
         let file = try AVAudioFile(forReading: url)
         let rate = file.processingFormat.sampleRate

@@ -6,19 +6,12 @@ import { buildReviewTemplateHtml } from "../../server/test/fixtures/reviewTempla
 import { mapPoint, near, openReviewPage, PAGE_VIEWPORT, prepareReviewPages, rectOf, settled, styleOf, TIMEOUT, type ReviewPages } from "./reviewPage.ts";
 import { launchBrowser, withContext, type Browser, type BrowserContext, type Page } from "./browser.ts";
 
-// 見返し（Foldkit 版）の Mount の中身を、実ブラウザの 1 ページで 1 つずつ確かめる（Issue #826）。React 版が無くなった後も残す。
-// 共有の ResizeObserver・wheel は meeting.mount.heavy.test.ts、合成 gesture は mapSurface.mount.dom.test.ts が見る。ここでは <audio> の時刻と見返しの表示・寸法を確かめる。
-// 時間がかかる。事前に `pnpm --filter @live-mindmap/server deps:install chromium` が要る。
-
 let pages: ReviewPages;
-// 点滅の再始動用の例（反映 3・4 で、論点 n2 と今の議題 n3 が続けて変わる）
 let blinkPages: ReviewPages;
 let longReviewPath: string;
 let criteriaReviewPath: string;
-// Chromium はファイルで 1 つ。テストは withContext で自分の context を持ち、独立を保つ
 let browser: Browser;
 beforeAll(async () => {
-  // single-file ビルドは 1 回。同じテンプレートから 2 つのログのページを書き出す
   const template = await buildReviewTemplateHtml();
   pages = await prepareReviewPages(template);
   blinkPages = await prepareReviewPages(template, join(import.meta.dirname, "fixtures/reviewBlink.log.jsonl"));
@@ -48,7 +41,6 @@ afterAll(async () => {
   await blinkPages.dispose();
 });
 
-// .review-bar__time の「経過 / 全体」の経過（h:mm:ss か mm:ss）を秒にする
 const shownSeconds = async (page: Page): Promise<number> => {
   const text = (await page.locator(".review-bar__time").textContent()) ?? "";
   const elapsed = text.split("/")[0]!.trim();
@@ -64,7 +56,6 @@ describe("見返し（Foldkit 版）の入口", () => {
         const page = await openReviewPage(context, path, { audio });
         expect(await page.locator(".map-viewport").count()).toBe(1);
         expect(await page.locator(".react-flow").count()).toBe(0);
-        // React 19 は root の要素に __reactContainer$… を付ける。付いていなければ createRoot をしていない
         expect(await page.evaluate(() => Object.keys(document.getElementById("root")!).filter((key) => key.startsWith("__reactContainer")))).toEqual([]);
         expect(await page.locator("audio").count()).toBe(audio ? 1 : 0);
         expect(await page.locator(".intake-notice").count()).toBe(0);
@@ -109,7 +100,6 @@ describe("見返し（Foldkit 版）の Mount", () => {
       const playedAudio = await audioTime(page);
       expect(await page.evaluate(() => (document.querySelector("audio") as HTMLAudioElement).paused)).toBe(false);
       expect(playedAudio).toBeGreaterThan(0.3);
-      // 表示の時刻は <audio> の時刻に追従する（1 秒未満は切り捨てで表示される）
       await page.waitForFunction(() => Number(document.querySelector(".review-bar__time")!.textContent!.split("/")[0]!.trim().split(":").reduce((t, p) => t * 60 + Number(p), 0)) >= 1, undefined, { timeout: 10_000 });
       expect(Math.abs((await shownSeconds(page)) - Math.floor(await audioTime(page)))).toBeLessThanOrEqual(1);
       await page.keyboard.press("Space");
@@ -123,16 +113,10 @@ describe("見返し（Foldkit 版）の Mount", () => {
   );
 });
 
-// 反映をまたいで続けて変わるノードの点滅（Issue #826）。同じ key の要素に map-node--blink が付いたままだと CSS アニメーションは再生し直されないので、
-// 反映番号が変わったら Command（RestartBlink）が作り直す。アニメーションを有効にしたまま（Playwright の既定）確かめる。
-// 例の反映 3・4 では、直接変わるノード n2（論点）と n3（今の議題）が続けて変わる。
-// 畳んだノード（shownAs）は、人が畳んだ議題 n1（Enter）の中の n2 が変わる反映 3・4 で、n1 の点滅として確かめる
 describe("見返し（Foldkit 版）の点滅の再始動", () => {
   const BLINKING = ".map-node--blink";
-  // 点滅の対象のノード id（data-node-id の要素の中の map-node--blink）
   const blinkingIds = (page: Page): Promise<string[]> =>
     page.evaluate((selector) => [...document.querySelectorAll(selector)].map((el) => el.closest("[data-node-id]")!.getAttribute("data-node-id")!).sort(), BLINKING);
-  // 点滅の CSS アニメーションが動いているノードの id と、その経過時間（ms）
   const runningBlinks = (page: Page): Promise<Record<string, number>> =>
     page.evaluate((selector) => {
       const running: Record<string, number> = {};
@@ -142,12 +126,10 @@ describe("見返し（Foldkit 版）の点滅の再始動", () => {
       }
       return running;
     }, BLINKING);
-  // 点滅を最後まで進めて終わらせる（終わると getAnimations() から外れる）
   const finishBlinks = (page: Page): Promise<void> =>
     page.evaluate((selector) => {
       for (const el of document.querySelectorAll(selector)) for (const a of el.getAnimations()) a.finish();
     }, BLINKING);
-  // 反映 3（"," で戻る）。クラスは反映 4 と共通なので、操作前とは別の Animation の開始を待つ
   const atRoundThree = async (page: Page): Promise<void> => {
     const previous = await page.evaluateHandle(() => document.getAnimations());
     try {
@@ -204,12 +186,10 @@ describe("見返し（Foldkit 版）の点滅の再始動", () => {
       const page = await openReviewPage(context, blinkPages.plainPath, { audio: false });
       await settled(page);
       await atRoundThree(page);
-      // n1 を選び、Enter で畳む（n2 は n1 の下に隠れる）
       await page.locator('[data-node-id="n1"] .map-node').click();
       await page.waitForSelector('[data-node-id="n1"] .map-node--selected');
       await page.keyboard.press("Enter");
       await page.waitForFunction(() => document.querySelector('[data-node-id="n2"]') === null);
-      // 隠れた n2 の変化は、n2 を隠している n1 の点滅として出る
       await page.waitForFunction(() =>
         document.querySelector('[data-node-id="n1"] .map-node--blink')?.getAnimations().some(
           (animation) => animation instanceof CSSAnimation && animation.animationName === "map-node-blink"
@@ -220,7 +200,6 @@ describe("見返し（Foldkit 版）の点滅の再始動", () => {
       expect(await blinkingIds(page)).toEqual(["n1", "n3"]);
       const folded = await page.evaluate(() => document.querySelector('[data-node-id="n1"] .map-node')!.classList.contains("map-node--folded"));
       expect(folded).toBe(true);
-      // 同じ DOM 要素のまま持ち越されることの目印
       await page.evaluate(() => ((document.querySelector('[data-node-id="n1"] .map-node') as HTMLElement & { __same?: boolean }).__same = true));
       await page.keyboard.press(".");
       const restarted = await page.waitForFunction(
@@ -261,8 +240,6 @@ describe("見返し（Foldkit 版）の点滅の再始動", () => {
   );
 });
 
-// 寸法と位置は、CSS の置き場によらず実ブラウザの computed style と矩形で確かめる。
-// 値は animation・transition が終わった後に読む（styleOf・rectOf が最後まで進める）。操作の後に変わる値は、決め打ちの待ちではなく、値に届くまで待つ
 describe("見返し（Foldkit 版）の寸法", () => {
   const open = (context: BrowserContext) => openReviewPage(context, pages.audioPath, { audio: true });
 
@@ -343,7 +320,6 @@ describe("見返し（Foldkit 版）の寸法", () => {
       await page.locator(fold).first().waitFor({ timeout: 10_000 });
       const { x, y } = await mapPoint(page, "corner");
       await page.mouse.move(x, y);
-      // ポインタが離れて透明に戻るのを、値に届くまで待つ（決め打ちの待ちにしない）
       await expect
         .poll(() => styleOf(page, fold, ["position", "opacity", "display", "width", "height", "padding-top", "margin-top", "border-top-width", "border-radius", "background-color", "pointer-events", "cursor", "transform", "right"]), { timeout: 10_000 })
         .toMatchObject({
@@ -369,9 +345,6 @@ describe("見返し（Foldkit 版）の寸法", () => {
   );
 });
 
-// 速さのメニューとツールチップの位置（Issue #1225・#1226）: パネルのクラスが位置（bottom・right）を持つと、anchor が書く left・top と上下・左右で重なり、
-// メニューが画面幅に広がって外へはみ出したり、高さが潰れたりする。外側（backdrop）だけが見えて、どのボタンも押せなくなる。位置は anchor だけで決まることを、PC とスマホの幅で確かめる。
-// 項目を選んだ後の速さの表示と、閉じた後に字幕・右の列のボタンが効くことは、E2E の見返しの流れ（e2e/tests/review/review.e2e.ts）が見る
 describe("見返し（Foldkit 版）の速さのメニューとツールチップの位置", () => {
   type Box = Awaited<ReturnType<typeof rectOf>>;
   const inside = (box: Box, viewport: { width: number; height: number }, label: string) => {
@@ -380,7 +353,6 @@ describe("見返し（Foldkit 版）の速さのメニューとツールチッ�
     expect(box.right, `${label} の右端`).toBeLessThanOrEqual(viewport.width);
     expect(box.bottom, `${label} の下端`).toBeLessThanOrEqual(viewport.height);
   };
-  // ツールチップを出す相手と向き（controls.ts の placement）。音声なしの見返しにはミュートが無い
   const tipped = [
     { label: "反映 1 つ戻る", align: "start" },
     { label: "再生", align: "start" },
@@ -411,7 +383,6 @@ describe("見返し（Foldkit 版）の速さのメニューとツールチッ�
         const page = await openReviewPage(context, pages.audioPath, { audio: true });
         await page.setViewportSize(viewport);
         await page.locator(".review-rate__button").first().click();
-        // anchor の位置が付く（visibility が外れる）まで待つ
         await page.waitForFunction(() => { const menu = document.querySelector(".review-rate__menu"); return menu !== null && getComputedStyle(menu).visibility === "visible"; }, undefined, { timeout: 10_000 });
         const menu = await rectOf(page, ".review-rate__menu");
         const button = await rectOf(page, ".review-rate__button");
@@ -420,7 +391,6 @@ describe("見返し（Foldkit 版）の速さのメニューとツールチッ�
         expect(menu.bottom, "メニューはボタンの上").toBeLessThanOrEqual(button.top + 1);
         near(menu.right, button.right, "メニューの右端はボタンの右端");
         const items = await page.locator(".review-rate__item").evaluateAll((all) => all.map((el) => el.getBoundingClientRect().height));
-        // 項目の数 × 1 項目の高さ ＋ 上下の余白（p-[4px]）
         near(menu.height, items.reduce((sum, height) => sum + height, 0) + 8, "メニューの高さ");
         const hits = await page.locator(".review-rate__item").evaluateAll((all) =>
           all.map((el) => {
@@ -442,10 +412,8 @@ describe("見返し（Foldkit 版）の速さのメニューとツールチッ�
         for (const { label, align, trigger } of targets) {
           await page.locator(trigger).first().hover();
           await page.waitForFunction((selector) => { const tip = document.querySelector(selector); return tip !== null && getComputedStyle(tip).visibility === "visible"; }, shownTip, { timeout: 10_000 });
-          // ミュートにポインタを乗せると音量のスライダーが transition で広がり、帯の中のボタンが動く。ボタンと吹き出しの位置が止まってから測る
           const { tip, button } = await settledRects(page, shownTip, trigger);
           const clipped = await page.locator(shownTip).evaluate((el) => el.scrollHeight > el.clientHeight || el.scrollWidth > el.clientWidth);
-          // 1 行（leading-[16px]）＋ 上下の余白（py-[4px]）
           near(tip.height, 24, `${label} のツールチップの高さ`);
           expect(clipped, `${label} のツールチップの文字が見切れない`).toBe(false);
           inside(tip, viewport, `${label} のツールチップ`);
@@ -462,8 +430,6 @@ describe("見返し（Foldkit 版）の速さのメニューとツールチッ�
   }
 });
 
-// 狭い幅で開いたときの最初の状態（Issue #1236 の一部）: 幅 768px 以下（styles.css の狭い幅の境目）で開くと、右の列と字幕を隠して始める。
-// ボタンで今までどおり出せる。広い幅では今までどおり両方出ている。開いた後に幅を変えても、隠す・出すは変えない（人の操作を上書きしない）
 describe("見返し（Foldkit 版）の開いたときの右の列と字幕", () => {
   const pressed = (page: Page, label: string) => page.locator(`button[aria-label="${label}"]`).first().getAttribute("aria-pressed");
   const shown = async (page: Page) => ({ side: await page.locator(".side").count(), captions: await page.locator(".captions").count(), sideButton: await pressed(page, "右の列"), captionsButton: await pressed(page, "字幕") });

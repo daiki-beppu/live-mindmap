@@ -45,7 +45,6 @@ describe("Playwright の管理依存", () => {
     }).pipe(Effect.provide(Playwright.layer.pipe(Layer.provide(Layer.succeed(ManagedDeps, deps)))));
   }));
 
-  // 入っていないときだけ入れ方を示す。入っているのに読めないときに「入れて」と言わない（2026-10-13、#968 の読み込みの失敗で起きた）
   it.effect.each([
     { state: "missing", expected: "ChromiumMissing" },
     { state: "ready", expected: "ManagedDepsFailed" },

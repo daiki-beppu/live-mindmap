@@ -1,10 +1,6 @@
 import Testing
 import HelperCore
 
-// Issue #161: `run` の引数解釈を HelperCore の純粋関数へ抽出したもののテスト（main.swift にはテストターゲットがないため）。
-// 既存の引数（--app・--port・--audio-dir、不明な引数、--app 欠落）の受理・既定値・拒否は変えない（CT-HELPER-ARGS）。
-// 新しい引数（--origin・--audio-index）の異常系も、既存と同じ「usage を伴って拒否する」扱いに揃える。
-
 @Suite("run の引数解釈（parseRunArguments）")
 struct RunArgumentsTests {
     @Test("--app だけでも起動できる。既定値は port=8765・audioDir=nil・origin=nil・audioIndex=1")
@@ -78,7 +74,6 @@ struct RunArgumentsTests {
         }
     }
 
-    // Issue #280: --no-screen は値を取らないフラグ。付けると共有画面の取り込みも許可の確認もしない。
     @Test("--no-screen を付けないときは noScreen=false（既定は共有画面を使う）")
     func noScreenDefaultsToFalse() throws {
         let args = try parseRunArguments(["--app", "x"]).get()
@@ -100,7 +95,6 @@ struct RunArgumentsTests {
         #expect(args.audioIndex == 2)
     }
 
-    // Issue #1071: 起動し直した helper が、手動・基準・最後に読めた値・待ちの進み具合を引き継ぐための引数（既定の値は渡さない）
     @Test("自分の休止の引き継ぎは、無ければ初期状態（手動なし・基準なし・読めた値なし・待ち 0）")
     func selfPauseCarryOverDefaults() throws {
         #expect(try parseRunArguments(["--app", "x"]).get().selfPauseCarryOver == .initial)
@@ -143,7 +137,6 @@ struct RunArgumentsTests {
         }
     }
 
-    // 置き換えた旧形式（休止の真偽だけを渡す --self-paused）は受け付けない
     @Test("--self-paused は廃止した。不明な引数として拒否する")
     func legacySelfPausedFlagIsRejected() {
         #expect(parseRunArguments(["--app", "x", "--self-paused"]) == .failure(RunArgumentsError("不明な引数: --self-paused")))

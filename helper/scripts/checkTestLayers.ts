@@ -34,7 +34,6 @@ export function findRealResourceUses(path: string, content: string): Violation[]
 
 export type SuiteMismatch = { path: string; line: number; suite: string };
 
-// swift の --skip 'ITTests/|HeavyTests/' は、この 2 つの接尾辞以外（Tests で終わらない名前も）を unit として回す。
 function layerOf(name: string): "unit" | "it" | "heavy" {
   if (name.endsWith("HeavyTests")) return "heavy";
   if (name.endsWith("ITTests")) return "it";

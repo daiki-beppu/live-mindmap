@@ -4,7 +4,6 @@ import { runCollectingLogs } from "./debugLogs.ts";
 import { RequestSpeakerName } from "../src/app/sessionLayout/command.ts";
 import { Message } from "../src/app/sessionLayout/message.ts";
 
-// Issue #1026: 名前の欄の確定が出す RequestSpeakerName を実際に実行し、fetch 境界で POST /session/speaker-name と {label,name} の本文を観測する
 const run = (label: string, name: string) => Effect.runPromise((RequestSpeakerName({ label, name }) as unknown as { effect: Effect.Effect<unknown> }).effect);
 
 afterEach(() => vi.unstubAllGlobals());
@@ -31,7 +30,6 @@ describe("RequestSpeakerName の実行", () => {
     expect(await run("相手 B", "田中")).toEqual(Message.CompletedRequestSpeakerName());
   });
 
-  // Issue #1576: server が 4xx/5xx で断ったら、送れなかったときと同じ失敗の道（Debug ログ）を通る
   for (const status of [409, 500]) {
     it(`status ${status} の応答は失敗として Debug ログに残し、完了の Message を返す`, async () => {
       vi.stubGlobal("fetch", vi.fn(async () => new Response(null, { status })));

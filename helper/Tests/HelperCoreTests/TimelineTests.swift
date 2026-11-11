@@ -3,8 +3,6 @@ import CoreAudio
 import Testing
 @testable import HelperCore
 
-// 2 トラック共通の基準時刻（ホスト時刻）からの秒数と、結果の時刻のずらし方。
-
 private func audio(at hostTime: UInt64) throws -> CapturedAudio {
     let format = try #require(AVAudioFormat(standardFormatWithSampleRate: 16_000, channels: 1))
     let buffer = try #require(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 160))
@@ -64,11 +62,9 @@ struct TimelineTests {
         let origin = AudioGetCurrentHostTime()
         let tap = TrackTimeline(origin: origin)
         let mic = TrackTimeline(origin: origin)
-        // 取得開始が 0.5 秒（相手）と 1.2 秒（自分）で違う。
         tap.record(try audio(at: hostTime(after: origin, nanos: 500_000_000)))
         mic.record(try audio(at: hostTime(after: origin, nanos: 1_200_000_000)))
 
-        // 共通の基準から 3.0〜4.0 秒の発言。アナライザから見ると相手は 2.5〜3.5、自分は 1.8〜2.8 になる。
         let tapResult = tap.align(TranscriptionResult(text: "はい", isFinal: true, start: 2.5, end: 3.5))
         let micResult = mic.align(TranscriptionResult(text: "はい", isFinal: true, start: 1.8, end: 2.8))
         #expect(abs(tapResult.start - 3.0) < 0.001 && abs(tapResult.end - 4.0) < 0.001)

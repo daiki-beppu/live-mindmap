@@ -5,7 +5,6 @@ import { AgentSdk, layerClaude } from "../src/claude.ts";
 import { DiffUpdater, emptyMap } from "../src/core/index.ts";
 import { ManagedDeps, ManagedDepsFailed } from "../src/managedDeps.ts";
 
-// 実装前の通常依存経路でも、本物の Claude を呼ばない。
 vi.mock("@anthropic-ai/claude-agent-sdk", () => ({ query: () => { throw new Error("通常依存の SDK を呼びました"); } }));
 
 describe("管理 SDK を使う AgentSdk", () => {

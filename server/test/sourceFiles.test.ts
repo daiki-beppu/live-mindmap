@@ -1,7 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { reportViolations } from "../scripts/sourceFiles.ts";
 
-// check-entrypoints と check-test-layers が共有する違反の出力。出力の形は両スクリプトの利用者（CI のログ）が見る
 describe("reportViolations", () => {
   let saved: typeof process.exitCode;
   beforeEach(() => { saved = process.exitCode; process.exitCode = undefined; });

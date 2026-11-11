@@ -15,11 +15,6 @@ import { playbackReducer } from "../src/reviewPlayback.ts";
 import { argsOf, audioContext, commandNames, DURATION, plainContext, stateAt } from "./reviewHarness.ts";
 import { eventOfBinding, keydown, pressEach, type KeyInit } from "./keysHarness.ts";
 
-// 見返しの Foldkit プログラム（Issue #822）の update: 「このキーが押された」（PressedKey）の意味を update が決める。
-// 各キーの結果は、同じ意味のボタン・Message を押したときと同じ Model と Command になる（ボタンのない倍率・位置・選択のキーは、表示面の Pressed*Key と同じ）。
-// 日本語入力がオンのとき・押したままの繰り返しは、本物の stream の出力をそのまま update に渡して確かめる（Message を直接作らない）。
-// 会議の長さは 200 秒。題材のノードは n1（議題 A）・n2（議題 B）・n3（TODO）
-
 const NO_MODIFIERS = { metaKey: false, ctrlKey: false, altKey: false };
 type Mods = Partial<typeof NO_MODIFIERS>;
 const keyOf = (id: string, mods: Mods = {}) => Message.PressedKey({ key: id as never, ...NO_MODIFIERS, ...mods });
@@ -30,14 +25,12 @@ const enterKey = (mods: Mods = {}) => surface(MapSurfaceMessage.PressedEnterKey(
 const keyList = (message: Popover.Message) => Message.GotKeyListMessage({ message });
 const rateMenu = (message: Menu.Message) => Message.GotRateMenuMessage({ message });
 
-// Command の値は実行の関数を持つので、同じ操作でも toEqual で比べられない。名前と引数で比べる
 const commandsOf = (commands: ReadonlyArray<{ name: string; args?: unknown }> | undefined) => (commands ?? []).map(({ name, args }) => ({ name, args }));
 
 type Context = typeof plainContext;
 type Update = ReturnType<typeof makeUpdate>;
 const updateOf = (context: Context): Update => makeUpdate(context);
 
-// 表示面を測り終えた、時刻 time の Model
 const measured = (context: Context, update: Update, time = DURATION) =>
   update(stateAt(context, time), surface(MapSurfaceMessage.MeasuredMapSurface({ width: 800, height: 600, nodeHeights: { root: 40, n1: 40, n2: 40, n3: 40 } }))).model;
 const withSelection = (update: Update, model: ReturnType<typeof stateAt>) => update(model, surface(MapSurfaceMessage.ClickedNodeButton({ nodeId: "n1", clientX: 0, clientY: 0 }))).model;
@@ -179,7 +172,6 @@ describe("倍率・位置・ノードを選ぶキーは、表示面の Pressed*K
     expect(plainUpdate(start, keyOf(id)).model).toEqual(plainUpdate(start, arrowKey(dir)).model);
   });
 
-  // 議題 T1 の下に論点 Q1・Q2、今の議題は T2（時刻 30）。T1 を選んで Enter で開閉する
   it("Enter で選んだ議題の下の論点が見え、もう一度の Enter で見えなくなる（開閉を見えるノードで確かめる）", () => {
     const remark = (id: string, start: number, end: number) => ({ at: "x", type: "remark", remark: { id, track: "相手", start, end, text: id } });
     const add = (ref: string, parent: string, kind: string, text: string, evidence: string[]) => ({ op: "add", ref, parent, kind, text, evidence });
@@ -191,7 +183,7 @@ describe("倍率・位置・ノードを選ぶキーは、表示面の Pressed*K
       remark("r2", 10, 30),
       diff(["r2"], [add("t2", "root", "議題", "T2", ["r2"])]),
       remark("r3", 30, 40),
-      diff(["r3"], [{ op: "close", node: "n1" }]), // T1 を済みにして、畳まれた状態から始める
+      diff(["r3"], [{ op: "close", node: "n1" }]),
     ]);
     const localUpdate = updateOf(local);
     const idOf = (text: string) => snapshotAt(local.timeline, 40).nodes.find((n) => n.text === text)!.id;
@@ -302,7 +294,6 @@ describe.each([
     }
   });
 
-  // 時刻を動かすキーは、manual・overview から自動のカメラへ戻す（viewport は移動後の時刻のマップに対する自動の位置）
   const NODE_HEIGHTS = { root: 40, n1: 40, n2: 40, n3: 40 };
   const autoViewportAt = (time: number) =>
     MapSurface.update(
@@ -319,9 +310,7 @@ describe.each([
   const expectAutoAt = (result: ReturnType<Update>, before: ReturnType<typeof stateAt>, label: string) => {
     const expected = autoViewportAt(result.model.playback.time);
     expect(result.model.mapSurface.camera.mode, label).toBe("auto");
-    // 全体を見る状態の viewport は、自動の位置と同じになることがある。押す前と違うことを確かめるのは manual だけ
     if (before.mapSurface.camera.mode === "manual") expect(before.mapSurface.camera.viewport, label).not.toEqual(expected);
-    // 補間が終わった（Tick 500 の後の）viewport が、自動の位置になる
     const settled = update(result.model, surface(MapSurfaceMessage.TickedAnimationFrame({ deltaMs: 500 }))).model;
     expect(Option.isNone(settled.mapSurface.motion), label).toBe(true);
     for (const axis of ["x", "y", "zoom"] as const) expect(settled.mapSurface.camera.viewport[axis], `${label} ${axis}`).toBeCloseTo(expected[axis], 9);
@@ -383,7 +372,6 @@ describe("日本語入力がオンのとき・押したままの繰り返し: �
   const update = plainUpdate;
   const start = withSelection(update, measured(plainContext, update));
 
-  // イベントを stream に流して届いた Message を順に並べ、update に渡して畳んだ Model
   const viaStream = async (inits: readonly KeyInit[]) => {
     const { perEvent } = await pressEach((target) => keyPressStream({ screen, hasSelection: () => true, target }), inits.map((init) => keydown(init)));
     return { messages: perEvent.flat() as Message[], model: feed(update, start, perEvent.flat() as Message[]) };

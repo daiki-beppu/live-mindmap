@@ -69,7 +69,6 @@ const observeSurface = (surface: HTMLElement): Stream.Stream<Emitted> =>
           for (const entry of entries) {
             const node = entry.target as HTMLElement;
             const id = node.dataset.nodeId;
-            // 実際の高さ（小数）。倍率の影響を受けない CSS の高さを読む（offsetHeight は整数に丸める。丸めた高さは配置とカメラが、小数のままの高さはエッジの端点が使う）
             if (id !== undefined && node.isConnected) nodeHeights[id] = Number.parseFloat(getComputedStyle(node).height);
           }
           if (Object.keys(nodeHeights).length > 0) emit(nodeHeights);
@@ -126,7 +125,7 @@ const observeSurface = (surface: HTMLElement): Stream.Stream<Emitted> =>
           event.preventDefault();
           const { scale, clientX, clientY } = event as GestureEvent;
           const origin = surface.getBoundingClientRect();
-          Queue.offerUnsafe(queue, Message.ChangedMapSurfaceGesture({ scale, x: clientX - origin.left, y: clientY - origin.top }));
+          Queue.offerUnsafe(queue, Message.ChangedMapSurfaceGesture({ cumulativeScale: scale, x: clientX - origin.left, y: clientY - origin.top }));
         };
         surface.addEventListener("pointerdown", onPointerDown);
         surface.addEventListener("click", onClick);

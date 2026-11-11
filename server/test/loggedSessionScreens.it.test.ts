@@ -10,16 +10,11 @@ import type { DiffInput, Remark, ScreenChange } from "../src/core/index.ts";
 import { createSessionDir, openLoggedSession } from "../src/sessionFiles.ts";
 import { updaterLayer } from "./fixtures/sessionLayers.ts";
 
-// ログを書く配線（openLoggedSession。play もライブも同じ）が、共有画面の画像をセッションのフォルダの screens/ に、
-// 受け取ったバイト列のまま書き、log.jsonl に screen の行を { at, type, start, image } で書くこと。
-// 中核（Session）はファイルに書かない（ADR 0003）ので、書くのはこの配線だけ。
-
 const sessionsDir = Effect.acquireRelease(
   Effect.tryPromise(() => mkdtemp(join(tmpdir(), "live-mindmap-screens-"))),
   (path) => Effect.promise(() => rm(path, { recursive: true, force: true })),
 );
 
-// 0〜255 を全部含めるバイト列（テキストとして書き換わると壊れる）
 const allBytes = new Uint8Array(Array.from({ length: 256 }, (_, i) => i));
 const shot = (start: number, bytes: Uint8Array, id = `s${start}`): ScreenChange => ({ start, image: { id, bytes } });
 const remark = (id: string, end: number): Remark => ({ id, track: "相手", start: end - 1, end, text: "発言" });
@@ -50,17 +45,15 @@ describe("openLoggedSession の共有画面", () => {
         { type: "screen", start: 800, image: null },
       ]);
       expect(screens.every((l) => typeof l.at === "string")).toBe(true);
-      // 行にバイト列は載らない
       expect(JSON.stringify(screens)).not.toContain("bytes");
     }).pipe(Effect.scoped));
 
-  // Issue #643: lines は screen の行に残り、diff の行の input.screens には載らない
   it.effect("pushScreen に渡した lines は log.jsonl の screen の行に残る。渡さなければキーが無く、diff の行の screens にも lines は載らない", () =>
     Effect.gen(function* () {
       const { session, lines } = yield* open();
       yield* session.pushScreen(shot(5, allBytes), ["港南店", "Zendesk"]);
       yield* session.pushScreen(shot(15, new Uint8Array([9, 9, 9]), "b"));
-      yield* session.push(remark("r1", 20)); // 発言 1 件ですぐ差分更新が呼ばれる
+      yield* session.push(remark("r1", 20));
       yield* session.idle;
 
       const screens = lines().filter((l) => l.type === "screen");
@@ -89,7 +82,7 @@ describe("openLoggedSession の共有画面", () => {
     Effect.gen(function* () {
       const { dir, session, inputs, lines } = yield* open();
       yield* session.pushScreen(shot(5, allBytes));
-      yield* session.push(remark("r1", 8)); // 発言 1 件ですぐ差分更新が呼ばれる
+      yield* session.push(remark("r1", 8));
       yield* session.idle;
 
       expect(inputs).toHaveLength(1);
@@ -122,10 +115,10 @@ describe("openLoggedSession の共有画面", () => {
   it.effect("画面を 1 件も受けないセッションは screens/ を作らず、screen の行も無い", () =>
     Effect.gen(function* () {
       const { dir, session, inputs, lines } = yield* open();
-      yield* session.push(remark("r1", 8)); // 発言 1 件ですぐ差分更新が呼ばれる
+      yield* session.push(remark("r1", 8));
       yield* session.idle;
 
-      expect(inputs).toHaveLength(1); // 否定のテストなので、差分更新が実際に起きたことを先に確かめる
+      expect(inputs).toHaveLength(1);
       expect(existsSync(join(dir, "screens"))).toBe(false);
       expect(lines().some((l) => l.type === "screen")).toBe(false);
     }).pipe(Effect.scoped));

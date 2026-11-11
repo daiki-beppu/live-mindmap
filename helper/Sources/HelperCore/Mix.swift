@@ -1,11 +1,6 @@
 import AVFoundation
 import Foundation
 
-// セッションの録音（相手・自分の全ファイル）を、0 秒の位置から重ねて 1 本の 32 kbps・24 kHz モノラル m4a にする。
-// AVFoundation の公開 API だけで作る（ffmpeg などの外部コマンドは使わない）。
-// 録音は取得の空白を無音で埋めない規則なので、ここでも埋めない。出力の長さは、一番長い入力の長さになる。
-
-// 出力の音質。話者分離や再生の用途ではなく、後から聞き返す用途の小さい音声。
 // 32 kbps の AAC を受け付けるサンプルレートとして 24 kHz を使う（mixRecordings のテストで実際の出力を確かめる）。
 private let mixSampleRate = 24_000.0
 private let mixBitRate = 32_000
@@ -17,8 +12,6 @@ public struct MixError: Error, Equatable, CustomStringConvertible {
     public var description: String { message }
 }
 
-/// `session` の直下から、混ぜる録音を選ぶ。名前は `recordingFileName` で作り直した名前との完全一致で判定する
-/// （番号は 2 以上の整数）。`track` が nil なら 相手・自分 の両方、指定があればそのトラックだけ。結果は名前順。
 public func mixInputs(inSession session: URL, track: Track?) throws -> [URL] {
     var isDirectory: ObjCBool = false
     guard FileManager.default.fileExists(atPath: session.path, isDirectory: &isDirectory), isDirectory.boolValue else {
@@ -49,11 +42,6 @@ private func isRecordingName(_ name: String, track: Track) -> Bool {
     return name == recordingFileName(track: track, attempt: attempt)
 }
 
-/// `inputs` をすべて 0 秒の位置から重ね、`output` に 32 kbps・24 kHz・モノラルの m4a として書く（moov は先頭）。
-/// `output` が既にあるときは上書きせず失敗する。出力先のフォルダも作らない。
-/// 音声が入っていない録音（トラックが無い、または長さが 0）は飛ばし、ファイル名を 1 ファイル 1 行で `reportSkipped` に渡す
-/// （helper が起動し直すと中身の無い録音が残ることがあり、それで全体を失敗させないため）。全部が空なら失敗する。
-/// 中身があるのに読めない録音は飛ばさず失敗する。
 public func mixRecordings(
     _ inputs: [URL],
     to output: URL,
@@ -115,7 +103,6 @@ public func mixRecordings(
     let pumpFailed = await pump.run()
 
     if pumpFailed || reader.status == .failed {
-        // 書き込みが先に失敗していれば、その原因を基準にする。そうでなければ読み出しの失敗。
         let failure = writer.status == .failed
             ? "書き込みに失敗: \(describe(writer.error))"
             : "録音を読み出せない: \(describe(reader.error))"
@@ -131,8 +118,6 @@ public func mixRecordings(
     }
 }
 
-/// 入力ごとの音声トラックを、すべて 0 秒の位置に挿入した composition。長さは一番長いトラックの長さ。
-/// 読み込みに成功したうえで音声が空の入力は、飛ばして `reportSkipped` に伝える。読み込みの失敗は飛ばさない。
 private func overlaidComposition(of inputs: [URL], reportSkipped: (String) -> Void) async throws -> AVMutableComposition {
     let composition = AVMutableComposition()
     var inserted = 0
@@ -168,7 +153,6 @@ private func describe(_ error: Error?) -> String {
     error.map { $0.localizedDescription } ?? "不明"
 }
 
-/// reader から読んだ音を、writer の入力が受け取れるたびに渡す。専用の直列キューだけから触る。
 private final class SamplePump: @unchecked Sendable {
     private let reader: AVAssetReader
     private let output: AVAssetReaderAudioMixOutput
@@ -181,7 +165,6 @@ private final class SamplePump: @unchecked Sendable {
         self.input = input
     }
 
-    /// 全部渡し終えたら false、読み出しが途中で失敗したか書き込みが止まったら true を返す。
     func run() async -> Bool {
         await withCheckedContinuation { continuation in
             input.requestMediaDataWhenReady(on: queue) { [self] in

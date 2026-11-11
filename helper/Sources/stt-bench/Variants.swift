@@ -4,8 +4,6 @@ import Foundation
 import HelperCore
 import Speech
 
-// 候補の設定。baseline は本番の `SpeechAnalyzerTranscriber` そのもので、それ以外はここで analyzer を組む（本番の挙動は変えない）。
-
 struct Variant {
     var name: String
     var detail: String
@@ -13,19 +11,14 @@ struct Variant {
     var attributes: Set<SpeechTranscriber.ResultAttributeOption> = [.audioTimeRange]
     var preset: SpeechTranscriber.Preset?
     var detector: SpeechDetector.SensitivityLevel?
-    /// 結果がこの秒数更新されなければ、`finalize(through:)` で確定を促す
     var finalizeAfterQuiet: Double?
     var priority: TaskPriority?
     var ignoresResourceLimits = false
-    /// `--vocab` の語彙を `AnalysisContext.contextualStrings` に渡す
     var usesVocabulary = false
-    /// 語彙を `setContext` ではなく、`SpeechAnalyzer` の init の `analysisContext` で渡す
     var contextAtInit = false
-    /// `SpeechTranscriber` の代わりに `DictationTranscriber`（progressiveLongDictation）を使う
     var dictation = false
 }
 
-/// `contextualStrings` に渡す語彙と、渡す時刻（流し始めからの音声の秒。0 なら流し始める前）。
 struct Vocabulary {
     var strings: [String]
     var at: Double
@@ -56,7 +49,6 @@ func makeTranscriber(_ variant: Variant, vocabulary: Vocabulary? = nil) -> any T
     variant.name == "baseline" ? SpeechAnalyzerTranscriber() : BenchTranscriber(variant, vocabulary: vocabulary)
 }
 
-/// baseline 以外の候補を試す `Transcriber`。入力の変換は本番の `SpeechAnalyzerTranscriber.convert` を使う。
 final class BenchTranscriber: Transcriber, @unchecked Sendable {
     private let variant: Variant
     private let locale = Locale(identifier: "ja-JP")
@@ -141,7 +133,6 @@ final class BenchTranscriber: Transcriber, @unchecked Sendable {
                 do {
                     for try await captured in audio {
                         let buffer = captured.buffer
-                        // 候補: セッションの途中で語彙を差し替える
                         if let pending = pendingContext, fed >= pending.at {
                             try await analyzer.setContext(pending.0)
                             logToStderr("setContext at \(fed)s")
@@ -171,7 +162,6 @@ final class BenchTranscriber: Transcriber, @unchecked Sendable {
                     continuation.finish(throwing: error)
                 }
             }
-            // 候補: 途中結果がしばらく更新されなければ、そこまでの確定を analyzer に促す
             let watchdog = quiet.map { quiet in
                 Task {
                     while !Task.isCancelled {
@@ -197,7 +187,6 @@ final class BenchTranscriber: Transcriber, @unchecked Sendable {
 }
 
 extension BenchTranscriber {
-    /// 使っている transcriber の結果を `TranscriptionResult` の流れにする。
     fileprivate func resultStream() -> AsyncThrowingStream<TranscriptionResult, Error> {
         func convert(text: AttributedString, isFinal: Bool, range: CMTimeRange) -> TranscriptionResult {
             TranscriptionResult(
@@ -227,20 +216,16 @@ extension BenchTranscriber {
     }
 }
 
-/// finalize の成否や語彙を渡したことを stderr に 1 行書く（stdout は JSONL 専用）。
 private func logToStderr(_ line: String) {
     FileHandle.standardError.write(Data((line + "\n").utf8))
 }
 
-/// watchdog の 1 回分の処理の結果。
 enum FinalizeOutcome: Equatable {
     case idle
     case finalized(through: Double)
     case failed(through: Double, message: String)
 }
 
-/// watchdog の 1 回分: 静かな位置があれば `finalize` を呼び、成功したときだけその位置を処理済みにする。
-/// 失敗した位置は処理済みにしないので、次の周期で再び対象になる。
 func finalizeStep(progress: ResultProgress, quiet: Double, finalize: (Double) async throws -> Void) async -> FinalizeOutcome {
     guard let end = progress.quietEnd(for: quiet) else { return .idle }
     do {
@@ -252,7 +237,6 @@ func finalizeStep(progress: ResultProgress, quiet: Double, finalize: (Double) as
     }
 }
 
-/// 途中結果の最後の更新時刻と、確定を促した位置。collector と watchdog が共有する。
 final class ResultProgress: @unchecked Sendable {
     private let lock = NSLock()
     private var lastUpdate: ContinuousClock.Instant?
@@ -272,7 +256,6 @@ final class ResultProgress: @unchecked Sendable {
         finalizedThrough = max(finalizedThrough, end)
     }
 
-    /// 最後の更新から `quiet` 秒たち、まだ確定していない途中結果があれば、その end を返す（状態は変えない）。
     func quietEnd(for quiet: Double) -> Double? {
         lock.lock()
         defer { lock.unlock() }
@@ -280,7 +263,6 @@ final class ResultProgress: @unchecked Sendable {
         return volatileEnd
     }
 
-    /// `end` までを処理済みにする。確定を促す呼び出しが成功したときに使う。
     func markFinalized(through end: Double) {
         lock.lock()
         defer { lock.unlock() }

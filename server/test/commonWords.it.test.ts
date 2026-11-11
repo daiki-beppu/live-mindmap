@@ -4,8 +4,6 @@ import { describe, expect, it } from "@effect/vitest";
 import { Effect } from "effect";
 import { COMMON_WORDS_PATH, loadCommonWords } from "../src/commonWords.ts";
 
-// Issue #641: 同梱の wordfreq 日本語上位 5 万語の一覧を読んで、補正に渡す一覧（Set）にする。
-// 読み込みは core の外（Effect の FileSystem）で行う。本物のモデル・音声認識は使わない。
 describe("同梱のふつうの語の一覧（wordfreq 日本語上位 5 万語）", () => {
   const load = loadCommonWords(COMMON_WORDS_PATH).pipe(Effect.provide(NodeFileSystem.layer));
 

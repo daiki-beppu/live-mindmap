@@ -5,10 +5,6 @@ import HelperCore
 import Testing
 @testable import stt_bench
 
-// Issue #1031: `stt-bench run --events`。認識と話者分離を同じ音声（と、あれば 自分 の音声）に流し、
-// 届いた時刻 arrival つきの HelperEvent を 1 行 1 イベントの JSON で出す（speakerReplay --offline がそのまま読める形）。
-// 認識と話者分離は偽物で流すので CI でも流す。既定の出力（ResultLine）は RecognizeITTests が見る。
-
 private final class FakeTranscriber: Transcriber, @unchecked Sendable {
     let results: [TranscriptionResult]
     init(results: [TranscriptionResult]) { self.results = results }
@@ -71,7 +67,6 @@ private final class Lines: @unchecked Sendable {
     private let lock = NSLock()
     private var _lines: [String] = []
     func add(_ line: String) { lock.withLock { _lines.append(line) } }
-    /// 出た行を JSON として読んだもの（どの行も JSON のオブジェクトであること）
     var objects: [[String: Any]] {
         get throws {
             try lock.withLock { _lines }.map { line in
@@ -156,7 +151,6 @@ struct RunEventsITTests {
         let speakerArrivals = lines.filter { ($0["type"] as? String)?.hasPrefix("speaker") == true }.compactMap { $0["arrival"] as? Double }
         #expect(speakerArrivals.count == 5)
         #expect(speakerArrivals == speakerArrivals.sorted())
-        // 実時間で音声（0.35 秒）を流し切ってから結果が届く
         #expect(speakerArrivals.allSatisfy { $0 >= 0.3 })
     }
 

@@ -18,10 +18,6 @@ import { fakeScreenJpeg } from "./fixtures/screenJpeg.ts";
 import { fakeReadings } from "./fixtures/readings.ts";
 import { advanceTo as advanceToVirtual, trackingClock } from "./fixtures/virtualTime.ts";
 
-// play <セッションのフォルダ> を、CLI の入口から偽の Agent SDK の query まで通して確かめる（試すシームは CLI の play + 偽の query）。
-// 組み方は playScreen.it.test.ts と同じ: 本物の layerClaude を残し、AgentSdk.layer だけを偽物に替える。
-// 共有画面の画像の変換（PNG → JPEG）は Service ScreenJpeg の偽物。
-
 type Block = { type: string; text?: string; source?: { type: string; media_type: string; data: string } };
 type SentMessage = { type: string; message: { role: string; content: string | Block[] } };
 type Created = { messages: SentMessage[]; options: { systemPrompt: string } };
@@ -34,7 +30,6 @@ const external = vi.hoisted(() => ({
 vi.mock("../src/claude.ts", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../src/claude.ts")>();
   const { Layer: L } = await import("effect");
-  // prompt から user メッセージを 1 つ読むたびに、noop の結果を 1 つ返す
   const query = ((params: { prompt: AsyncIterable<SentMessage>; options: Created["options"] }) => {
     const record: Created = { messages: [], options: params.options };
     external.created.push(record);
@@ -91,7 +86,6 @@ function dependencies(sessionsDir: string) {
   return { layer, stdout, convert };
 }
 
-// play を 1 回流し、新しいセッションのフォルダを返す（標準出力の 1 行目のパスの親）
 const played = (deps: ReturnType<typeof dependencies>, args: string[]) =>
   Effect.gen(function* () {
     yield* runCli(["play", ...args]).pipe(Effect.provide(deps.layer));
@@ -101,7 +95,7 @@ const played = (deps: ReturnType<typeof dependencies>, args: string[]) =>
 const failure = (deps: ReturnType<typeof dependencies>, args: string[]) =>
   Effect.gen(function* () {
     const result = yield* Effect.result(runCli(["play", ...args]).pipe(Effect.provide(deps.layer)));
-    expect(result._tag).toBe("Failure"); // 失敗の形を見る前に、失敗したことを確かめる
+    expect(result._tag).toBe("Failure");
     return result._tag === "Failure" ? (result.failure as { _tag: string; line?: number; message?: string }) : undefined;
   });
 
@@ -110,7 +104,6 @@ const logLines = (session: string) => parseLog(readFileSync(join(session, "log.j
 const diffInputs = (lines: Line[]) => lines.filter((l) => l.type === "diff").map((l) => l.input as Record<string, unknown>);
 const sessionFolders = (sessionsDir: string) => (existsSync(sessionsDir) ? readdirSync(sessionsDir) : []);
 
-// 元のセッションのフォルダ（log.jsonl と screens/）を手で作る。画像ファイルの中身は渡した文字列
 function sessionFolder(root: string, lines: Record<string, unknown>[], images: Record<string, string> = {}) {
   const dir = join(root, "original");
   mkdirSync(join(dir, "screens"), { recursive: true });
@@ -127,7 +120,6 @@ const remarkLine = (id: string, start: number, end: number, text = `発言${id}`
   remark: { id, track: "相手", start, end, text },
 });
 
-// 文字起こしの発言（kanary transcribe の JSON の segments）
 const segments = (list: [start: number, end: number, text: string][]) =>
   JSON.stringify({
     schema_version: 1,
@@ -140,7 +132,6 @@ const segments = (list: [start: number, end: number, text: string][]) =>
     },
   });
 
-// 素材を置いた「会議のフォルダ」を作る。slides.tsv は 1 行目が見出し。画像ファイルの中身は "png:<相対パス>"
 function meeting(root: string, transcript: string, rows: [start: number, end: number, slide: string, image: string][]) {
   const folder = join(root, "meeting");
   mkdirSync(join(folder, "slides"), { recursive: true });
@@ -178,7 +169,6 @@ describe("play <セッションのフォルダ>", () => {
       const replayDeps = dependencies(join(root, "replay-sessions"));
       const replay = yield* played(replayDeps, [original]);
 
-      // 否定の比較なので、両方の play が実際に Claude を呼んだことを先に確かめる
       expect(external.created).toHaveLength(2);
       expect(external.created[0]!.messages.length).toBeGreaterThan(0);
       const originalLines = logLines(original);
@@ -186,22 +176,17 @@ describe("play <セッションのフォルダ>", () => {
       expect(originalLines.filter((l) => l.type === "screen").length).toBeGreaterThan(0);
       expect(diffInputs(originalLines).some((input) => "screens" in input)).toBe(true);
 
-      // 呼び出しの区切りと、添えた画面（input の全体: recent・fresh・nodeCount・screens・screenCount）
       expect(diffInputs(replayLines)).toEqual(diffInputs(originalLines));
-      // Claude へ送ったメッセージ（見出し・画像のバイト列・発言を含む）
       expect(external.created[1]!.messages).toEqual(external.created[0]!.messages);
-      // 題名は元の start の行から。フォルダ名（開始時刻）ではない
       const startOf = (lines: Line[]) => lines.find((l) => l.type === "start");
       expect(startOf(replayLines)).toMatchObject({ title: "meeting" });
       expect(startOf(replayLines)!.title).toBe(startOf(originalLines)!.title);
-      // screen の行と screens/ の画像（名前は新しいセッションが付ける。同じ start から付くので同じになる）
       const screens = (lines: Line[]) => lines.filter((l) => l.type === "screen").map(({ start, image }) => ({ start, image }));
       expect(screens(replayLines)).toEqual(screens(originalLines));
       const files = readdirSync(join(replay, "screens")).sort();
       expect(files).toEqual(readdirSync(join(original, "screens")).sort());
       expect(files.length).toBeGreaterThan(0);
       for (const file of files) expect(readFileSync(join(replay, "screens", file))).toEqual(readFileSync(join(original, "screens", file)));
-      // 画像は元のフォルダの screens/ から読む。変換は呼ばない
       expect(replayDeps.convert.calls).toEqual([]);
     }));
 
@@ -216,7 +201,6 @@ describe("play <セッションのフォルダ>", () => {
       expect(external.created.flatMap((c) => c.messages).length).toBeGreaterThan(0);
       const lines = logLines(replay);
       expect(lines.find((l) => l.type === "start")).toMatchObject({ title: "定例" });
-      // 発言は remark の行の remark がそのまま入る（重複の印・中身の無い発言の印は中核が付ける）
       const remarks = (list: Line[]) => list.filter((l) => l.type === "remark").map(({ remark, noContent }) => ({ remark, noContent }));
       expect(remarks(lines)).toEqual(remarks(fixture));
       expect(remarks(lines)).toHaveLength(9);
@@ -228,7 +212,6 @@ describe("play <セッションのフォルダ>", () => {
   it.effect("screen-off が新しいログにも、同じ start・同じ reason・同じ並び（同じ時刻の screen との前後を含む）で残り、差分更新に添える画面には載らない。時刻はファイル名ではなくログの start", () =>
     Effect.gen(function* () {
       const root = yield* temporaryDirectory;
-      // 同じ時刻（3 と 11）で screen-off と screen が混ざる。画像のファイル名は時刻と関係ない名前にする
       const original = sessionFolder(
         root,
         [
@@ -268,12 +251,9 @@ describe("play <セッションのフォルダ>", () => {
         "screen:20:null",
         "screen-off:25:指定",
       ]);
-      // 画像は元のフォルダの screens/ から読み、新しい名前で書く
       expect(readFileSync(join(replay, "screens", "0001.0.jpg"), "utf8")).toBe("bytes-first");
       expect(readFileSync(join(replay, "screens", "0011.0.jpg"), "utf8")).toBe("bytes-second");
       expect(readdirSync(join(replay, "screens")).sort()).toEqual(["0001.0.jpg", "0011.0.jpg"]);
-      // 差分更新に添える画面は screen だけ
-      // 発言 1 件ごとに呼ばれる。r1 の時点では画面はまだ再生されておらず、r2 の呼び出しに screen の 3 件が添う
       const inputs = diffInputs(lines);
       expect(inputs.map((d) => d.fresh)).toEqual([["r1"], ["r2"]]);
       expect(inputs[1]).toMatchObject({
@@ -303,7 +283,6 @@ describe("play <セッションのフォルダ>", () => {
       expect(sent).toContain("r1 [00:00] 相手 A: 発言r1");
       expect(sent).toContain("r2 [00:06] 相手: 発言r2");
       expect(sent).not.toContain("r2 [00:06] 相手 A");
-      // 新しいログの remark にも speaker が残る（再生し直しても同じ経路を通る）
       const remarks = logLines(replay).filter((l) => l.type === "remark").map((l) => l.remark as { id: string; speaker?: string });
       expect(remarks.find((r) => r.id === "r1")?.speaker).toBe("相手 A");
       expect(remarks.find((r) => r.id === "r2")).not.toHaveProperty("speaker");
@@ -411,7 +390,6 @@ describe("play <セッションのフォルダ>", () => {
           const sessionsDir = join(root, "sessions");
           const error = yield* failure(dependencies(sessionsDir), [original]);
           expect(error).toMatchObject({ _tag: "BrokenLogLine", line });
-          // 再生を始める前に失敗する: 待受けも新しいセッションのフォルダも作らない
           expect(external.openListener).not.toHaveBeenCalled();
           expect(sessionFolders(sessionsDir)).toEqual([]);
           expect(external.created).toEqual([]);
@@ -454,10 +432,7 @@ describe("play <セッションのフォルダ>", () => {
     }));
 });
 
-// --realtime: 変化も発言と同じ時計で、start の時刻まで待ってから入る。実時間では待たず、TestClock を少しずつ進める。
-// 発言 r1 は 0〜2 秒、r2 は 10〜12 秒。変化は 6 秒と 8 秒
 describe("play --realtime で変化を時刻どおりに待つ", () => {
-  // 新しいセッションのログ（まだ無ければ空）
   const currentLog = (sessionsDir: string): Line[] => {
     const folders = sessionFolders(sessionsDir);
     const path = folders.length > 0 ? join(sessionsDir, folders[0]!, "log.jsonl") : undefined;
@@ -470,14 +445,11 @@ describe("play --realtime で変化を時刻どおりに待つ", () => {
 
   const isRemark = (id: string) => (l: Line) => l.type === "remark" && (l.remark as { id: string }).id === id;
 
-  // 再生は r1 の end（2 秒）→ 変化 2 つ → r2 の end（12 秒）の順に、同じ時計で待つ
   const observe = (sessionsDir: string, pending: number[], expectations: { screenAt: number; secondAt: number; secondType: "screen" | "screen-off" }) =>
     Effect.gen(function* () {
       yield* advanceTo(sessionsDir, pending, 2000, isRemark("r1"));
-      // r1 が入った後でも、変化の start（6 秒）の手前では screen の行は無い
       expect(has(sessionsDir, (l) => l.type === "screen" && l.start === 6)).toBe(false);
       yield* advanceTo(sessionsDir, pending, expectations.screenAt * 1000, (l) => l.type === "screen" && l.start === expectations.screenAt);
-      // 変化は発言の待ちに足されるのではなく、同じ時計に乗る: r2 は end の 12 秒
       expect(has(sessionsDir, isRemark("r2"))).toBe(false);
       yield* advanceTo(sessionsDir, pending, expectations.secondAt * 1000, (l) => l.type === expectations.secondType && l.start === expectations.secondAt);
       expect(has(sessionsDir, isRemark("r2"))).toBe(false);
@@ -529,7 +501,6 @@ describe("play --realtime で変化を時刻どおりに待つ", () => {
         Effect.provideService(Clock.Clock, yield* trackingClock(pending)),
         Effect.forkChild,
       );
-      // 6 秒に画像、8 秒に「なし」（最後の行の end）
       yield* observe(sessionsDir, pending, { screenAt: 6, secondAt: 8, secondType: "screen" });
       yield* TestClock.adjust(60_000);
       yield* Fiber.join(fiber);
@@ -538,11 +509,8 @@ describe("play --realtime で変化を時刻どおりに待つ", () => {
     }), 30_000);
 });
 
-// Issue #644: 過去のセッションのフォルダを再生すると、ログの vocab の行・screen の lines・remark の raw と words から、今の規則で発言を直し直す。
-// 読みのサブコマンド（Readings）も読みを聞くモデルも呼ばない。words の無い古い発言は直さない。
 describe("play <セッションのフォルダ>: 今の規則で発言を直し直す", () => {
   type Token = readonly [surface: string, romaji: string];
-  // 語の並びから本文と words を組む（location / length は UTF-16 コード単位）
   const utterance = (...tokens: Token[]) => {
     let location = 0;
     const words = tokens.map(([surface, romaji]) => {
@@ -552,7 +520,6 @@ describe("play <セッションのフォルダ>: 今の規則で発言を直し�
     });
     return { raw: tokens.map(([surface]) => surface).join(""), words };
   };
-  // correction.test.ts と同じ読み（実際の CFStringTokenizer の値）。「全デスク」は Zendesk に直る
   const ZENDESK_UTTERANCE = utterance(["今日", "kyou"], ["は", "ha"], ["全", "zen"], ["デスク", "desuku"], ["で", "de"], ["確認", "kakunin"], ["し", "shi"], ["ます", "masu"], ["。", "｡"]);
   const CORRECTED = "今日はZendeskで確認します。";
   const ZENDESK_VOCAB = { type: "vocab", words: [{ surface: "Zendesk", romaji: "zendesuku", source: "user" }] };
@@ -577,23 +544,19 @@ describe("play <セッションのフォルダ>: 今の規則で発言を直し�
       const replay = yield* played(deps, [original]);
 
       const lines = logLines(replay);
-      // 直る前の本文（raw）から直し直した本文になる。raw と words は直す前のまま残る
       expect(ZENDESK_UTTERANCE.raw).toBe("今日は全デスクで確認します。");
       expect(remarkLineOf(lines, "r1")).toMatchObject({ remark: { text: CORRECTED }, raw: ZENDESK_UTTERANCE.raw, words: ZENDESK_UTTERANCE.words });
-      // 語彙の行も再生側のログに書く（読みは元の vocab の行から）
       expect(lines.filter((l) => l.type === "vocab")).toEqual([expect.objectContaining({ words: [{ surface: "Zendesk", romaji: "zendesuku", source: "user" }] })]);
-      // 直った表記が差分更新まで届いている（届いたことを確かめてから、読みを呼ばないことを確かめる）
       expect(sentTexts()).toContain(CORRECTED);
       expect(sentTexts()).not.toContain("全デスク");
       expect(readings.calls).toEqual([]);
-      expect(external.created).toHaveLength(1); // 差分更新の query だけ（読みを聞く呼び出しは無い）
+      expect(external.created).toHaveLength(1);
     }));
 
   it.effect("補正の部品を差し替えて再生すると、直した結果が差し替えた部品のとおりに変わる", () =>
     Effect.gen(function* () {
       const { RemarkCorrection } = yield* Effect.promise(() => import("../src/sessionVocabulary.ts"));
       const root = yield* temporaryDirectory;
-      // ライブで直した後の本文（text）と、直す前の本文（raw）を変えて記録する。補正は raw から行う
       const recorded = recordedRemark("r1", 0, 5, ZENDESK_UTTERANCE);
       const original = sessionFolder(root, [
         { type: "start", title: "t" },
@@ -611,7 +574,6 @@ describe("play <セッションのフォルダ>: 今の規則で発言を直し�
       const lines = logLines(replay);
       expect(remarkLineOf(lines, "r1")).toMatchObject({ remark: { text: `差し替え:${ZENDESK_UTTERANCE.raw}` } });
       expect(remarkTexts(lines)).not.toContain(CORRECTED);
-      // 差し替えた部品には、ログの raw と、vocab の行から組んだ語彙が渡る
       expect(seen).toEqual([{ vocabulary: [{ surface: "Zendesk", romaji: "zendesuku" }], text: ZENDESK_UTTERANCE.raw }]);
     }));
 
@@ -627,7 +589,7 @@ describe("play <セッションのフォルダ>: 今の規則で発言を直し�
       const replay = yield* played(dependencies(join(root, "sessions")), [original]);
 
       const lines = logLines(replay);
-      expect(remarkLineOf(lines, "new")).toMatchObject({ remark: { text: CORRECTED } }); // 語彙が効いている状態で、古い発言だけが直らない
+      expect(remarkLineOf(lines, "new")).toMatchObject({ remark: { text: CORRECTED } });
       const old = remarkLineOf(lines, "old");
       expect(old).toMatchObject({ remark: { text: "今日は全デスクで確認します。" } });
       expect(old).not.toHaveProperty("raw");
@@ -651,12 +613,10 @@ describe("play <セッションのフォルダ>: 今の規則で発言を直し�
       const original = sessionFolder(root, [{ type: "start", title: "t" }, recordedRemark("r1", 0, 5, ZENDESK_UTTERANCE)]);
       const deps = dependencies(sessionsDir);
 
-      // 溜まりが無いとき: 作らない
       const withoutPool = yield* played(deps, [original]);
       expect(existsSync(join(sessionsDir, "vocabulary.json"))).toBe(false);
       expect(logLines(withoutPool).some((l) => l.type === "vocab-pool")).toBe(false);
 
-      // 溜まりに Zendesk があっても、再生の語彙には入らない
       const pool = JSON.stringify({ sessions: 4, words: [{ surface: "Zendesk", romaji: "zendesuku", source: "spoken", lastSpoken: 4 }] });
       writeFileSync(join(sessionsDir, "vocabulary.json"), pool);
       deps.stdout.length = 0;
@@ -664,7 +624,7 @@ describe("play <セッションのフォルダ>: 今の規則で発言を直し�
 
       expect(readFileSync(join(sessionsDir, "vocabulary.json"), "utf8")).toBe(pool);
       const lines = logLines(withPool);
-      expect(remarkLineOf(lines, "r1")).toMatchObject({ remark: { text: ZENDESK_UTTERANCE.raw } }); // 直らない
+      expect(remarkLineOf(lines, "r1")).toMatchObject({ remark: { text: ZENDESK_UTTERANCE.raw } });
       expect(lines.filter((l) => l.type === "vocab")).toEqual([]);
       expect(JSON.stringify(lines)).not.toContain("carried");
       expect(lines.some((l) => l.type === "vocab-pool")).toBe(false);

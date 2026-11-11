@@ -15,7 +15,6 @@ const remark = (n: number): Remark => ({ id: `r${n}`, track: "相手", start: n,
 const ids = (remarks: readonly Remark[]) => remarks.map((r) => r.id);
 const probe = classificationRequest(emptyMap("定例"), [], [{ remark: { id: "probe", track: "相手", start: 0, end: 1, text: "確認。" }, text: "確認。" }]);
 
-// HTTP 境界が生成した失敗を使う。core のテストが独自の一時停止タグを定義しないため。
 const responseFailure = Effect.fnUntraced(function* (status: number, body: string): Effect.fn.Return<DiffUpdateError> {
   const files = fakeChatgptFiles(chatgptCredentials((yield* Clock.currentTimeMillis) + 3_600_000));
   const http = fakeChatgptHttp((_request, call) => call === 1
@@ -78,7 +77,6 @@ describe("同じSessionでの一時停止と再開", () => {
     const before = yield* session.snapshot;
     expect(before.round).toBe(1);
     expect(before.nodes.filter((n) => n.kind === "議題").flatMap((n) => n.evidence)).toEqual(["r1"]);
-    // r2 の呼び出しが利用上限で止まり、止まっている間に届いた r3 は呼び出しを起こさず保持される
     yield* session.push(remark(2));
     yield* session.push(remark(3));
     yield* session.idle;
@@ -185,7 +183,6 @@ describe("同じSessionでの一時停止と再開", () => {
     yield* session.flush;
     expect(calls).toHaveLength(1);
     expect(ids(yield* session.unreflectedRemarks)).toEqual(["r1", "r2"]);
-    // 書き出し中はScopeがまだ開いている。取得済みsnapshotと保存ログを変えない。
     const snapshot = yield* session.snapshot;
     yield* TestClock.adjust(FIVE_MINUTES * 2);
     expect(calls).toHaveLength(1);
@@ -301,7 +298,6 @@ describe("同じSessionでの一時停止と再開", () => {
     yield* session.idle;
     yield* session.push(remark(2));
     yield* session.idle;
-    // 2 回目の入力には 1 回目の応答が載り、その回が利用上限で止まる
     expect(calls[1]!.previousResponse?.refs).toEqual({ u1: "n1" });
     expect(calls[1]!.previousResponse?.dropped.map((d) => d.reason)).toEqual(["親が存在しない"]);
     const restoredState = yield* restoreState(events.map((e) => JSON.parse(JSON.stringify(e)) as unknown));

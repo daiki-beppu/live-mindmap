@@ -7,7 +7,6 @@ import { ManagedDeps } from "../src/managedDeps.ts";
 import { fakeInstaller, install, leftovers, oldCurrent, ready } from "./fixtures/managedClaudeInstall.ts";
 import { managedLayer, temporaryDeps } from "./fixtures/managedDeps.ts";
 
-// 子プロセスの終了（kill(pid, 0) で生存を見る）で結果が決まる契約
 describe("管理 Claude SDK の導入の中断", () => {
   it.live("導入中断は子プロセスを終了し、旧 current を保持して再導入できる", () => Effect.gen(function* () {
     const dir = yield* temporaryDeps;

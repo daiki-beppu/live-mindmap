@@ -8,8 +8,6 @@ const ids = (remarks: readonly Remark[]) => remarks.map((r) => r.id);
 const add = (r: Remark): Op => ({ op: "add", ref: `topic-${r.id}`, parent: "root", kind: "議題", text: r.text, evidence: [r.id] });
 const partial = (input: DiffInput): DiffResult & { processedRemarks: number } => ({ ops: [add(input.fresh[0]!)], processedRemarks: 1 });
 
-// 差分更新は呼び出し中でなければ発言 1 件ですぐ呼ぶ。複数の発言を最初の 1 回にまとめて渡すため、
-// 先頭の発言をログから戻した「まだ渡していない発言」として持たせ、次の push で新しい発言とまとめて 1 回で渡す。
 const openHeld = (held: readonly number[], layer: Layer.Layer<DiffUpdater | SessionLog>) =>
   restoreSession([{ type: "start", title: "定例" }, ...held.map((n) => ({ type: "remark", remark: remark(n) }))]).pipe(Effect.provide(layer));
 

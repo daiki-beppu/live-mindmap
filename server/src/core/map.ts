@@ -148,7 +148,6 @@ export function childrenByParent<N extends { readonly id: string; readonly paren
 
 const kidsCache = new WeakMap<MeetingMap, ReadonlyMap<string, readonly MapNode[]>>();
 
-// 作り終えた map は書き換えないので、子の索引を map ごとに覚えておける。
 export function kidsOf(map: MeetingMap): ReadonlyMap<string, readonly MapNode[]> {
   let kids = kidsCache.get(map);
   if (kids === undefined) {

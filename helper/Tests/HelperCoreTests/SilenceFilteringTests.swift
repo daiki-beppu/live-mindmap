@@ -4,21 +4,12 @@ import Foundation
 import Testing
 @testable import HelperCore
 
-// ほぼ無音の区間の認識結果を捨てる `SilenceFilteringTranscriber`（Issue #144）。
-// 音声認識は使わず、偽の Transcriber で流すので CI でも流す。
-
 private let testSampleRate = 48_000.0
 
-/// -30 dBFS（RMS）の定数値。声の大きさの目安（Issue #144）。
 private let loudValue: Float = 0.0316228
-/// 完全な無音。
 private let silentValue: Float = 0
-/// -80 dBFS（RMS）の定数値。0 ではないが、しきい値（-70 dBFS）より小さい。
 private let belowThresholdValue: Float = 0.0001
 
-/// 一定の音量が続く区間をつなげた音声の流れ。最初のバッファだけ `firstHostTime` を使う。
-/// `TrackLoudness` は最初のバッファの取得時刻だけを基準に使い、以後は受け取った音声のフレーム数を積むので、
-/// 2 つ目以降のバッファの `hostTime` 自体は判定に関係しない（それでも実際の取得と同じく連続した値を入れる）。
 private func audioStream(
     firstHostTime: UInt64, segments: [(value: Float, seconds: Double)]
 ) -> AsyncThrowingStream<CapturedAudio, Error> {
@@ -41,8 +32,6 @@ private func collectResults(_ stream: AsyncThrowingStream<TranscriptionResult, E
     return all
 }
 
-/// 2ch interleaved で、左右チャンネルに別々の値を敷き詰めたバッファ（`constantAudio` の非対称版）。
-/// 全チャンネルを読んでいるかを、左右対称の値では検出できない回帰（片方のチャンネルだけを読み落とす）向けに使う。
 private func twoChannelInterleavedAudio(
     left: Float, right: Float, frames: Int, sampleRate: Double, hostTime: UInt64
 ) -> CapturedAudio {
@@ -58,8 +47,6 @@ private func twoChannelInterleavedAudio(
     return CapturedAudio(buffer: buffer, hostTime: hostTime)
 }
 
-/// 音声を全部読み切ってから、仕込んだ結果を返す偽の Transcriber（`RecognizeITTests.FakeTranscriber` と同じ形）。
-/// 読み切ってから返すので、判定する時点で音量の記録が揃い、競合しない。
 private final class FakeTranscriber: Transcriber, @unchecked Sendable {
     private let results: [TranscriptionResult]
 
@@ -77,7 +64,6 @@ private final class FakeTranscriber: Transcriber, @unchecked Sendable {
     }
 }
 
-/// 受け取った音声の `hostTime` と先頭サンプルの値、`origin` を記録する偽の Transcriber。
 private final class RecordingTranscriber: Transcriber, @unchecked Sendable {
     private let lock = NSLock()
     private var _receivedHostTimes: [UInt64] = []
@@ -103,8 +89,6 @@ private final class RecordingTranscriber: Transcriber, @unchecked Sendable {
     }
 }
 
-/// 受け取った音声の流れがエラーで終わったときのそのエラーを記録し、別に仕込んだエラーで結果の流れを終わらせる偽の Transcriber。
-/// 2 つの区間（渡された音声への伝播／base が返した結果への伝播）を別々のエラーで見分けるために使う。
 private final class ErrorCapturingTranscriber: Transcriber, @unchecked Sendable {
     private let resultError: Error
     private let lock = NSLock()
@@ -271,8 +255,6 @@ struct SilenceFilteringTests {
         let origin = AudioGetCurrentHostTime()
         let frames = Int(12 * testSampleRate)
         let audio = AsyncThrowingStream<CapturedAudio, Error> { continuation in
-            // 左は無音、右だけ声の大きさ。`channelData[0][frame*channels+channel]` の channel オフセットを
-            // 誤って固定する退行（例: 常に左だけを読む）があれば、この入力は無音と誤判定される。
             continuation.yield(twoChannelInterleavedAudio(
                 left: silentValue, right: loudValue, frames: frames, sampleRate: testSampleRate, hostTime: origin))
             continuation.finish()
@@ -327,7 +309,6 @@ struct SilenceFilteringTests {
     @Test("音量が区間ごとに違うときは、無音の区間の結果だけを捨て、声がある区間の結果は残す")
     func filtersPerResultIntervalNotWholeStream() async throws {
         let origin = AudioGetCurrentHostTime()
-        // 前半 0-6 秒は無音、後半 6-12 秒は声の大きさ
         let audio = audioStream(firstHostTime: origin, segments: [(silentValue, 6), (loudValue, 6)])
         let silentResult = TranscriptionResult(text: "え", isFinal: true, start: 1, end: 3)
         let loudResult = TranscriptionResult(text: "あ", isFinal: true, start: 7, end: 9)
@@ -344,7 +325,6 @@ struct SilenceFilteringTests {
     func measuresFromFirstBufferOffset() async throws {
         let origin = AudioGetCurrentHostTime()
         let firstHostTime = origin + hostTicks(milliseconds: 2_000)
-        // 基準から 2-5 秒は無音、5-8 秒は声の大きさ
         let audio = audioStream(firstHostTime: firstHostTime, segments: [(silentValue, 3), (loudValue, 3)])
         let silentResult = TranscriptionResult(text: "え", isFinal: true, start: 2.5, end: 4.5)
         let loudResult = TranscriptionResult(text: "あ", isFinal: true, start: 5.5, end: 7.5)
@@ -360,7 +340,6 @@ struct SilenceFilteringTests {
     @Test("結果の区間が記録した音の範囲外なら、測れないとして捨てない")
     func keepsResultsOutsideRecordedRange() async throws {
         let origin = AudioGetCurrentHostTime()
-        // 記録した音は 0-2 秒だけ。結果は 5-6 秒で、記録と重ならない
         let audio = audioStream(firstHostTime: origin, segments: [(silentValue, 2)])
         let result = TranscriptionResult(text: "あ", isFinal: true, start: 5, end: 6)
         let base = FakeTranscriber(results: [result])
@@ -427,7 +406,7 @@ struct SilenceFilteringTests {
         let loudness = TrackLoudness(origin: origin)
         let bufferSeconds = 0.1
         let bufferFrames = Int(bufferSeconds * testSampleRate)
-        let bufferCount = 700 // 700 * 0.1 秒 = 70 秒分（保持範囲 30 秒を超えて記録する）
+        let bufferCount = 700
         for i in 0..<bufferCount {
             let hostTime = origin + hostTicks(milliseconds: Double(i) * bufferSeconds * 1000)
             loudness.record(constantAudio(
@@ -435,16 +414,13 @@ struct SilenceFilteringTests {
                 channels: 1, interleaved: false, hostTime: hostTime))
         }
 
-        // 70 秒のうち先頭の 0.0-0.5 秒は保持範囲（直近 30 秒）より古く、記録が解放済みで読めないため nil（測れない）。
         #expect(loudness.isBelowSilenceThreshold(start: 0.0, end: 0.5) == nil)
-        // 末尾の 69.0-69.5 秒は保持範囲内で、記録した音量（しきい値以上）のまま読め、無音ではない（false）。
         #expect(loudness.isBelowSilenceThreshold(start: 69.0, end: 69.5) == false)
     }
 
     @Test("区間の一部が保持範囲外へ押し出されていれば測れないとして残り、区間全体が保持範囲内で無音なら捨てられる")
     func keepsResultsWhenPartOfSpanIsReleasedFromRetention() async throws {
         let origin = AudioGetCurrentHostTime()
-        // 0-40 秒が声の大きさ、40-70 秒が無音（保持範囲は 30 秒なので、70 秒時点で 0-40 秒は保持範囲外）。
         let audio = audioStream(firstHostTime: origin, segments: [(loudValue, 40), (silentValue, 30)])
         let partiallyReleased = TranscriptionResult(text: "あ", isFinal: true, start: 39.5, end: 41.0)
         let fullyRetained = TranscriptionResult(text: "え", isFinal: true, start: 41.0, end: 43.0)

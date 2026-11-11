@@ -10,7 +10,6 @@ export const RECONNECT_MS = 1000;
 const decodeJson = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown));
 const decodeType = Schema.decodeUnknownOption(Schema.Struct({ type: Schema.String }));
 const decodeFrame = Schema.decodeUnknownEffect(LiveFrame);
-// 接続を作り直しても、ページを読み込み直すまでは警告済みの組を保つ。
 const warnedTypes = new Set<string | undefined>();
 
 const warnUnreadableFrame = Effect.fnUntraced(function* (type: string | undefined, error: Schema.SchemaError): Effect.fn.Return<undefined> {

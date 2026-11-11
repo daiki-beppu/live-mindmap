@@ -6,8 +6,6 @@ import { Viewers } from "../../server/src/viewers.ts";
 import { init, update } from "../src/app/liveFeed/main.ts";
 import { LiveFrame, Message } from "../src/app/liveFeed/message.ts";
 
-// server の Viewers が /ws に書く文字列を、web の受信の Schema と update にそのまま通す。送る側と受ける側の形の約束をまとめて見る。
-
 const snapshot: Snapshot = {
   nodes: [
     { id: "root", parent: null, kind: "会議", text: "定例", evidence: [] },

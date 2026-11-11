@@ -8,8 +8,6 @@ import { WebSocketServer } from "ws";
 import { HELPER_CONTROL_TOKEN_ENV, HELPER_STOP_TIMEOUT_MS, Helpers } from "../src/helpers.ts";
 import { plainArgs, plainEnv } from "./fixtures/fakeSpawner.ts";
 
-// 接続の再試行は 10ms から始めて 2 倍ずつ伸び、200ms で頭打ちになる指数の Schedule（CT-RESTART-DECISION）。
-// 子プロセスだけを偽物にし、ヘルパーが待ち受けるはずのポートに「接続を数えて切る」サーバーを置いて、再試行の間隔を TestClock で観測する
 const realDelay = (ms: number) => Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, ms)));
 
 const countingSpawner = (counter: { connections: number; spawned?: ChildProcess.StandardCommand[]; kills?: unknown[] }) =>
@@ -60,14 +58,12 @@ describe("Helpers の接続の再試行（10ms から 200ms で頭打ちにな�
         Effect.gen(function* () {
           for (let i = 0; i < 100 && counter.connections < n; i++) yield* realDelay(20);
           expect(counter.connections).toBe(n);
-          yield* realDelay(50); // 失敗が返り、次の待ちが TestClock に登録されるまで
+          yield* realDelay(50);
         });
 
       const fiber = yield* Effect.forkChild(Effect.scoped(helpers.launch({ kind: "run", app: "test.app", screen: true, selfPause: INITIAL_SELF_PAUSE_STATE }, stopRequested)));
       yield* waitFor(1);
 
-      // 各間隔の 1ms 前では再試行せず、ちょうどで 1 回だけ再試行する。
-      // 200ms を 2 回続けるのは、320ms へ伸びる（頭打ちがない）誤りと、200ms の後に止まる誤りを落とすため
       let connections = 1;
       for (const interval of [10, 20, 40, 80, 160, 200, 200, 200]) {
         yield* TestClock.adjust(interval - 1);
@@ -105,14 +101,12 @@ describe("Helpers の停止の上限（HELPER_STOP_TIMEOUT_MS）", () => {
       expect(result.kills).toEqual([{ forceKillAfter: 1_234 }]);
     }));
 
-  // 上書きしない構築で spawn と kill が 5_000 になることは、下の「stop は、まず SIGTERM…」が見ている
   it.effect("上書きしない（製品と同じ）と、Reference の既定値は 5_000ms", () =>
     Effect.gen(function* () {
       expect(yield* HELPER_STOP_TIMEOUT_MS).toBe(5_000);
     }));
 });
 
-// base の server.heavy.test.ts の移動先（子プロセスだけを偽物にして、Helpers 実物の起動の引数・停止・中断を観測する）
 describe("Helpers の起動の引数・停止・中断（base server.heavy.test.ts の移動先）", () => {
   const boot = (counter: { connections: number; spawned: ChildProcess.StandardCommand[]; kills: unknown[] }) =>
     Helpers.pipe(Effect.provide(Helpers.layer({ command: "fake", args: ["helper-arg"] }).pipe(Layer.provide(countingSpawner(counter)))));
@@ -128,7 +122,7 @@ describe("Helpers の起動の引数・停止・中断（base server.heavy.test.
       const port = Number(args[args.indexOf("--port") + 1]);
       expect(port).toBeGreaterThan(0);
       expect(port).not.toBe(8765);
-      expect(counter.connections).toBeGreaterThanOrEqual(1); // 偽の子プロセスはこのポートで待ち受ける。そこへ接続できた
+      expect(counter.connections).toBeGreaterThanOrEqual(1);
       yield* Fiber.interrupt(fiber);
     }));
 
@@ -141,10 +135,10 @@ describe("Helpers の起動の引数・停止・中断（base server.heavy.test.
       for (let i = 0; i < 100 && counter.connections < 1; i++) yield* realDelay(20);
       expect((counter.spawned[0]!.options as { forceKillAfter?: number }).forceKillAfter).toBe(5_000);
 
-      yield* Deferred.succeed(stopRequested, undefined); // 止めての印
+      yield* Deferred.succeed(stopRequested, undefined);
       for (let i = 0; i < 100 && counter.kills.length < 1; i++) yield* realDelay(20);
 
-      expect(counter.kills).toEqual([{ forceKillAfter: 5_000 }]); // signal を指定しない = SIGTERM から始める
+      expect(counter.kills).toEqual([{ forceKillAfter: 5_000 }]);
       yield* Fiber.interrupt(fiber);
     }));
 
@@ -154,14 +148,12 @@ describe("Helpers の起動の引数・停止・中断（base server.heavy.test.
       const helpers = yield* boot(counter);
       const fiber = yield* Effect.forkChild(Effect.scoped(helpers.launch({ kind: "run", app: "test.app", screen: true, selfPause: INITIAL_SELF_PAUSE_STATE }, yield* Deferred.make<void>())));
       yield* Fiber.interrupt(fiber);
-      yield* realDelay(100); // 空きポートの選択が終わる時間を待っても、起動は始まらない
+      yield* realDelay(100);
 
       expect(counter.spawned).toHaveLength(0);
     }));
 });
 
-// Issue #1069: HelperAttempt.send は、実物の Helpers が JSON にして helper の WebSocket へ送る（server から helper への最初の指示）。
-// 子プロセスだけを偽物にし、helper が待ち受けるはずのポートに本物の WebSocket サーバーを置いて、届いたテキストを観測する
 const wsSpawner = (received: string[], envs: Array<Record<string, string | undefined> | undefined> = []) =>
   Layer.succeed(ChildProcessSpawner.ChildProcessSpawner)(
     ChildProcessSpawner.make((command: ChildProcess.Command) =>

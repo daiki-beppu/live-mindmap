@@ -3,12 +3,8 @@ import Foundation
 import Testing
 @testable import stt_bench
 
-// `stt-bench echo` のうち、本物の filesystem に書いて読み戻す部分（軽い IT）。
-// 偽の canceller だけで動く部分は EchoBenchTests.swift（unit）に置く。
-
 private let rate = 48_000
 
-/// 周期がサンプル数に対して整数になる正弦波。
 private func sine(count: Int, hz: Double, amplitude: Float) -> [Float] {
     (0..<count).map { amplitude * Float(sin(2 * Double.pi * hz * Double($0) / Double(rate))) }
 }

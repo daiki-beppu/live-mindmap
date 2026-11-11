@@ -1,9 +1,6 @@
 import Testing
 import HelperCore
 
-// `mix` サブコマンドの引数解釈（main.swift にはテストターゲットがないため、純粋関数として検証する）。
-// 不正な引数は `run` と同じく RunArgumentsError（usage を伴って終了コード 2）にする。
-
 @Suite("mix の引数解釈（parseMixArguments）")
 struct MixArgumentsTests {
     @Test("--session と --out だけで解釈できる。--track は nil（全トラックを混ぜる）")

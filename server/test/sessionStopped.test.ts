@@ -7,7 +7,6 @@ import { collectLog, settleUntil, updaterLayer } from "./fixtures/sessionLayers.
 
 const remark = (n: number): Remark => ({ id: `r${n}`, track: "相手", start: n, end: n + 1, text: `発言${n}。` });
 const ids = (remarks: readonly Remark[]) => remarks.map((r) => r.id);
-// 発言 1 件を push して、その呼び出しが終わるまで待つ（差分更新は呼び出し中でなければ発言 1 件ですぐ呼ばれる）
 const pushOne = Effect.fnUntraced(function* (session: Session, n: number) {
   yield* session.push(remark(n));
   yield* session.idle;

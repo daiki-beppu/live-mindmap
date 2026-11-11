@@ -2,9 +2,6 @@ import Foundation
 import Testing
 @testable import HelperCore
 
-// 録画のファイルの音声だけを m4a に書く（exportFileAudio）の IT。ファイルはテストの中で作った合成のもの。
-// 確かめること: WAV からも映像つきの mov からも音声だけの m4a ができる / 音声の先頭が 0 秒にそろう / 出力が既にあれば上書きせず失敗する。
-
 private typealias Support = FileAudioTestSupport
 
 @Suite("録画のファイルから音声を書く（exportFileAudio）", .timeLimit(.minutes(1)))

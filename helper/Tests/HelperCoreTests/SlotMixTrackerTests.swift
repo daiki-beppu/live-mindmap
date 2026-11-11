@@ -2,14 +2,10 @@ import Foundation
 import Testing
 @testable import HelperCore
 
-// 確定区間から埋め込みを作る段（Issue #1024）。偽の埋め込み器 `FakeSpeakerEmbedder` を入れて、モデルなしで確かめる。
-// 音声はサンプルの値で「誰の声か」を表す（値 0.1 → 軸 0、0.2 → 軸 1、…）。偽の埋め込み器は、渡されたサンプルの先頭の値で軸を決める。
-
 private let rate = 16_000
 
 private final class FakeSpeakerEmbedder: SpeakerEmbedder, @unchecked Sendable {
     private(set) var calls: [[Float]] = []
-    /// 失敗させる呼び出しの回（1 始まり）。
     private let failingCalls: Set<Int>
 
     init(failingCalls: Set<Int> = []) { self.failingCalls = failingCalls }
@@ -25,7 +21,6 @@ private final class FakeSpeakerEmbedder: SpeakerEmbedder, @unchecked Sendable {
     }
 }
 
-/// 時刻 [from, to) 秒の間、値が `value` の音声。
 private func audio(_ regions: [(from: Double, to: Double, value: Float)]) -> [Float] {
     let end = regions.map(\.to).max() ?? 0
     var samples = [Float](repeating: 0.5, count: Int(end * Double(rate)))
@@ -39,7 +34,6 @@ private func final(_ slot: Int, _ start: Double, _ end: Double) -> SpeakerSegmen
     SpeakerSegment(start: start, end: end, slot: slot, isFinal: true)
 }
 
-/// 区間 [start, start + 2) を `count` 個、2 秒ずつ続けて並べる。
 private func run(slot: Int, from start: Double, count: Int) -> [SpeakerSegment] {
     (0..<count).map { final(slot, start + Double($0) * 2, start + Double($0) * 2 + 2) }
 }
@@ -74,7 +68,6 @@ struct SlotMixTrackerTests {
     func longSegmentUsesCenterTenSeconds() {
         let embedder = FakeSpeakerEmbedder()
         let tracker = SlotMixTracker(embedder: embedder)
-        // 区間 [2, 27)（25 秒）。中央の 10 秒は [9.5, 19.5)
         tracker.append(samples16k: audio([(0, 9.5, 0.1), (9.5, 19.5, 0.2), (19.5, 30, 0.3)]))
 
         _ = tracker.update(finalized: [final(0, 2, 27)]).mixed
@@ -99,7 +92,6 @@ struct SlotMixTrackerTests {
     func processesInTimeOrderAndReportsAtTriggeringEnd() {
         let embedder = FakeSpeakerEmbedder()
         let tracker = SlotMixTracker(embedder: embedder)
-        // 枠 0 の主な塊 0〜40 秒、枠 1 の主な塊 40〜60 秒（10 区間）、枠 1 の別の声 60〜70 秒（5 区間）
         tracker.append(samples16k: audio([(0, 40, 0.1), (40, 60, 0.2), (60, 70, 0.3)]))
         let segments = run(slot: 0, from: 0, count: 20) + run(slot: 1, from: 40, count: 10) + run(slot: 1, from: 60, count: 5)
 
@@ -112,7 +104,6 @@ struct SlotMixTrackerTests {
 
     @Test("埋め込みに失敗した区間は飛ばして続ける。失敗した区間は塊に数えず、報告もしない")
     func embeddingFailureSkipsSegmentAndContinues() {
-        // 15 回目（区間 68〜70）の埋め込みを失敗させる
         let embedder = FakeSpeakerEmbedder(failingCalls: [15])
         let tracker = SlotMixTracker(embedder: embedder)
         tracker.append(samples16k: audio([(40, 60, 0.2), (60, 72, 0.3)]))
@@ -212,7 +203,6 @@ struct SlotMixTrackerTests {
         let shift = 2.0
         let embedder = FakeSpeakerEmbedder()
         let tracker = SlotMixTracker(embedder: embedder)
-        // 枠 1 の主な塊 10 区間と別の声 4 区間を先に入れておく（50〜78 秒）。更新の確定区間（枠 1、約 0.8〜3.2 秒）が 5 区間目になる
         tracker.append(samples16k: audio([(0, 5, 0.3), (50, 70, 0.2), (70, 78, 0.3)]))
         _ = tracker.update(finalized: run(slot: 1, from: 50, count: 10) + run(slot: 1, from: 70, count: 4)).mixed
 
@@ -248,8 +238,6 @@ struct SlotMixTrackerTests {
     func yieldOrdersCentroidBeforeMixedAndSettled() async throws {
         let embedder = FakeSpeakerEmbedder()
         let tracker = SlotMixTracker(embedder: embedder)
-        // 枠 1 の主な塊 10 区間と別の声 4 区間を先に入れておく（50〜78 秒）。更新の確定区間（枠 1、約 0〜2.2 秒）が 5 区間目になり、混入になる。
-        // 同じ更新の枠 3（約 2.4〜4.6 秒）は初めての枠で、重心が新しくできる
         tracker.append(samples16k: audio([(0, 5, 0.3), (50, 70, 0.2), (70, 78, 0.3)]))
         _ = tracker.update(finalized: run(slot: 1, from: 50, count: 10) + run(slot: 1, from: 70, count: 4))
 

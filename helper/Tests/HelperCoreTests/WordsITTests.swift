@@ -2,8 +2,6 @@ import Foundation
 import Testing
 import HelperCore
 
-// 発言の語ごとの読み（Issue #639）。実際の CFStringTokenizer（ja）を通す。
-// 位置と長さは UTF-16 コード単位（NSString の範囲）で、表記は本文のその範囲と一致する。
 @Suite("発言の語ごとの読み", .timeLimit(.minutes(1)))
 struct WordsITTests {
     private func substring(_ text: String, _ word: Word) -> String {
@@ -51,7 +49,7 @@ struct WordsITTests {
         for word in words { #expect(substring(text, word) == word.surface) }
         let last = try #require(words.last)
         #expect(last.location + last.length == (text as NSString).length)
-        #expect((text as NSString).length > text.count) // 文字数と UTF-16 の長さが違う本文で確かめている
+        #expect((text as NSString).length > text.count)
     }
 
     @Test("空の本文は語を作らない")

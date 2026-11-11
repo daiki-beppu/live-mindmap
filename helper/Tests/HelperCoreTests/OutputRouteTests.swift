@@ -1,7 +1,6 @@
 import Testing
 import HelperCore
 
-/// Core Audio の four-char code（例: 'bltn'）を UInt32 にする。
 private func fourCC(_ code: String) -> UInt32 {
     code.utf8.reduce(0) { $0 << 8 | UInt32($1) }
 }

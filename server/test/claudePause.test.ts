@@ -12,10 +12,7 @@ const remark = (n: number): Remark => ({ id: `r${n}`, track: "相手", start: n,
 const ids = (remarks: readonly Remark[]) => remarks.map((r) => r.id);
 const roundTrip = (events: readonly LogEvent[]) => events.map((e) => JSON.parse(JSON.stringify(e)) as unknown);
 
-// 偽の query()。user メッセージを 1 つ読むたびに、script(その呼び出しの通し番号) が返す SDK メッセージの列を流す。
-// 通し番号は query を開き直してもリセットしない（差分更新の呼び出し順を表す）
 type Script = (call: number) => unknown[];
-// rejected の後に、SDK が続けて流しうる失敗の result も付ける（イベントの時点で一時停止にできることを確かめる）
 const rejected = (resetsAtSeconds?: number) => [
   { type: "rate_limit_event", rate_limit_info: { status: "rejected", ...(resetsAtSeconds === undefined ? {} : { resetsAt: resetsAtSeconds }) } },
   { type: "result", subtype: "error_during_execution", usage: { input_tokens: 1, output_tokens: 1 } },
@@ -80,7 +77,7 @@ describe("Claude の利用上限で差分更新を一時停止する（同じ Se
       yield* session.idle;
       yield* session.push(remark(2));
 
-      yield* TestClock.adjust(FIVE_MINUTES); // 5 分では試さない
+      yield* TestClock.adjust(FIVE_MINUTES);
       yield* TestClock.adjust(FIVE_MINUTES - 1);
       yield* session.idle;
       expect(calls()).toBe(1);

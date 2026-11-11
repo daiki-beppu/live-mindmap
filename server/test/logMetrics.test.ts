@@ -1,15 +1,12 @@
-// eval の 3 指標（本文の書き換え・1 ノードの書き換えの最多・話し中の兄弟の最多）の数え方。偽の差分の列で確かめる。
 import { describe, expect, it } from "@effect/vitest";
 import { Effect } from "effect";
 import { type Dropped, type LogEvent, type Op } from "../src/core/index.ts";
 import { logMetrics } from "../src/core/logMetrics.ts";
 
-// 成功するログの指標を同期で取り出す
 const metricsOf = (events: readonly LogEvent[]) => Effect.runSync(logMetrics(events));
 
 type Step = { ops: Op[]; error?: string };
 
-// start の後に、diff ごとに発言 1 件（r1, r2, …）を積み、その発言を fresh として diff の行を並べる
 function log(steps: Step[], extraRemarks = 0): LogEvent[] {
   const events: LogEvent[] = [{ type: "start", title: "講演" }];
   steps.forEach((step, i) => {
@@ -29,7 +26,6 @@ function log(steps: Step[], extraRemarks = 0): LogEvent[] {
   return events;
 }
 
-// n(番号) は適用順に振られる id（最初の add が n1）
 const add = (ref: string, parent: string, kind: Extract<Op, { op: "add" }>["kind"], text: string, evidence = ["r1"]): Op => ({ op: "add", ref, parent, kind, text, evidence });
 const update = (node: string, evidence: string[], more: { text?: string; planStatus?: "検討中" | "却下" } = {}): Op => ({ op: "update", node, evidence, ...more });
 const close = (node: string): Op => ({ op: "close", node });
@@ -40,11 +36,11 @@ describe("logMetrics: 本文の書き換え", () => {
       { ops: [add("t1", "root", "議題", "取り組み"), add("t2", "t1", "要点", "辞書を育てる"), add("t3", "t1", "案", "週次で見直す")] },
       {
         ops: [
-          update("n2", ["r2"]), // 根拠だけ（text を渡さない）
-          update("n2", ["r2"], { text: "辞書を育てる" }), // 同じ本文
-          update("n3", ["r2"], { planStatus: "却下" }), // 状態だけ
-          update("n2", ["r999"], { text: "捨てられる本文" }), // 知らない発言が根拠なので applyOps が捨てる
-          update("n99", ["r2"], { text: "対象が無い" }), // 対象が無いので捨てられる
+          update("n2", ["r2"]),
+          update("n2", ["r2"], { text: "辞書を育てる" }),
+          update("n3", ["r2"], { planStatus: "却下" }),
+          update("n2", ["r999"], { text: "捨てられる本文" }),
+          update("n99", ["r2"], { text: "対象が無い" }),
         ],
       },
     ]));
@@ -68,7 +64,7 @@ describe("logMetrics: 本文の書き換え", () => {
       { ops: [add("t1", "root", "議題", "取り組み"), add("t2", "t1", "要点", "a"), add("t3", "t1", "要点", "b")] },
       { ops: [update("n2", ["r2"], { text: "a1" }), update("n3", ["r2"], { text: "b1" })] },
       { ops: [update("n2", ["r3"], { text: "a2" })] },
-      { ops: [update("n2", ["r4"], { text: "a3" }), update("n2", ["r4"], { text: "a3" })] }, // 2 つ目は同じ本文
+      { ops: [update("n2", ["r4"], { text: "a3" }), update("n2", ["r4"], { text: "a3" })] },
     ]));
 
     expect(m.rewrites).toBe(4);
@@ -124,11 +120,10 @@ describe("logMetrics: 話し中の兄弟の最多", () => {
     const m = metricsOf(log([
       { ops: [add("t1", "root", "議題", "A"), add("t2", "root", "議題", "B")] },
       { ops: [] },
-      { ops: [close("n1")] }, // 直前の応答で根拠が足されたのは 1 つ前の round なので閉じられる
+      { ops: [close("n1")] },
       { ops: [add("t3", "root", "議題", "C"), add("t4", "root", "議題", "D")] },
     ]));
 
-    // 開いているのは n2・n3・n4 の 3 つ。済みの n1 を数えると 4 になる
     expect(m.maxOpenSiblings).toBe(3);
   });
 
@@ -162,7 +157,6 @@ describe("logMetrics: 話し中の兄弟の最多", () => {
       },
     ]));
 
-    // 応答の途中では n1 の下が 5 つになるが、反映後のマップは 1 つ
     expect(m.maxOpenSiblings).toBe(1);
   });
 });

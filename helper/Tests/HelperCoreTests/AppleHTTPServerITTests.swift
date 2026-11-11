@@ -18,7 +18,6 @@ struct AppleHTTPServerITTests {
         })
         let port = try await server.start()
         do {
-            // 辞書の再シリアライズに依存せず、HTTP 入力の順序を明示する。
             let schemaJSON = #"{"type":"object","properties":{"zeta":{"type":"string"},"answer":{"type":"string","enum":["はい"]},"alpha":{"type":"string"}},"required":["zeta","answer","alpha"],"additionalProperties":false}"#
             let schema = try #require(JSONSerialization.jsonObject(with: Data(schemaJSON.utf8)) as? NSDictionary)
             var request = URLRequest(url: try #require(URL(string: "http://127.0.0.1:\(port)/v1/chat/completions")))
@@ -27,7 +26,6 @@ struct AppleHTTPServerITTests {
             request.httpBody = Data("""
             {"model":"apple","max_tokens":600,"temperature":0.2,"messages":[{"role":"system","content":"合成の指示"},{"role":"user","content":"合成の入力"}],"response_format":{"type":"json_schema","json_schema":{"name":"diff","strict":true,"schema":\(schemaJSON)}}}
             """.utf8)
-            // 同じ listener を続けて使う。要求ごとに渡す入力が前の会話に置換されない。
             for _ in 0..<2 {
                 let (data, response) = try await URLSession.shared.data(for: request)
                 #expect((response as? HTTPURLResponse)?.statusCode == 200)

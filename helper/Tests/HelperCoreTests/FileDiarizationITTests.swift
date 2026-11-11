@@ -5,17 +5,6 @@ import Speech
 import Testing
 @testable import HelperCore
 
-// 録画のファイルの `相手` を話者分離にかける経路（Issue #1094。`transcribe-file` / `cli recorded`）の IT。
-// ファイルはテストの中で作った合成の WAV。文字にする役と話者分離は偽物で、引き方（速さ・止まり・失敗）をテストが決める。
-// 確かめること: 1 つの読み手が STT と話者分離の両方へ同じ音声を流す / 読む速さは遅いほう（話者分離）に抑えられる /
-// 話者分離が使えない・途中で止まると `speaker-off` を流し、抑えが外れて STT の速さで最後まで読む /
-// `--self` の 2 本は `相手` の話者分離の速さで読まれ、話者分離には `相手` の音声だけが渡る。
-//
-// 使う API（実装側が用意する）:
-//   FileDiarization.prepare(_:from:emit:) … 話者分離を準備する。使えなければ `speakerOff(start: from, reason:)` を emit して `feed` が nil になる
-//   FileDiarization.feed / run()          … 読み手が音声を渡す口 / 話者分離を走らせ、結果を emit する。流れが終わる（settled まで流し切る）と戻る
-//   transcribeFile(…, diarization:) / relayFileSession(…, theirsDiarization:) … 読み手に `feed` を渡す（`相手` 側だけ）
-
 private typealias Support = FileAudioTestSupport
 
 private struct WaitTimedOut: Error, CustomStringConvertible {
@@ -46,7 +35,6 @@ private final class Flag: @unchecked Sendable {
     var isRaised: Bool { lock.withLock { set } }
 }
 
-/// 引いた入力の位置の記録（開始・終了の秒）。
 private final class PullLog: @unchecked Sendable {
     private let lock = NSLock()
     private var items: [(reader: String, start: Double, end: Double)] = []
@@ -55,7 +43,6 @@ private final class PullLog: @unchecked Sendable {
     var widest: Double { lock.withLock { items.map { $0.end - $0.start }.max() ?? 0 } }
 }
 
-/// 渡された音声をひたすら（`afterPull` の分だけ待って）引く偽の役。
 private final class PullingTranscriber: FileTranscriber, @unchecked Sendable {
     private let name: String
     private let log: PullLog
@@ -67,7 +54,6 @@ private final class PullingTranscriber: FileTranscriber, @unchecked Sendable {
     func prepare() async throws {}
 
     func transcribe(_ inputs: FileAudioInputs) async throws -> AsyncThrowingStream<TranscriptionResult, Error> {
-        // 本物の役と同じに、結果の流れはすぐ返し、音声は別のタスクで引く（`--self` の 2 本を順に始めるとき、片方が引き切るまで次を始められなくなるのを避ける）
         let (stream, continuation) = AsyncThrowingStream.makeStream(of: TranscriptionResult.self, throwing: Error.self)
         let name = name
         let log = log
@@ -93,8 +79,6 @@ private func drain(_ stream: AsyncThrowingStream<TranscriptionResult, Error>) as
 
 private struct StubFailure: Error {}
 
-/// 受け取った音声を記録する偽の話者分離。`stallAfterFirst` が閉じている間は、最初の音声を受け取った後で次を受け取らない。
-/// `failAfter` 件を受け取ったら流れを失敗で終える。`startFailure` があれば `diarize` が throw する。
 private final class StubDiarizer: SpeakerDiarizer, @unchecked Sendable {
     struct Heard { let startSeconds: Double; let seconds: Double }
 
@@ -106,7 +90,6 @@ private final class StubDiarizer: SpeakerDiarizer, @unchecked Sendable {
     let startFailure: Error?
     let stallAfterFirst: Gate?
     let failAfter: Int?
-    /// 入力ループを（どの経路でも）抜けたら立つ印。
     let inputLoopEnded = Flag()
 
     init(prepareFailure: Error? = nil, startFailure: Error? = nil, stallAfterFirst: Gate? = nil, failAfter: Int? = nil) {
@@ -136,7 +119,6 @@ private final class StubDiarizer: SpeakerDiarizer, @unchecked Sendable {
                     var count = 0
                     for try await item in audio {
                         let seconds = Double(item.buffer.frameLength) / item.buffer.format.sampleRate
-                        // 時刻は、ホスト時刻の 0 からの秒（origin = 0 のとき、ファイルの音声の時刻）
                         let start = Double(AudioConvertHostTimeToNanos(item.hostTime)) / 1_000_000_000
                         lock.withLock { heardItems.append(Heard(startSeconds: start, seconds: seconds)) }
                         count += 1
@@ -158,7 +140,6 @@ private final class StubDiarizer: SpeakerDiarizer, @unchecked Sendable {
     }
 }
 
-/// 結果を 1 回だけ置く箱。
 private final class OutcomeBox: @unchecked Sendable {
     private let lock = NSLock()
     private var stored: String?
@@ -166,7 +147,6 @@ private final class OutcomeBox: @unchecked Sendable {
     var value: String? { lock.withLock { stored } }
 }
 
-/// `emit` で受けたイベントの記録。
 private final class Emitted: @unchecked Sendable {
     private let lock = NSLock()
     private var items: [HelperEvent] = []
@@ -207,11 +187,11 @@ struct FileDiarizationITTests {
             transcribing.cancel()
         }
         try await waitUntil("話者分離が最初の入力を受け取る") { diarizer.heardEnd > 0 }
-        try await Task.sleep(for: .milliseconds(500)) // 抑えが無ければ、この間に STT は 30 秒を読み切る
+        try await Task.sleep(for: .milliseconds(500))
 
         let diarizerPosition = diarizer.heardEnd
         let widest = log.widest
-        try #require(diarizerPosition + widest < 30) // 前提: 1 つの入力ぶんの余裕を足しても、ファイルの終わりに届かない
+        try #require(diarizerPosition + widest < 30)
         #expect(log.maxEnd(of: "相手") <= diarizerPosition + widest + 0.001,
             "STT が話者分離の位置 \(diarizerPosition) 秒より先の \(log.maxEnd(of: "相手")) 秒まで読んだ")
 
@@ -220,7 +200,6 @@ struct FileDiarizationITTests {
         await diarizing.value
         #expect(abs(log.maxEnd(of: "相手") - 30) < 0.01)
         #expect(abs(diarizer.heardEnd - 30) < 0.01)
-        // 同じ音声を、取りこぼしなく順に受け取る（開始位置 2 秒から、隙間も重なりもなく 30 秒まで）
         let heard = diarizer.heard
         try #require(!heard.isEmpty)
         #expect(abs(heard[0].startSeconds - 2) < 0.001, "最初の入力はファイル上の位置 2 秒から")
@@ -252,7 +231,7 @@ struct FileDiarizationITTests {
             #expect(emitted.speakerOffs.count == 1)
             #expect(emitted.speakerOffs.first?.start == 4)
             #expect(emitted.speakerOffs.first?.reason == reason)
-            await diarization.run() // 使えないときは何もせず戻る
+            await diarization.run()
             let log = PullLog()
             try await drain(try await transcribeFile(at: url, with: PullingTranscriber("相手", log: log), from: 4, diarization: diarization.feed))
             #expect(abs(log.maxEnd(of: "相手") - 12) < 0.01)
@@ -283,7 +262,6 @@ struct FileDiarizationITTests {
         defer { try? FileManager.default.removeItem(at: dir) }
         let url = try writeWAV(dir, "them.wav", seconds: 30)
         let gate = Gate()
-        // 最初の入力を受け取って止まり、止まりが解けると 1 件目の後で失敗する
         let diarizer = StubDiarizer(stallAfterFirst: gate, failAfter: 1)
         let emitted = Emitted()
         let diarization = await FileDiarization.prepare(diarizer, from: 0) { emitted.append($0) }
@@ -299,10 +277,10 @@ struct FileDiarizationITTests {
         }
         try await waitUntil("話者分離が最初の入力を受け取る") { diarizer.heardEnd > 0 }
         try await Task.sleep(for: .milliseconds(300))
-        try #require(log.maxEnd(of: "相手") < 30) // 前提: 失敗前は抑えられている
+        try #require(log.maxEnd(of: "相手") < 30)
 
-        gate.open() // 話者分離が失敗する
-        try await transcribing.value // 抑えが外れ、待たずに最後まで読み切る
+        gate.open()
+        try await transcribing.value
         await diarizing.value
         #expect(abs(log.maxEnd(of: "相手") - 30) < 0.01)
         #expect(emitted.speakerOffs.map(\.reason) == [.途中で停止])
@@ -320,7 +298,6 @@ struct FileDiarizationITTests {
         let running = Task {
             do {
                 try await diarization.run {
-                    // 話者分離が入力待ちに入ってから、feed に触らずに失敗する
                     try await waitUntil("話者分離が diarize に入る") { diarizer.receivedOrigins == [0] }
                     try await Task.sleep(for: .milliseconds(200))
                     throw StubFailure()
@@ -364,15 +341,13 @@ struct FileDiarizationITTests {
             diarizing.cancel()
             relaying.cancel()
         }
-        // 成功・失敗のどちらでも待ち受けを閉じる
         defer { Task { await server.stop() } }
         try await waitUntil("話者分離が最初の入力を受け取る") { diarizer.heardEnd > 0 }
-        try await Task.sleep(for: .milliseconds(500)) // 抑えが無ければ、この間に 2 本とも読み切る
+        try await Task.sleep(for: .milliseconds(500))
 
         let diarizerPosition = diarizer.heardEnd
         let widest = log.widest
         try #require(diarizerPosition + 2 * widest < 20)
-        // 相手は話者分離の位置まで、自分は相手の位置まで。どちらも 1 つの入力ぶんの余裕
         #expect(log.maxEnd(of: "相手") <= diarizerPosition + widest + 0.001)
         #expect(log.maxEnd(of: "自分") <= diarizerPosition + 2 * widest + 0.001,
             "自分が話者分離の位置 \(diarizerPosition) 秒より先の \(log.maxEnd(of: "自分")) 秒まで読んだ")
@@ -382,7 +357,6 @@ struct FileDiarizationITTests {
         await diarizing.value
         #expect(abs(log.maxEnd(of: "相手") - 30) < 0.01)
         #expect(abs(log.maxEnd(of: "自分") - 20) < 0.01)
-        // 話者分離が受け取った音声の長さは `相手` の 30 秒だけ（自分の 20 秒は入っていない）
         #expect(abs(diarizer.heardSeconds - 30) < 0.01, "話者分離が受け取った音声の合計が \(diarizer.heardSeconds) 秒")
         await server.stop()
     }

@@ -6,8 +6,6 @@ import { init, update } from "../src/app/capture/main.ts";
 import { Message } from "../src/app/capture/message.ts";
 import { Message as MapSurfaceMessage } from "../src/app/mapSurface/message.ts";
 
-// 撮影の Foldkit プログラム（Issue #827）の Story。表示面の実測の事実を流すと、表示面の欄が更新され、Command は出ない
-
 const snapshot: Snapshot = {
   nodes: [
     { id: "root", parent: null, kind: "会議", text: "定例", evidence: [] },
@@ -24,7 +22,6 @@ describe("撮影の Story: 表示面の実測", () => {
   });
 
   it("MeasuredMapSurface を流すと、画面の大きさと高さが表示面の欄に入り、Command は出ない", () => {
-    // 解いていない Command が残ると story が失敗するので、Command が出ないことはここで確かめられる
     story(
       update,
       given(init(snapshot)),

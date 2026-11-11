@@ -3,7 +3,6 @@ import { Effect, Result } from "effect";
 import { judgeEdges, formatRow } from "../bench/edgeJudgement.ts";
 import { childText, edgeEvents, PARENT_TEXT, REMARK_TEXT, TITLE } from "./fixtures/edgeJudgement.ts";
 
-// order.md が外部スクリプトと同じプロンプトを指定しているため、転送値を検証する。モデルの判断品質は証明しない。
 const PROMPT = `会議のマインドマップの親子の辺を判定してください。各行は「番号. 親 [種別] 本文 → 子 [種別] 本文」です。
 子が親に対して次のどれに当たるかを、1 つだけ選んでください。
 - 具体化: 子が親の中身を具体化する（例・数字・手順・経緯・内訳）

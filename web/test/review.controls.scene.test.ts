@@ -38,11 +38,6 @@ import {
 } from "./reviewHarness.ts";
 import { attrOf, elementsOf, one, renderedIds, styleOf, type VNode } from "./sceneTree.ts";
 
-// 見返しの操作の行（Issue #825）の Scene。描いた view から入り、シークバー・音量・速さのメニュー・ツールチップ・アイコン・字幕と右の列のボタンを
-// ユーザーが触る形（キー・クリック・フォーカス・ポインタ）で確かめる。会議の長さは 200 秒、章は A（0〜100）・B（100〜200）、TODO の印は 160 秒。
-// Scene は保留の Command を残したまま次の操作を流せず、終わりに Mount が残ると落ちるので、操作のたびに settle で Command と Mount を解く。
-// 実ブラウザでの見た目・Floating UI の位置・本物のポインタの座標は、この Scene では確かめない
-
 const seekThumb = selector('[aria-label="時刻"]');
 const volumeThumb = selector('[aria-label="音量"]');
 const rateButton = selector('[aria-label="再生の速さ"]');
@@ -51,8 +46,6 @@ const menuItems = all.selector('[role="menuitem"]');
 const seekRoot = selector(".review-seek");
 const labelSel = (label: string) => selector(`[aria-label="${label}"]`);
 
-// Scene の pointerDown は、押した要素と祖先の写しを document.createElement で作る（node の unit 環境には document が無い）。
-// blur は relatedTarget の型を調べるのに Element を参照する。どちらも写しを作るだけで、中身は使われない
 const stubDomForPointer = () => {
   beforeEach(() => vi.stubGlobal("document", { createElement: () => ({ setAttribute: () => {}, appendChild: () => {} }) }));
   afterEach(() => vi.unstubAllGlobals());
@@ -66,7 +59,6 @@ const textOf = (vnode: VNode): string => textContent(vnode).replace(/\s+/g, " ")
 const barText = (html: VNode, className: string): string => textOf(one(html, `.${className}`));
 const numberAttr = (html: VNode, css: string, name: string): number => Number(attrOf(one(html, css), name));
 
-// 描いた木を先頭から順に歩き、操作の行の部品を出てきた順の名前にする
 const BAR_LABELS = new Set(["反映 1 つ戻る", "再生", "止める", "反映 1 つ進む", "ミュート", "ミュートを戻す", "音量", "字幕", "再生の速さ", "右の列"]);
 const barOrder = (html: VNode): string[] => {
   const out: string[] = [];
@@ -95,7 +87,6 @@ const docIndex = (html: VNode, css: string): number => {
   return found;
 };
 
-// ---- アイコン: video.js の写しと比べる（fixtures/videojsIcons.ts）----
 const DROPPED_ROOT_ATTRS = new Set(["xmlns", "width", "height", "aria-hidden", "class", "style"]);
 const normalizeNumber = (value: string): string => (/^-?\d*\.?\d+$/.test(value) ? String(Number(value)) : value);
 const attrsOfNode = (vnode: VNode): Record<string, string> => {
@@ -119,7 +110,6 @@ const expectVideoJsIcon = (vnode: VNode, name: keyof typeof VIDEOJS_ICONS) => {
 };
 const iconOfButton = (html: VNode, label: string): VNode => iconIn(one(html, `[aria-label="${label}"]`));
 
-// ---- ツールチップの文言（styles.css が当たる形）----
 const TIPS: ReadonlyArray<readonly [label: string, text: string]> = [
   ["反映 1 つ戻る", "反映 1 つ戻る（,）"],
   ["再生", "再生（Space・K）"],
@@ -628,7 +618,6 @@ describe("速さのメニュー（@foldkit/ui の Menu）", () => {
       }),
       keydown(menu, "Enter"),
       expectHandled(),
-      // Enter は選ばれている項目のクリックを頼む（本物の実行は DOM のクリックで、次の項目の click になる）
       tap((sim: Sim) => {
         const clicks = sim.commands.filter((c) => c.name === "ClickItem");
         expect(clicks).toHaveLength(1);
@@ -738,7 +727,6 @@ describe("ボタンのツールチップ（@foldkit/ui の Tooltip）", () => {
         expect(textOf(tipPanelOf(sim.html, "止める"))).toBe("止める（Space・K）");
         expect(textOf(tipPanelOf(sim.html, "ミュートを戻す"))).toBe("ミュートを戻す（M）");
       }),
-      // 再生中の Scene の終わりに、消えた字幕の Mount（SlideCaptions）を受け取る
       Mount.expectEnded(SlideCaptions),
     );
   });
@@ -998,7 +986,6 @@ describe("Slider と今の CSS がぶつからない（Slider が付ける style
           expect(hasClass(track, "review-seek__track")).toBe(false);
           expect(hasClass(track, "review-volume__track")).toBe(false);
         }
-        // 見た目の track は別の要素として残り、Slider の style を持たない
         expect(Object.keys(styleOf(one(sim.html, ".review-seek__track")))).toEqual([]);
         expect(Object.keys(styleOf(one(sim.html, ".review-volume__track")))).toEqual([]);
       }),

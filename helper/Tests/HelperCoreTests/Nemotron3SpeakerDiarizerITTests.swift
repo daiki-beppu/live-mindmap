@@ -3,8 +3,6 @@ import Foundation
 import Testing
 @testable import HelperCore
 
-// 本物の Nemotron3SpeakerDiarizer を使うが、モデルは読まない（ファイルの有無の判定だけ）。モデルを使う検査は Nemotron3SpeakerDiarizerHeavyTests。
-
 @Suite("Nemotron3SpeakerDiarizer のモデルの有無", .timeLimit(.minutes(1)))
 struct Nemotron3SpeakerDiarizerITTests {
     @Test("古い重みの印はセッション中にキャッシュを消さずに拒否する")
@@ -46,7 +44,6 @@ struct Nemotron3SpeakerDiarizerITTests {
         } catch {
             Issue.record("modelMissing ではないエラーです: \(error)")
         }
-        // 会議中に取りに行かない: prepare がフォルダを作ったり、何かを置いたりしない
         #expect(!FileManager.default.fileExists(atPath: directory.path))
     }
 

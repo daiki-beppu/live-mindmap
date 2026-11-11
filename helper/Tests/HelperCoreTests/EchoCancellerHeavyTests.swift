@@ -2,20 +2,17 @@ import Foundation
 import Testing
 @testable import HelperCore
 
-// 実際の WebRTC AEC3 の効き目。合成した信号で、参照から予測できる成分が減り、無関係な信号は残ることを確かめる。
-// 評価は収束を待つため、最初の 3 秒を除いた区間で行う。
 // APM の出力は入力より数 ms 遅れる（帯域分割などの内部の遅れ）。そのまま入力と比べると、無関係な信号まで消えて見えるので、
 // 参照を無音にして雑音だけを通した出力から遅れを測り、その分だけ出力を進めてから比べる。
 
 private let sampleRate = 48_000
 private let seconds = 10
-private let echoDelaySamples = 1_920  // 40 ms
-private let echoGain: Float = 0.5  // −6 dB
+private let echoDelaySamples = 1_920
+private let echoGain: Float = 0.5
 private let evaluationStart = 3 * sampleRate
-private let maximumOutputDelaySamples = 960  // 20 ms
+private let maximumOutputDelaySamples = 960
 private let outputDelay: Result<Int, Error> = Result { try measureOutputDelay() }
 
-/// 決定的な擬似乱数（SplitMix64）。範囲は −1〜1。
 private struct DeterministicNoise {
     var state: UInt64
 
@@ -29,7 +26,6 @@ private struct DeterministicNoise {
     }
 }
 
-/// 約 230 Hz〜2.3 kHz に帯域を絞った雑音。二乗平均平方根が `rms` になるよう正規化する。
 private func bandLimitedNoise(count: Int, seed: UInt64, rms: Float) -> [Float] {
     var noise = DeterministicNoise(state: seed)
     var high: Float = 0
@@ -46,7 +42,6 @@ private func bandLimitedNoise(count: Int, seed: UInt64, rms: Float) -> [Float] {
     return signal
 }
 
-/// 発話のように、基本周波数 180 Hz の倍音（1〜8 次）が 0.2 秒ごとに入り切りする信号。`scale` は倍音の振幅。
 /// 定常な雑音は、AEC3 が背景雑音として抑えるため、「残る」ことの確認には使えない。
 private func harmonicBursts(count: Int, scale: Float) -> [Float] {
     (0..<count).map { index -> Float in
@@ -58,7 +53,6 @@ private func harmonicBursts(count: Int, scale: Float) -> [Float] {
     }
 }
 
-/// 参照を無音にして雑音だけをマイクに通し、出力が入力より何サンプル遅れるかを測る（相関が最大になる遅れ）。
 private func measureOutputDelay() throws -> Int {
     let count = 2 * sampleRate
     let input = bandLimitedNoise(count: count, seed: 9, rms: 0.1)
@@ -78,7 +72,6 @@ private func measureOutputDelay() throws -> Int {
     return best.delay
 }
 
-/// `signal` のうち `basis` と同じ向きの成分のエネルギー（区間 `range`）。
 private func projectionEnergy(_ signal: [Float], onto basis: [Float], range: Range<Int>) -> Double {
     var dot = 0.0
     var basisEnergy = 0.0
@@ -97,7 +90,7 @@ struct EchoCancellerHeavyTests {
     func removesDelayedReferenceAndKeepsUnrelatedSignal() throws {
         let count = sampleRate * seconds
         let reference = bandLimitedNoise(count: count, seed: 1, rms: 0.1)
-        let unrelated = harmonicBursts(count: count, scale: 0.05)  // 参照より 15 dB 前後小さい
+        let unrelated = harmonicBursts(count: count, scale: 0.05)
         let echo = (0..<count).map { $0 >= echoDelaySamples ? echoGain * reference[$0 - echoDelaySamples] : 0 }
         let microphone = (0..<count).map { echo[$0] + unrelated[$0] }
 
@@ -120,13 +113,10 @@ struct EchoCancellerHeavyTests {
     }
 }
 
-/// 漏れの無い条件（参照は流れるが、マイクには発話だけが入る）で、16 秒＋最大出力遅延を 1 つの canceller に連続して流し、
-/// `windows` の各秒から 1 秒の窓の残り方（出力と入力のエネルギー比、dB。0 なら全部残る）を返す。
-/// マイクには `speechStartSeconds` 秒まで何も入らず（参照だけが流れる）、そこから発話が始まる。
 private func retentionWithoutLeak(_ canceller: WebRTCEchoCanceller, windows: [Int], speechStartSeconds: Int) throws -> [Int: Double] {
     let count = 16 * sampleRate + maximumOutputDelaySamples
-    // 全区間の RMS で正規化するので、従来の20秒分を生成して評価窓の入力を保つ。
-    let reference = bandLimitedNoise(count: sampleRate * 20, seed: 1, rms: 0.1)
+    let referenceNormalizationSeconds = 20
+    let reference = bandLimitedNoise(count: sampleRate * referenceNormalizationSeconds, seed: 1, rms: 0.1)
     var microphone = harmonicBursts(count: count, scale: 0.05)
     for index in 0..<(speechStartSeconds * sampleRate) { microphone[index] = 0 }
     var output = microphone
