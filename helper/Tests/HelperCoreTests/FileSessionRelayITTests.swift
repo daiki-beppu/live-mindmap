@@ -5,6 +5,16 @@ import Speech
 import Testing
 @testable import HelperCore
 
+private func onVideoValidationQueue<T: Sendable>(_ body: @escaping @Sendable () throws -> T) async throws -> T {
+    let queue = DispatchQueue(label: "live-mindmap.video-validation")
+    return try await withCheckedThrowingContinuation { continuation in
+        queue.async {
+            do { continuation.resume(returning: try body()) }
+            catch { continuation.resume(throwing: error) }
+        }
+    }
+}
+
 private typealias Support = FileAudioTestSupport
 
 private final class Gate: @unchecked Sendable {
@@ -271,7 +281,7 @@ private func withRig(includeMine: Bool = true, theirsWhiteFrom: Double? = nil, m
     await rig.stop()
 }
 
-@Suite("録画のセッションの組み立て（relayFileSession）", .serialized, .timeLimit(.minutes(1)))
+@Suite("録画のセッションの組み立て（relayFileSession）", .timeLimit(.minutes(1)))
 struct FileSessionRelayITTests {
     @Test("入力の終わりの後に届く 相手 の確定結果も、保留中の 自分 の判定の文脈に入る。相手 は track 相手・印なし、自分 は track 自分・印あり")
     func theirFinalAfterEndOfInputMarksMine() async throws {
@@ -538,12 +548,12 @@ struct FileSessionRelayITTests {
     private func validateTextBesideVideo(_ url: URL, column: Int, stops: Bool) async throws {
         let asset = AVURLAsset(url: url)
         let track = try #require(try await asset.loadTracks(withMediaType: .video).first)
-        let reader = try AVAssetReader(asset: asset)
-        let output = AVAssetReaderTrackOutput(track: track, outputSettings: [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA])
-        reader.add(output)
-        try #require(reader.startReading())
-        let frames = await onFileScreenQueue { () -> [(Double, [UInt8])] in
+        let frames = try await onVideoValidationQueue { () throws -> [(Double, [UInt8])] in
+            let reader = try AVAssetReader(asset: asset)
             defer { reader.cancelReading() }
+            let output = AVAssetReaderTrackOutput(track: track, outputSettings: [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA])
+            reader.add(output)
+            try #require(reader.startReading())
             let context = CIContext()
             var frames: [(Double, [UInt8])] = []
             var thinner = ScreenFrameThinner()
@@ -637,12 +647,12 @@ struct FileSessionRelayITTests {
     private func validateSmallChanges(_ url: URL, grows: Bool) async throws {
         let asset = AVURLAsset(url: url)
         let track = try #require(try await asset.loadTracks(withMediaType: .video).first)
-        let reader = try AVAssetReader(asset: asset)
-        let output = AVAssetReaderTrackOutput(track: track, outputSettings: [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA])
-        reader.add(output)
-        try #require(reader.startReading())
-        let (counts, fixedDifference) = await onFileScreenQueue { () -> ([Int], Int) in
+        let (counts, fixedDifference) = try await onVideoValidationQueue { () throws -> ([Int], Int) in
+            let reader = try AVAssetReader(asset: asset)
             defer { reader.cancelReading() }
+            let output = AVAssetReaderTrackOutput(track: track, outputSettings: [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA])
+            reader.add(output)
+            try #require(reader.startReading())
             let context = CIContext()
             var baseline: [UInt8] = [], differences: [Int] = []
             var fixed: [UInt8] = [], fixedDifference = 0
