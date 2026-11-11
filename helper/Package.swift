@@ -1,6 +1,8 @@
 // swift-tools-version: 6.0
 import PackageDescription
 
+let optimizeForScreenComparisonInTests: SwiftSetting = .unsafeFlags(["-O"], .when(configuration: .debug))
+
 let webrtcAPM = "\(Context.packageDirectory)/.deps/webrtc-apm"
 let webrtcAPMLibraries = [
     "libwebrtc-audio-processing-2", "libcommon_audio", "liblibbase", "liblibapi",
@@ -25,7 +27,7 @@ let package = Package(
         .target(
             name: "HelperCore",
             dependencies: ["CWebRTCAPM", .product(name: "FluidAudio", package: "FluidAudio")],
-            swiftSettings: [.unsafeFlags(["-O"], .when(configuration: .debug))]
+            swiftSettings: [optimizeForScreenComparisonInTests]
         ),
         .target(
             name: "CWebRTCAPM",

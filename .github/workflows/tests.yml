@@ -279,14 +279,14 @@ jobs:
         timeout-minutes: 5
         with:
           path: helper/.deps/webrtc-apm
-          key: webrtc-apm-${{ runner.os }}-${{ hashFiles('helper/scripts/build-webrtc-apm.sh') }}
+          key: webrtc-apm-${{ runner.os }}-${{ hashFiles('helper/scripts/build-webrtc-apm.sh', 'helper/Package.swift') }}
       - id: apm-restore
         if: inputs.restore-caches && !inputs.save-shared-caches
         uses: actions/cache/restore@v6
         timeout-minutes: 5
         with:
           path: helper/.deps/webrtc-apm
-          key: webrtc-apm-${{ runner.os }}-${{ hashFiles('helper/scripts/build-webrtc-apm.sh') }}
+          key: webrtc-apm-${{ runner.os }}-${{ hashFiles('helper/scripts/build-webrtc-apm.sh', 'helper/Package.swift') }}
       - if: steps.apm.outputs.cache-hit != 'true' && steps.apm-restore.outputs.cache-hit != 'true'
         uses: astral-sh/setup-uv@v10.3.3
         timeout-minutes: 5
@@ -361,7 +361,7 @@ jobs:
         timeout-minutes: 5
         with:
           path: helper/.deps/webrtc-apm
-          key: webrtc-apm-${{ runner.os }}-${{ hashFiles('helper/scripts/build-webrtc-apm.sh') }}
+          key: webrtc-apm-${{ runner.os }}-${{ hashFiles('helper/scripts/build-webrtc-apm.sh', 'helper/Package.swift') }}
       - if: matrix.layer != 'unit-it' && inputs.save-shared-caches && !inputs.restore-caches
         uses: actions/cache/save@v6
         timeout-minutes: 5

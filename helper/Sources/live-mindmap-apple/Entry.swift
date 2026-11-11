@@ -3,6 +3,10 @@ import AppleIntelligenceCore
 
 @main
 struct AppleMain {
+    static func parkUntilParentTerminates() async throws -> Never {
+        while true { try await Task.sleep(for: .seconds(3600)) }
+    }
+
     static func emit(_ object: [String: Any]) throws {
         FileHandle.standardOutput.write(try JSONSerialization.data(withJSONObject: object))
         FileHandle.standardOutput.write(Data("\n".utf8))
@@ -30,7 +34,7 @@ struct AppleMain {
             defer { withExtendedLifetime(server) {} }
             let port = try await server.start()
             try emit(["type": "ready", "url": "http://127.0.0.1:\(port)/v1", "contextSize": 8192])
-            while true { try await Task.sleep(for: .seconds(3600)) }
+            try await parkUntilParentTerminates()
         } catch {
             FileHandle.standardError.write(Data("\(error)\n".utf8))
             exit(1)
