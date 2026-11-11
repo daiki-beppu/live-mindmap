@@ -12,7 +12,7 @@ public func split(
     let reader = Task {
         do {
             for try await audio in upstream {
-                for (continuation, element) in [(firstContinuation, audio), (secondContinuation, copyCaptured(audio))] {
+                for (continuation, element) in [(firstContinuation, audio), (secondContinuation, audio.ownedCopy())] {
                     if case .dropped = continuation.yield(element) {
                         continuation.finish(throwing: TranscriberError.backlogExceeded(limit: downstreamBacklogLimit))
                     }
@@ -46,17 +46,4 @@ private final class ReaderCount: @unchecked Sendable {
         count -= 1
         return count == 0
     }
-}
-
-func copyCaptured(_ audio: CapturedAudio) -> CapturedAudio {
-    let source = audio.buffer
-    guard let copy = AVAudioPCMBuffer(pcmFormat: source.format, frameCapacity: max(source.frameLength, 1)) else { return audio }
-    copy.frameLength = source.frameLength
-    let from = UnsafeMutableAudioBufferListPointer(source.mutableAudioBufferList)
-    let to = UnsafeMutableAudioBufferListPointer(copy.mutableAudioBufferList)
-    for index in 0..<min(from.count, to.count) {
-        guard let fromData = from[index].mData, let toData = to[index].mData else { continue }
-        memcpy(toData, fromData, Int(min(from[index].mDataByteSize, to[index].mDataByteSize)))
-    }
-    return CapturedAudio(buffer: copy, hostTime: audio.hostTime)
 }

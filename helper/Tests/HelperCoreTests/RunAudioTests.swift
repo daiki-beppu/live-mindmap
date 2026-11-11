@@ -20,6 +20,7 @@ private enum AudioObservation: Equatable {
     case forwarded(Track, TranscriptionResult), duplicates(Bool), finished(Track)
     case diarizerPrepared, diarizerHeard(Float), diarizerOrigin(UInt64), speakerEvent(HelperEvent)
     case segmentHeard(Track, Int, Float), segmentEnded(Track, Int)
+    case transcriptionStarted(Track), diarizerFinished
 }
 
 private enum MicrophoneStep {
@@ -116,6 +117,7 @@ private struct RunTranscriber: Transcriber {
             observations.append(.segmentHeard(track, instance, data[0][0]))
         }
         observations.append(.segmentEnded(track, instance))
+        observations.append(.transcriptionStarted(track))
         return ResultStream { continuation in
             if let recognitionFailure { continuation.finish(throwing: recognitionFailure) }
             else {
@@ -137,6 +139,7 @@ private struct FakeDiarizer: SpeakerDiarizer {
     let settledTo: Double?
     let streamFailure: Error?
     let failsOnFirstAudio: Bool
+    let stall: Latch?
 
     func prepare() async throws {
         observations.append(.diarizerPrepared)
@@ -147,6 +150,7 @@ private struct FakeDiarizer: SpeakerDiarizer {
         observations.append(.diarizerOrigin(origin))
         return AsyncThrowingStream { continuation in
             let task = Task {
+                defer { observations.append(.diarizerFinished) }
                 do {
                     for try await item in audio {
                         let data = try #require(item.buffer.floatChannelData)
@@ -159,6 +163,7 @@ private struct FakeDiarizer: SpeakerDiarizer {
                     }
                     segments.forEach { continuation.yield(.segment($0)) }
                     if let settledTo { continuation.yield(.settled(to: settledTo)) }
+                    await stall?.wait()
                     if let streamFailure { continuation.finish(throwing: streamFailure) } else { continuation.finish() }
                 } catch { continuation.finish(throwing: error) }
             }
@@ -174,6 +179,7 @@ private final class RunAudioFixture {
     var captureFailure: AudioFailure?
     var recognitionFailure: AudioFailure?
     var recordingFailures: (their: AudioFailure?, my: AudioFailure?) = (nil, nil)
+    var myRecordingCreationFailure: AudioFailure?
     var relayFailure: AudioFailure?
     var recordingEnabled = true
     var heldAudio: (stream: AudioStream, continuation: AudioStream.Continuation)?
@@ -183,6 +189,7 @@ private final class RunAudioFixture {
     var diarizerSettledTo: Double?
     var diarizerStreamFailure: Error?
     var diarizerFailsOnFirstAudio = false
+    var stallDiarizer: Latch?
     let started = AsyncStream<Track>.makeStream()
     var initiallySelfPaused = false
     var heldMicrophone: (stream: AudioStream, continuation: AudioStream.Continuation)?
@@ -248,6 +255,7 @@ private final class RunAudioFixture {
             },
             recording: recordingEnabled ? { track, stream, origin in
                 self.observations.append(.recordingOrigin(track, origin))
+                if track == .自分, let failure = self.myRecordingCreationFailure { throw failure }
                 let (output, continuation) = AudioStream.makeStream(of: CapturedAudio.self, throwing: Error.self)
                 let finished = Task<Void, Error> {
                     defer { self.observations.append(.finished(track)) }
@@ -302,7 +310,7 @@ private final class RunAudioFixture {
                 return FakeDiarizer(
                     observations: self.observations, prepareFailure: self.diarizerPrepareFailure,
                     segments: self.diarizerSegments, settledTo: self.diarizerSettledTo, streamFailure: self.diarizerStreamFailure,
-                    failsOnFirstAudio: self.diarizerFailsOnFirstAudio
+                    failsOnFirstAudio: self.diarizerFailsOnFirstAudio, stall: self.stallDiarizer
                 )
             },
             emitSpeaker: { self.observations.append(.speakerEvent($0)) }
@@ -374,6 +382,9 @@ struct RunAudioTests {
         #expect(events.contains(.duplicates(speaker)))
         #expect(events.filter { $0 == .echo }.count == (speaker ? 1 : 0))
         #expect(events.filter { $0 == .split }.count == (speaker ? 1 : 0))
+        let theirStarted = try #require(events.firstIndex(of: .transcriptionStarted(.相手)))
+        let myRecording = try #require(events.firstIndex(of: .recordingOrigin(.自分, 123)))
+        #expect(theirStarted < myRecording)
     }
 
     @Test("C2: 録音なしでも拒否後の相手音声を転送する")
@@ -951,20 +962,54 @@ struct RunAudioTests {
         try await audio.finish()
     }
 
-    @Test("U2: ゲートを始める前に 相手 の transcribe が失敗しても、作った録音の入力を終わらせ、stop と finish が終わる")
-    func failureBeforeGateFinishesMyRecording() async throws {
+    @Test("相手の文字起こし開始が失敗したら、自分の録音を作らず、開始済みの音声を止めて finish が終わる")
+    func theirStartFailureDoesNotCreateMyRecording() async throws {
         let fixture = RunAudioFixture()
         fixture.theirTranscribeFailure = .recognition
         let audio = fixture.makeAudio()
+        defer { audio.stop() }
         try await audio.prepare()
         await #expect(throws: AudioFailure.recognition) {
             try await audio.run(origin: 123, marksDuplicates: false, relay: fixture.relay)
         }
-        audio.stop()
-        do { try await within { try await audio.finish() } }
-        catch is DeadlineExceeded { Issue.record("finish が終わらない（録音の入力が閉じていない）") }
-        catch {}
-        #expect(fixture.observations.values.contains(.finished(.自分)))
+        try await within { try await audio.finish() }
+        let events = fixture.observations.values
+        #expect(events.contains(.origin(.相手, 123)))
+        #expect(!events.contains(.recordingOrigin(.自分, 123)))
+        #expect(events.contains(.stopped(.相手)))
+        #expect(events.contains(.stopped(.自分)))
+        #expect(events.contains(.finished(.相手)))
+    }
+
+    @Test("自分の録音作成が失敗したら、開始済みの相手の文字起こしと話者分離を片付け、finish が終わる")
+    func myRecordingCreationFailureStopsAudioAndDiarizer() async throws {
+        let fixture = RunAudioFixture()
+        fixture.myRecordingCreationFailure = .myRecording
+        fixture.diarizerEnabled = true
+        let latch = Latch()
+        fixture.stallDiarizer = latch
+        let audio = fixture.makeAudio()
+        defer { latch.release(); audio.stop() }
+        try await audio.prepare()
+
+        await #expect(throws: AudioFailure.myRecording) {
+            try await within { try await audio.run(origin: 123, marksDuplicates: false, relay: fixture.relay) }
+        }
+        try await within { try await audio.finish() }
+
+        let events = fixture.observations.values
+        let theirStarted = try #require(events.firstIndex(of: .transcriptionStarted(.相手)))
+        let myRecording = try #require(events.firstIndex(of: .recordingOrigin(.自分, 123)))
+        #expect(theirStarted < myRecording)
+        #expect(events.contains(.diarizerOrigin(123)))
+        try await within {
+            while !fixture.observations.values.contains(.diarizerFinished) {
+                try await Task.sleep(for: .milliseconds(10))
+            }
+        }
+        #expect(events.contains(.stopped(.相手)))
+        #expect(events.contains(.stopped(.自分)))
+        #expect(events.contains(.finished(.相手)))
     }
 
     @Test("U2: 音を取っている途中で 自分 の録音の出力が失敗したら、マイクが終わるのを待たずに run がその失敗で終わる")
