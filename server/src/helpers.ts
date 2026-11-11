@@ -7,6 +7,7 @@ import { HELPER_RUN_STDERR_TAIL_LINES, INITIAL_SELF_PAUSE_STATE, STDERR_TAIL_LIN
 import { openHelperSocket } from "./helperSocket.ts";
 
 export const HELPER_STOP_TIMEOUT_MS = Context.Reference("live-mindmap/HelperStopTimeoutMs", { defaultValue: (): number => 5_000 });
+const HELPER_CLOSE_MARGIN_MS = 2_000;
 
 type PortProbe = {
   once: (event: "error", listener: (error: Error) => void) => unknown;
@@ -224,7 +225,7 @@ const make = Effect.fnUntraced(function* (helper: HelperCommand) {
     // 既定の detached: true のまま起動し、プロセスグループごと止める。forceKillAfter は Scope の後始末（kill を通らない）にも効かせる
     const handle = yield* spawner
       .spawn(
-        ChildProcess.make(helper.command, [...helper.args, ...(options.kind === "run" ? runArgs(options) : transcribeArgs(options)), "--port", String(port)], {
+        ChildProcess.make(helper.command, [...helper.args, ...(options.kind === "run" ? runArgs(options) : transcribeArgs(options)), "--port", String(port), "--close-deadline-ms", String(Math.max(0, stopTimeoutMs - HELPER_CLOSE_MARGIN_MS))], {
           stdin: "ignore",
           stdout: "ignore",
           env: { [HELPER_CONTROL_TOKEN_ENV]: controlToken },

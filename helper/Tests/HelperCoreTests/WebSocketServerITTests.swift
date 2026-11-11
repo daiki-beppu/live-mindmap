@@ -58,13 +58,13 @@ private func emitClosingScreens(to emitter: ScreenEventEmitter) throws -> [Strin
     return try [0.0, 1, 16, 31].map { try HelperEvent.screen(start: $0, image: closingScreenImage, lines: ["Gmail OCR"], meetingTabTitle: "Gmail").jsonString() }
 }
 
-private enum SlowReaderEnding: Equatable {
+enum SlowReaderEnding: Equatable {
     case endOfStream
     case endOfStreamMidFrame(unparsedBytes: Int)
     case socketError(errno: Int32)
 }
 
-private struct SlowReaderOutcome {
+struct SlowReaderOutcome {
     var texts: [String] = []
     var closeCode: UInt16?
     var ending = SlowReaderEnding.endOfStream
@@ -72,13 +72,13 @@ private struct SlowReaderOutcome {
 
 /// 少しずつしか読まない WebSocket クライアント。URLSession は先回りして読み切るので、読み残しの不具合が見えない。
 /// 読むたびにスレッドを止めるので、協調スレッドを塞がないように専用のスレッドで動かす。
-private func runSlowReader(port: UInt16, answersClose: Bool = true) async -> SlowReaderOutcome {
+func runSlowReader(port: UInt16, answersClose: Bool = true, onText: @escaping @Sendable (String) -> Void = { _ in }) async -> SlowReaderOutcome {
     await withCheckedContinuation { continuation in
-        Thread.detachNewThread { continuation.resume(returning: readSlowly(port: port, answersClose: answersClose)) }
+        Thread.detachNewThread { continuation.resume(returning: readSlowly(port: port, answersClose: answersClose, onText: onText)) }
     }
 }
 
-private func readSlowly(port: UInt16, answersClose: Bool) -> SlowReaderOutcome {
+private func readSlowly(port: UInt16, answersClose: Bool, onText: @Sendable (String) -> Void) -> SlowReaderOutcome {
     var outcome = SlowReaderOutcome()
     let fd = socket(AF_INET, SOCK_STREAM, 0)
     guard fd >= 0 else {
@@ -129,7 +129,9 @@ private func readSlowly(port: UInt16, answersClose: Bool) -> SlowReaderOutcome {
         while upgraded, let frame = takeServerFrame(from: &buffer) {
             switch frame.opcode {
             case 0x1:
-                outcome.texts.append(String(decoding: frame.payload, as: UTF8.self))
+                let text = String(decoding: frame.payload, as: UTF8.self)
+                outcome.texts.append(text)
+                onText(text)
             case 0x8:
                 if frame.payload.count >= 2 { outcome.closeCode = UInt16(frame.payload[0]) << 8 | UInt16(frame.payload[1]) }
                 if answersClose { _ = writeAll(fd, maskedCloseReply(echoing: frame.payload)) }

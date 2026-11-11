@@ -37,15 +37,13 @@ public actor WebSocketServer {
     public nonisolated let messages: AsyncStream<String>
     private nonisolated let messageContinuation: AsyncStream<String>.Continuation
 
-    public init(port: UInt16) {
-        self.init(port: port, writeStderr: { message in
+    public init(port: UInt16, closeDeadline: Duration) {
+        self.init(port: port, closeDeadline: closeDeadline, writeStderr: { message in
             FileHandle.standardError.write(Data((message + "\n").utf8))
         })
     }
 
-    /// `closeDeadline` は、`stop` が受け手の close の返事を待つ上限。`contentProcessed` はバイトが出ていく前に返り、`cancel` は残りを捨てるので、
-    /// 受け手が読み終えた証拠は close の返事しかない。返事をしない相手でも止まれるように上限を置き、3 秒は server の SIGKILL までの 5 秒（`HELPER_STOP_TIMEOUT_MS`）に収める。
-    init(port: UInt16, closeDeadline: Duration = .seconds(3), writeStderr: @escaping @Sendable (String) -> Void) {
+    init(port: UInt16, closeDeadline: Duration, writeStderr: @escaping @Sendable (String) -> Void) {
         requestedPort = port
         self.closeDeadline = closeDeadline
         self.writeStderr = writeStderr

@@ -29,7 +29,7 @@ public final class LiveSession {
         self.devices = devices
         self.settings = settings
         makeRecording = recording
-        let server = WebSocketServer(port: settings.port)
+        let server = WebSocketServer(port: settings.port, closeDeadline: settings.closeDeadline)
         self.server = server
         let (events, continuation) = AsyncStream.makeStream(of: HelperEvent.self)
         capture = LiveCapture(devices: devices, settings: settings, emitEvent: { continuation.yield($0) })

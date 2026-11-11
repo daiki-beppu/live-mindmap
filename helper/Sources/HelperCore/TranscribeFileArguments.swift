@@ -3,14 +3,16 @@ import Foundation
 public struct TranscribeFileArguments: Equatable {
     public var file: String
     public var port: UInt16
+    public var closeDeadline: Duration
     public var audioDir: String?
     public var selfFile: String?
     public var from: Double?
     public var selfFrom: Double?
 
-    public init(file: String, port: UInt16 = defaultTranscribeFilePort, audioDir: String? = nil, selfFile: String? = nil, from: Double? = nil, selfFrom: Double? = nil) {
+    public init(file: String, port: UInt16 = defaultTranscribeFilePort, closeDeadline: Duration, audioDir: String? = nil, selfFile: String? = nil, from: Double? = nil, selfFrom: Double? = nil) {
         self.file = file
         self.port = port
+        self.closeDeadline = closeDeadline
         self.audioDir = audioDir
         self.selfFile = selfFile
         self.from = from
@@ -28,6 +30,7 @@ public let defaultTranscribeFilePort: UInt16 = 8765
 public func parseTranscribeFileArguments(_ arguments: [String]) -> Result<TranscribeFileArguments, TranscribeFileArgumentsError> {
     var file: String?
     var port = defaultTranscribeFilePort
+    var closeDeadline: Duration?
     var audioDir: String?
     var selfFile: String?
     var from: Double?
@@ -62,6 +65,12 @@ public func parseTranscribeFileArguments(_ arguments: [String]) -> Result<Transc
             }
             port = value
             index += 2
+        case "--close-deadline-ms" where index + 1 < arguments.count:
+            guard let value = Int64(arguments[index + 1]), value >= 0 else {
+                return .failure(TranscribeFileArgumentsError("--close-deadline-ms は 0 以上の整数にする"))
+            }
+            closeDeadline = .milliseconds(value)
+            index += 2
         default:
             return .failure(TranscribeFileArgumentsError("不明な引数: \(arguments[index])"))
         }
@@ -72,5 +81,8 @@ public func parseTranscribeFileArguments(_ arguments: [String]) -> Result<Transc
     if selfFrom != nil, selfFile == nil {
         return .failure(TranscribeFileArgumentsError("--self-from には --self-file が必要"))
     }
-    return .success(TranscribeFileArguments(file: file, port: port, audioDir: audioDir, selfFile: selfFile, from: from, selfFrom: selfFrom))
+    guard let closeDeadline else {
+        return .failure(TranscribeFileArgumentsError("--close-deadline-ms が必要"))
+    }
+    return .success(TranscribeFileArguments(file: file, port: port, closeDeadline: closeDeadline, audioDir: audioDir, selfFile: selfFile, from: from, selfFrom: selfFrom))
 }
