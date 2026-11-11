@@ -9,6 +9,19 @@ public struct CapturedAudio: @unchecked Sendable {
         self.buffer = buffer
         self.hostTime = hostTime
     }
+
+    func ownedCopy() -> CapturedAudio {
+        let source = buffer
+        guard let copy = AVAudioPCMBuffer(pcmFormat: source.format, frameCapacity: max(source.frameLength, 1)) else { return self }
+        copy.frameLength = source.frameLength
+        let from = UnsafeMutableAudioBufferListPointer(source.mutableAudioBufferList)
+        let to = UnsafeMutableAudioBufferListPointer(copy.mutableAudioBufferList)
+        for index in 0..<min(from.count, to.count) {
+            guard let fromData = from[index].mData, let toData = to[index].mData else { continue }
+            memcpy(toData, fromData, Int(min(from[index].mDataByteSize, to[index].mDataByteSize)))
+        }
+        return CapturedAudio(buffer: copy, hostTime: hostTime)
+    }
 }
 
 public func offsetSeconds(from origin: UInt64, to hostTime: UInt64) -> Double {

@@ -119,29 +119,13 @@ func recordingStream<Recorder: TrackRecording>(
     _ upstream: AsyncThrowingStream<CapturedAudio, Error>,
     to recorder: Recorder
 ) -> (stream: AsyncThrowingStream<CapturedAudio, Error>, finished: Task<Void, Error>) {
-    let (stream, continuation) = AsyncThrowingStream.makeStream(
-        of: CapturedAudio.self, throwing: Error.self, bufferingPolicy: .bufferingOldest(downstreamBacklogLimit))
-    let finished = Task {
+    observing(upstream, lifetime: .throughUpstreamEnd, finish: { outcome in
         do {
-            for try await captured in upstream {
-                try recorder.write(captured)
-                if case .dropped = continuation.yield(captured) {
-                    throw TranscriberError.backlogExceeded(limit: downstreamBacklogLimit)
-                }
-            }
+            try recorder.finish()
         } catch {
-            do { try recorder.finish() } catch {
-                FileHandle.standardError.write(Data("録音の末尾を書けませんでした: \(error)\n".utf8))
-            }
-            continuation.finish(throwing: error)
-            throw error
-        }
-        do { try recorder.finish() } catch {
             FileHandle.standardError.write(Data("録音の末尾を書けませんでした: \(error)\n".utf8))
-            continuation.finish(throwing: error)
-            throw error
+            if case .success = outcome { throw error }
         }
-        continuation.finish()
-    }
-    return (stream, finished)
+        try outcome.get()
+    }, each: { try recorder.write($0) })
 }

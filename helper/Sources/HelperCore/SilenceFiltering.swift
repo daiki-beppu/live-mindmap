@@ -35,16 +35,92 @@ func forEachFrameMeanSquare(of buffer: AVAudioPCMBuffer, _ body: (Int, Float) ->
     return true
 }
 
-private let loudnessRetentionSeconds = 30.0
+enum SilenceVerdict {
+    case silent
+    case audible
+    case unmeasurable(Unmeasurable)
+}
+
+enum Unmeasurable: Equatable {
+    case emptySpan
+    case beforeFirstAudio
+    case olderThanRetention
+    case unsupportedFormat
+    case sampleRateChanged
+}
+
+private struct EnergyRing {
+    private let sampleRate: Double
+    private var energies: [Float]
+    private var recordedPosition = 0.0
+    private var unmeasurableSpans: [(frames: Range<Int>, reason: Unmeasurable)] = []
+
+    private var recordedFrames: Int { Int(recordedPosition.rounded()) }
+
+    init(sampleRate: Double) {
+        self.sampleRate = sampleRate
+        energies = Array(repeating: .nan, count: max(1, Int((30 * sampleRate).rounded())))
+    }
+
+    mutating func record(_ buffer: AVAudioPCMBuffer) {
+        let firstFrame = recordedFrames
+        recordedPosition += Double(buffer.frameLength) * sampleRate / buffer.format.sampleRate
+        let frames = firstFrame..<recordedFrames
+        if buffer.format.sampleRate != sampleRate {
+            writeUnmeasurable(frames: frames, reason: .sampleRateChanged)
+        } else {
+            let measured = forEachFrameMeanSquare(of: buffer) { frame, meanSquare in
+                energies[(firstFrame + frame) % energies.count] = meanSquare
+            }
+            if !measured { writeUnmeasurable(frames: frames, reason: .unsupportedFormat) }
+        }
+        let oldest = max(0, recordedFrames - energies.count)
+        unmeasurableSpans = unmeasurableSpans.compactMap { span in
+            guard span.frames.upperBound > oldest else { return nil }
+            return (max(oldest, span.frames.lowerBound)..<span.frames.upperBound, span.reason)
+        }
+    }
+
+    private mutating func writeUnmeasurable(frames: Range<Int>, reason: Unmeasurable) {
+        guard !frames.isEmpty else { return }
+        for frame in max(frames.lowerBound, frames.upperBound - energies.count)..<frames.upperBound {
+            energies[frame % energies.count] = .nan
+        }
+        if let last = unmeasurableSpans.last, last.reason == reason, last.frames.upperBound == frames.lowerBound {
+            unmeasurableSpans[unmeasurableSpans.count - 1].frames = last.frames.lowerBound..<frames.upperBound
+        } else {
+            unmeasurableSpans.append((frames, reason))
+        }
+    }
+
+    func verdict(start: Double, end: Double) -> SilenceVerdict {
+        guard end > 0 else { return .unmeasurable(.beforeFirstAudio) }
+        let firstPosition = max(0, start * sampleRate)
+        let endPosition = min(Double(recordedFrames), end * sampleRate)
+        guard firstPosition < endPosition else { return .unmeasurable(.emptySpan) }
+        let firstFrame = Int(firstPosition.rounded(.up))
+        let endFrame = Int(endPosition.rounded(.up))
+        guard firstFrame < endFrame else { return .unmeasurable(.emptySpan) }
+        guard firstFrame >= recordedFrames - energies.count else { return .unmeasurable(.olderThanRetention) }
+        if let span = unmeasurableSpans.first(where: { $0.frames.overlaps(firstFrame..<endFrame) }) {
+            return .unmeasurable(span.reason)
+        }
+        var sum = 0.0
+        for frame in firstFrame..<endFrame {
+            let value = energies[frame % energies.count]
+            guard !value.isNaN else { return .unmeasurable(.unsupportedFormat) }
+            sum += Double(value)
+        }
+        return isSilentMeanSquare(sum / Double(endFrame - firstFrame)) ? .silent : .audible
+    }
+}
 
 
 final class TrackLoudness: @unchecked Sendable {
     private let origin: UInt64
     private let lock = NSLock()
     private var basis: Double?
-    private var sampleRate: Double = 0
-    private var energies: [Float] = []
-    private var recordedFrames = 0
+    private var ring: EnergyRing?
 
     init(origin: UInt64) {
         self.origin = origin
@@ -52,62 +128,25 @@ final class TrackLoudness: @unchecked Sendable {
 
     func record(_ audio: CapturedAudio) {
         let buffer = audio.buffer
-        let format = buffer.format
-        let frames = Int(buffer.frameLength)
-        let sampleRate = format.sampleRate
-        guard frames > 0, sampleRate > 0 else { return }
+        guard buffer.frameLength > 0, buffer.format.sampleRate > 0 else { return }
 
         lock.lock()
         defer { lock.unlock() }
         if basis == nil {
             basis = offsetSeconds(from: origin, to: audio.hostTime)
-            self.sampleRate = sampleRate
-            energies = Array(repeating: .nan, count: Int((loudnessRetentionSeconds * sampleRate).rounded()))
+            ring = EnergyRing(sampleRate: buffer.format.sampleRate)
         }
 
-        let measured = forEachFrameMeanSquare(of: buffer) { frame, meanSquare in
-            energies[(recordedFrames + frame) % energies.count] = meanSquare
-        }
-        guard measured else {
-            writeUnmeasurable(frames: frames)
-            return
-        }
-        recordedFrames += frames
+        ring?.record(buffer)
     }
 
-    private func writeUnmeasurable(frames: Int) {
-        for frame in 0..<frames {
-            energies[(recordedFrames + frame) % energies.count] = .nan
-        }
-        recordedFrames += frames
-    }
-
-    func isBelowSilenceThreshold(start: Double, end: Double) -> Bool? {
-        guard end > start else { return nil }
+    func verdict(start: Double, end: Double) -> SilenceVerdict {
+        guard start.isFinite, end.isFinite, end > start else { return .unmeasurable(.emptySpan) }
 
         lock.lock()
         defer { lock.unlock() }
-        guard let basis, sampleRate > 0 else { return nil }
-
-        let firstPosition = max(0, (start - basis) * sampleRate)
-        let endPosition = min(Double(recordedFrames), (end - basis) * sampleRate)
-        guard firstPosition < endPosition else { return nil }
-
-        let firstFrame = Int(firstPosition.rounded(.up))
-        let endFrame = Int(endPosition.rounded(.up))
-        guard firstFrame < endFrame else { return nil }
-
-        if firstFrame < recordedFrames - energies.count {
-            return nil
-        }
-
-        var sum = 0.0
-        for frame in firstFrame..<endFrame {
-            let value = energies[frame % energies.count]
-            guard !value.isNaN else { return nil }
-            sum += Double(value)
-        }
-        return isSilentMeanSquare(sum / Double(endFrame - firstFrame))
+        guard let basis, let ring else { return .unmeasurable(.beforeFirstAudio) }
+        return ring.verdict(start: start - basis, end: end - basis)
     }
 }
 
@@ -126,33 +165,10 @@ public final class SilenceFilteringTranscriber: Transcriber {
         _ audio: AsyncThrowingStream<CapturedAudio, Error>, origin: UInt64
     ) async throws -> AsyncThrowingStream<TranscriptionResult, Error> {
         let loudness = TrackLoudness(origin: origin)
-        let measured = measuredStream(audio, loudness: loudness)
-        let results = try await base.transcribe(measured, origin: origin)
+        let measured = observing(audio, each: { loudness.record($0) })
+        let results = try await base.transcribe(measured.stream, origin: origin)
         return filteredStream(results, loudness: loudness)
     }
-}
-
-private func measuredStream(
-    _ upstream: AsyncThrowingStream<CapturedAudio, Error>,
-    loudness: TrackLoudness
-) -> AsyncThrowingStream<CapturedAudio, Error> {
-    let (stream, continuation) = AsyncThrowingStream.makeStream(
-        of: CapturedAudio.self, throwing: Error.self, bufferingPolicy: .bufferingOldest(downstreamBacklogLimit))
-    let task = Task {
-        do {
-            for try await captured in upstream {
-                loudness.record(captured)
-                if case .dropped = continuation.yield(captured) {
-                    throw TranscriberError.backlogExceeded(limit: downstreamBacklogLimit)
-                }
-            }
-            continuation.finish()
-        } catch {
-            continuation.finish(throwing: error)
-        }
-    }
-    continuation.onTermination = { _ in task.cancel() }
-    return stream
 }
 
 private func filteredStream(
@@ -163,7 +179,7 @@ private func filteredStream(
     let task = Task {
         do {
             for try await result in results {
-                if isSilent(result, loudness: loudness) { continue }
+                if case .silent = loudness.verdict(start: result.start, end: result.end) { continue }
                 continuation.yield(result)
             }
             continuation.finish()
@@ -173,8 +189,4 @@ private func filteredStream(
     }
     continuation.onTermination = { _ in task.cancel() }
     return stream
-}
-
-private func isSilent(_ result: TranscriptionResult, loudness: TrackLoudness) -> Bool {
-    loudness.isBelowSilenceThreshold(start: result.start, end: result.end) ?? false
 }
