@@ -2,7 +2,7 @@ import { describe, expect, it } from "@effect/vitest";
 import { Deferred, Effect, Fiber, Layer } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { INITIAL_SELF_PAUSE_STATE } from "../src/core/selfPause.ts";
-import { CreatePortProbe, Helpers, type HelperLaunchOptions } from "../src/helpers.ts";
+import { CreatePortProbe, HELPER_STOP_TIMEOUT_MS, Helpers, type HelperLaunchOptions } from "../src/helpers.ts";
 
 class FakeProbe {
   listening = false;
@@ -92,6 +92,28 @@ describe("Helpers.launch の起動オプションを helper の argv に書き�
   ] satisfies ReadonlyArray<{ name: string; options: HelperLaunchOptions; args: string[] }>)
   ("$name", ({ options, args }) => Effect.gen(function* () {
     const command = yield* spawnedCommand(options);
-    expect({ command: command.command, args: command.args }).toEqual({ command: "server-helper", args: ["fixed-arg", ...args, "--port", "54321"] });
+    const deadlineIndex = command.args.indexOf("--close-deadline-ms");
+    expect(command.args.slice(deadlineIndex, deadlineIndex + 2)).toEqual(["--close-deadline-ms", "3000"]);
+    const otherArgs = command.args.filter((_, index) => index !== deadlineIndex && index !== deadlineIndex + 1);
+    expect({ command: command.command, args: otherArgs }).toEqual({ command: "server-helper", args: ["fixed-arg", ...args, "--port", "54321"] });
   }));
+});
+
+describe("Helpers.launch の close 期限は停止上限から導出する", () => {
+  for (const options of [
+    { kind: "run", app: "zoom.app", screen: true, selfPause: INITIAL_SELF_PAUSE_STATE },
+    { kind: "transcribe-file", file: "/meeting.m4a", from: {} },
+  ] satisfies HelperLaunchOptions[]) {
+    it.effect.each([
+      { stopTimeoutMs: 8_765, closeDeadlineMs: "6765" },
+      { stopTimeoutMs: 2_001, closeDeadlineMs: "1" },
+      { stopTimeoutMs: 2_000, closeDeadlineMs: "0" },
+      { stopTimeoutMs: 400, closeDeadlineMs: "0" },
+    ])(`${options.kind}: 停止上限 $stopTimeoutMs ms から close 期限 $closeDeadlineMs ms を渡す`, ({ stopTimeoutMs, closeDeadlineMs }) => Effect.gen(function* () {
+      const command = yield* spawnedCommand(options).pipe(Effect.provideService(HELPER_STOP_TIMEOUT_MS, stopTimeoutMs));
+      const index = command.args.indexOf("--close-deadline-ms");
+      expect(command.args.slice(index, index + 2)).toEqual(["--close-deadline-ms", closeDeadlineMs]);
+      expect(command.args.filter((arg) => arg === "--close-deadline-ms")).toHaveLength(1);
+    }));
+  }
 });

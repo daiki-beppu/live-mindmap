@@ -21,6 +21,7 @@ public struct LiveSettings {
     public let bundleID: String
     public let ownPID: Int32
     public let port: UInt16
+    public let closeDeadline: Duration
     public let origin: UInt64?
     public let recording: Recording?
     public let marksDuplicates: Bool
@@ -29,13 +30,14 @@ public struct LiveSettings {
     public let log: (LiveSessionDiagnostic) -> Void
 
     public init(
-        bundleID: String, ownPID: Int32, port: UInt16, origin: UInt64?, recording: Recording?,
+        bundleID: String, ownPID: Int32, port: UInt16, closeDeadline: Duration, origin: UInt64?, recording: Recording?,
         marksDuplicates: Bool, selfPauseCarryOver: SelfPauseCarryOver, controlToken: String?,
         log: @escaping (LiveSessionDiagnostic) -> Void
     ) {
         self.bundleID = bundleID
         self.ownPID = ownPID
         self.port = port
+        self.closeDeadline = closeDeadline
         self.origin = origin
         self.recording = recording
         self.marksDuplicates = marksDuplicates

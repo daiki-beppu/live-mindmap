@@ -3,9 +3,9 @@ import HelperCore
 
 @Suite("run の引数解釈（parseRunArguments）")
 struct RunArgumentsTests {
-    @Test("--app だけでも起動できる。既定値は port=8765・audioDir=nil・origin=nil・audioIndex=1")
+    @Test("--app と close 期限で起動できる。既定値は port=8765・audioDir=nil・origin=nil・audioIndex=1")
     func defaults() throws {
-        let result = parseRunArguments(["--app", "us.zoom.xos"])
+        let result = parseRunArguments(["--close-deadline-ms", "3000"] + ["--app", "us.zoom.xos"])
         let args = try result.get()
         #expect(args.app == "us.zoom.xos")
         #expect(args.port == 8765)
@@ -16,79 +16,79 @@ struct RunArgumentsTests {
 
     @Test("--port は指定した値になる")
     func explicitPort() throws {
-        let args = try parseRunArguments(["--app", "x", "--port", "12345"]).get()
+        let args = try parseRunArguments(["--close-deadline-ms", "3000"] + ["--app", "x", "--port", "12345"]).get()
         #expect(args.port == 12345)
     }
 
     @Test("--audio-dir は指定した値になる")
     func explicitAudioDir() throws {
-        let args = try parseRunArguments(["--app", "x", "--audio-dir", "/tmp/session"]).get()
+        let args = try parseRunArguments(["--close-deadline-ms", "3000"] + ["--app", "x", "--audio-dir", "/tmp/session"]).get()
         #expect(args.audioDir == "/tmp/session")
     }
 
     @Test("--app がないと拒否される")
     func missingApp() {
-        let result = parseRunArguments(["--port", "1234"])
+        let result = parseRunArguments(["--close-deadline-ms", "3000"] + ["--port", "1234"])
         #expect(throws: RunArgumentsError.self) { try result.get() }
     }
 
     @Test("不明な引数は拒否される（既存の振る舞い）")
     func unknownArgument() {
-        let result = parseRunArguments(["--app", "x", "--mystery", "1"])
+        let result = parseRunArguments(["--close-deadline-ms", "3000"] + ["--app", "x", "--mystery", "1"])
         #expect(throws: RunArgumentsError.self) { try result.get() }
     }
 
     @Test("--port が範囲外（0〜65535 の整数でない）なら拒否される")
     func invalidPort() {
         for value in ["0x1", "-1", "65536", "abc"] {
-            let result = parseRunArguments(["--app", "x", "--port", value])
+            let result = parseRunArguments(["--close-deadline-ms", "3000"] + ["--app", "x", "--port", value])
             #expect(throws: RunArgumentsError.self) { try result.get() }
         }
     }
 
     @Test("--origin は UInt64 の値をそのまま受け取る（2^53 を超えても桁が落ちない）")
     func explicitOrigin() throws {
-        let args = try parseRunArguments(["--app", "x", "--origin", "9007199254740993"]).get()
+        let args = try parseRunArguments(["--close-deadline-ms", "3000"] + ["--app", "x", "--origin", "9007199254740993"]).get()
         #expect(args.origin == 9_007_199_254_740_993)
     }
 
     @Test("--origin が UInt64 として読めない値は拒否される")
     func invalidOrigin() {
         for value in ["-1", "abc", ""] {
-            let result = parseRunArguments(["--app", "x", "--origin", value])
+            let result = parseRunArguments(["--close-deadline-ms", "3000"] + ["--app", "x", "--origin", value])
             #expect(throws: RunArgumentsError.self) { try result.get() }
         }
     }
 
     @Test("--audio-index は 1 以上の整数を受け取る")
     func explicitAudioIndex() throws {
-        let args = try parseRunArguments(["--app", "x", "--audio-index", "3"]).get()
+        let args = try parseRunArguments(["--close-deadline-ms", "3000"] + ["--app", "x", "--audio-index", "3"]).get()
         #expect(args.audioIndex == 3)
     }
 
     @Test("--audio-index が 1 未満・非数値なら拒否される（新しい引数の異常系も既存と同じ扱い）")
     func invalidAudioIndex() {
         for value in ["0", "-1", "abc"] {
-            let result = parseRunArguments(["--app", "x", "--audio-index", value])
+            let result = parseRunArguments(["--close-deadline-ms", "3000"] + ["--app", "x", "--audio-index", value])
             #expect(throws: RunArgumentsError.self) { try result.get() }
         }
     }
 
     @Test("--no-screen を付けないときは noScreen=false（既定は共有画面を使う）")
     func noScreenDefaultsToFalse() throws {
-        let args = try parseRunArguments(["--app", "x"]).get()
+        let args = try parseRunArguments(["--close-deadline-ms", "3000"] + ["--app", "x"]).get()
         #expect(args.noScreen == false)
     }
 
     @Test("--no-screen を付けると noScreen=true になる")
     func noScreenFlag() throws {
-        let args = try parseRunArguments(["--app", "x", "--no-screen"]).get()
+        let args = try parseRunArguments(["--close-deadline-ms", "3000"] + ["--app", "x", "--no-screen"]).get()
         #expect(args.noScreen == true)
     }
 
     @Test("--no-screen は値を取らない（次のフラグを食わず、他の引数はそのまま読める）")
     func noScreenTakesNoValue() throws {
-        let args = try parseRunArguments(["--no-screen", "--app", "x", "--port", "12345", "--audio-index", "2"]).get()
+        let args = try parseRunArguments(["--close-deadline-ms", "3000"] + ["--no-screen", "--app", "x", "--port", "12345", "--audio-index", "2"]).get()
         #expect(args.noScreen == true)
         #expect(args.app == "x")
         #expect(args.port == 12345)
@@ -97,19 +97,19 @@ struct RunArgumentsTests {
 
     @Test("自分の休止の引き継ぎは、無ければ初期状態（手動なし・基準なし・読めた値なし・待ち 0）")
     func selfPauseCarryOverDefaults() throws {
-        #expect(try parseRunArguments(["--app", "x"]).get().selfPauseCarryOver == .initial)
+        #expect(try parseRunArguments(["--close-deadline-ms", "3000"] + ["--app", "x"]).get().selfPauseCarryOver == .initial)
     }
 
     @Test("--self-manual・--self-basis・--self-last-known・--self-idle-for を読む。順序は問わず、他の引数と混ぜてよい")
     func selfPauseCarryOverFlags() throws {
-        let args = try parseRunArguments([
+        let args = try parseRunArguments(["--close-deadline-ms", "3000"] + [
             "--self-idle-for", "1.5", "--app", "x", "--self-manual", "pause", "--port", "1234",
             "--self-last-known", "idle", "--self-basis", "using",
         ]).get()
         #expect(args.selfPauseCarryOver == SelfPauseCarryOver(manual: .pause, basis: .using, lastKnown: .idle, idleFor: 1.5))
         #expect(args.app == "x")
         #expect(args.port == 1234)
-        let take = try parseRunArguments(["--app", "x", "--self-manual", "take", "--self-basis", "idle", "--self-last-known", "using"]).get()
+        let take = try parseRunArguments(["--close-deadline-ms", "3000"] + ["--app", "x", "--self-manual", "take", "--self-basis", "idle", "--self-last-known", "using"]).get()
         #expect(take.selfPauseCarryOver == SelfPauseCarryOver(manual: .take, basis: .idle, lastKnown: .using, idleFor: 0))
     }
 
@@ -121,7 +121,7 @@ struct RunArgumentsTests {
               ["--self-idle-for", "abc"], ["--self-idle-for", "-1"], ["--self-idle-for", ""],
           ])
     func invalidCarryOverValuesAreRejected(flag: [String]) {
-        guard case .failure = parseRunArguments(["--app", "x"] + flag) else {
+        guard case .failure = parseRunArguments(["--close-deadline-ms", "3000"] + ["--app", "x"] + flag) else {
             Issue.record("\(flag) を受け付けた")
             return
         }
@@ -130,7 +130,7 @@ struct RunArgumentsTests {
     @Test("値が無い引き継ぎの引数は、不明な引数として拒否する")
     func carryOverFlagWithoutValueIsRejected() {
         for flag in ["--self-manual", "--self-basis", "--self-last-known", "--self-idle-for"] {
-            guard case .failure = parseRunArguments(["--app", "x", flag]) else {
+            guard case .failure = parseRunArguments(["--close-deadline-ms", "3000"] + ["--app", "x", flag]) else {
                 Issue.record("\(flag) を値なしで受け付けた")
                 return
             }
@@ -139,6 +139,36 @@ struct RunArgumentsTests {
 
     @Test("--self-paused は廃止した。不明な引数として拒否する")
     func legacySelfPausedFlagIsRejected() {
-        #expect(parseRunArguments(["--app", "x", "--self-paused"]) == .failure(RunArgumentsError("不明な引数: --self-paused")))
+        #expect(parseRunArguments(["--close-deadline-ms", "3000"] + ["--app", "x", "--self-paused"]) == .failure(RunArgumentsError("不明な引数: --self-paused")))
+    }
+
+    @Test("--close-deadline-ms の非負整数をミリ秒の期限にする", arguments: [0, 1, 1234, 6765])
+    func explicitCloseDeadline(milliseconds: Int) throws {
+        let args = try parseRunArguments(["--app", "x"] + ["--close-deadline-ms", String(milliseconds)]).get()
+        #expect(args.closeDeadline == .milliseconds(milliseconds))
+    }
+
+    @Test("close 期限を省略すると起動を拒否する")
+    func missingCloseDeadline() {
+        guard case .failure = parseRunArguments(["--app", "x"]) else {
+            Issue.record("close 期限を省略した起動を受け付けた")
+            return
+        }
+    }
+
+    @Test("close 期限の値がないと起動を拒否する")
+    func closeDeadlineWithoutValue() {
+        guard case .failure = parseRunArguments(["--app", "x"] + ["--close-deadline-ms"]) else {
+            Issue.record("close 期限の値なしの起動を受け付けた")
+            return
+        }
+    }
+
+    @Test("負数・非整数・範囲外の close 期限を拒否する", arguments: ["-1", "1.5", "abc", "", "9223372036854775808"])
+    func invalidCloseDeadline(value: String) {
+        guard case .failure = parseRunArguments(["--app", "x"] + ["--close-deadline-ms", value]) else {
+            Issue.record("不正な close 期限 \(value) を受け付けた")
+            return
+        }
     }
 }

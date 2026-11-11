@@ -14,8 +14,8 @@ usage:
   live-mindmap-helper install-speech-ja
   live-mindmap-helper install-speaker-models
   live-mindmap-helper list
-  live-mindmap-helper run --app <bundle id> [--port <n>] [--audio-dir <dir>] [--origin <host time>] [--audio-index <n>] [--no-screen] [--self-manual pause|take] [--self-basis using|idle] [--self-last-known using|idle] [--self-idle-for <seconds>]
-  live-mindmap-helper transcribe-file --file <path> [--self-file <path>] [--port <n>] [--audio-dir <dir>] [--from <秒>] [--self-from <秒>]
+  live-mindmap-helper run --app <bundle id> --close-deadline-ms <ms> [--port <n>] [--audio-dir <dir>] [--origin <host time>] [--audio-index <n>] [--no-screen] [--self-manual pause|take] [--self-basis using|idle] [--self-last-known using|idle] [--self-idle-for <seconds>]
+  live-mindmap-helper transcribe-file --file <path> --close-deadline-ms <ms> [--self-file <path>] [--port <n>] [--audio-dir <dir>] [--from <秒>] [--self-from <秒>]
   live-mindmap-helper creation-date --file <path>
   live-mindmap-helper mix --session <dir> --out <path> [--track 自分]
   live-mindmap-helper readings <語>...
@@ -60,7 +60,7 @@ private struct SystemClock: LiveClock {
 
 extension ScreenCapture: LiveScreenSource {}
 
-private func run(app bundleID: String, port: UInt16, audioDir: String?, origin explicitOrigin: UInt64?, audioIndex: Int, noScreen: Bool, selfPauseCarryOver: SelfPauseCarryOver) async throws {
+private func run(app bundleID: String, port: UInt16, closeDeadline: Duration, audioDir: String?, origin explicitOrigin: UInt64?, audioIndex: Int, noScreen: Bool, selfPauseCarryOver: SelfPauseCarryOver) async throws {
     let targets = try tapTargets(forApp: bundleID, in: try currentAudioProcesses())
     let outputRoute = try currentOutputRoute()
     let screen: LiveScreen
@@ -79,7 +79,7 @@ private func run(app bundleID: String, port: UInt16, audioDir: String?, origin e
         inputUsage: SystemInputUsage(), screen: screen, clock: SystemClock()
     )
     let settings = LiveSettings(
-        bundleID: bundleID, ownPID: getpid(), port: port, origin: explicitOrigin,
+        bundleID: bundleID, ownPID: getpid(), port: port, closeDeadline: closeDeadline, origin: explicitOrigin,
         recording: audioDir.map { LiveSettings.Recording(directory: URL(fileURLWithPath: $0, isDirectory: true), attempt: audioIndex) },
         marksDuplicates: outputRoute.marksDuplicates, selfPauseCarryOver: selfPauseCarryOver,
         controlToken: ProcessInfo.processInfo.environment[helperControlTokenEnvironmentKey],
@@ -109,7 +109,7 @@ private func run(app bundleID: String, port: UInt16, audioDir: String?, origin e
     try await session.run()
 }
 
-private func transcribeFile(file: String, selfFile: String?, port: UInt16, audioDir: String?, from: Double?, selfFrom: Double?) async throws {
+private func transcribeFile(file: String, selfFile: String?, port: UInt16, closeDeadline: Duration, audioDir: String?, from: Double?, selfFrom: Double?) async throws {
     let url = URL(fileURLWithPath: file)
     let selfURL = selfFile.map { URL(fileURLWithPath: $0) }
     var header = try await readFileHeader(of: url)
@@ -124,7 +124,7 @@ private func transcribeFile(file: String, selfFile: String?, port: UInt16, audio
     try await theirs.transcriber.prepare()
     let mine = selfURL.map { FileSessionSource(url: $0, transcriber: SpeechAnalyzerTranscriber(), from: selfFrom ?? 0) }
     try await mine?.transcriber.prepare()
-    let server = WebSocketServer(port: port)
+    let server = WebSocketServer(port: port, closeDeadline: closeDeadline)
     let actualPort = try await server.start()
     printError("listening on ws://127.0.0.1:\(actualPort) (file: \(file), \(header.duration) s)")
     await broadcastFileHeader(header, on: server)
@@ -205,7 +205,7 @@ private func main() async -> Int32 {
                 printError("\(error.message)\n\(usage)")
                 return 2
             case .success(let args):
-                try await run(app: args.app, port: args.port, audioDir: args.audioDir, origin: args.origin, audioIndex: args.audioIndex, noScreen: args.noScreen, selfPauseCarryOver: args.selfPauseCarryOver)
+                try await run(app: args.app, port: args.port, closeDeadline: args.closeDeadline, audioDir: args.audioDir, origin: args.origin, audioIndex: args.audioIndex, noScreen: args.noScreen, selfPauseCarryOver: args.selfPauseCarryOver)
             }
         case "transcribe-file":
             switch parseTranscribeFileArguments(Array(arguments.dropFirst())) {
@@ -213,7 +213,7 @@ private func main() async -> Int32 {
                 printError("\(error.message)\n\(usage)")
                 return 2
             case .success(let args):
-                try await transcribeFile(file: args.file, selfFile: args.selfFile, port: args.port, audioDir: args.audioDir, from: args.from, selfFrom: args.selfFrom)
+                try await transcribeFile(file: args.file, selfFile: args.selfFile, port: args.port, closeDeadline: args.closeDeadline, audioDir: args.audioDir, from: args.from, selfFrom: args.selfFrom)
             }
         case "creation-date":
             switch parseCreationDateArguments(Array(arguments.dropFirst())) {

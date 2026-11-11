@@ -3,15 +3,17 @@ import Foundation
 public struct RunArguments: Equatable {
     public var app: String
     public var port: UInt16
+    public var closeDeadline: Duration
     public var audioDir: String?
     public var origin: UInt64?
     public var audioIndex: Int
     public var noScreen: Bool
     public var selfPauseCarryOver: SelfPauseCarryOver
 
-    public init(app: String, port: UInt16 = 8765, audioDir: String? = nil, origin: UInt64? = nil, audioIndex: Int = 1, noScreen: Bool = false, selfPauseCarryOver: SelfPauseCarryOver = .initial) {
+    public init(app: String, port: UInt16 = 8765, closeDeadline: Duration, audioDir: String? = nil, origin: UInt64? = nil, audioIndex: Int = 1, noScreen: Bool = false, selfPauseCarryOver: SelfPauseCarryOver = .initial) {
         self.app = app
         self.port = port
+        self.closeDeadline = closeDeadline
         self.audioDir = audioDir
         self.origin = origin
         self.audioIndex = audioIndex
@@ -30,6 +32,7 @@ private let defaultRunPort: UInt16 = 8765
 public func parseRunArguments(_ arguments: [String]) -> Result<RunArguments, RunArgumentsError> {
     var app: String?
     var port = defaultRunPort
+    var closeDeadline: Duration?
     var audioDir: String?
     var origin: UInt64?
     var audioIndex = 1
@@ -49,6 +52,12 @@ public func parseRunArguments(_ arguments: [String]) -> Result<RunArguments, Run
             index += 2
         case "--audio-dir" where index + 1 < arguments.count:
             audioDir = arguments[index + 1]
+            index += 2
+        case "--close-deadline-ms" where index + 1 < arguments.count:
+            guard let value = Int64(arguments[index + 1]), value >= 0 else {
+                return .failure(RunArgumentsError("--close-deadline-ms は 0 以上の整数にする"))
+            }
+            closeDeadline = .milliseconds(value)
             index += 2
         case "--origin" where index + 1 < arguments.count:
             guard let value = UInt64(arguments[index + 1]) else {
@@ -96,5 +105,8 @@ public func parseRunArguments(_ arguments: [String]) -> Result<RunArguments, Run
     guard let app else {
         return .failure(RunArgumentsError("--app が必要"))
     }
-    return .success(RunArguments(app: app, port: port, audioDir: audioDir, origin: origin, audioIndex: audioIndex, noScreen: noScreen, selfPauseCarryOver: carryOver))
+    guard let closeDeadline else {
+        return .failure(RunArgumentsError("--close-deadline-ms が必要"))
+    }
+    return .success(RunArguments(app: app, port: port, closeDeadline: closeDeadline, audioDir: audioDir, origin: origin, audioIndex: audioIndex, noScreen: noScreen, selfPauseCarryOver: carryOver))
 }

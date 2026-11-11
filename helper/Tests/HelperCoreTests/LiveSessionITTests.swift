@@ -213,13 +213,13 @@ private final class Fixture {
     let clock: FakeClock
     init() { clock = FakeClock(time: origin + AudioConvertNanosToHostTime(6_000_000_000)) }
     var time: UInt64 { clock.now() }
-    func session(screen: LiveScreen, diarizer: FakeDiarizer? = nil, recording: URL? = nil, explicitOrigin: Bool = true, makeRecording: RunAudio.Recording? = nil, sendEvent: (@Sendable (HelperEvent, WebSocketServer) async -> Void)? = nil) -> LiveSession {
+    func session(screen: LiveScreen, diarizer: FakeDiarizer? = nil, recording: URL? = nil, explicitOrigin: Bool = true, closeDeadline: Duration = .seconds(3), makeRecording: RunAudio.Recording? = nil, sendEvent: (@Sendable (HelperEvent, WebSocketServer) async -> Void)? = nil) -> LiveSession {
         let devices = LiveDevices(
             tap: tap, microphone: microphone, makeTranscriber: { _ in FakeTranscriber() },
             makeDiarizer: { diarizer }, inputUsage: usage, screen: screen, clock: clock
         )
         let settings = LiveSettings(
-            bundleID: "test.meeting", ownPID: 1, port: 0, origin: explicitOrigin ? origin : nil,
+            bundleID: "test.meeting", ownPID: 1, port: 0, closeDeadline: closeDeadline, origin: explicitOrigin ? origin : nil,
             recording: recording.map { .init(directory: $0, attempt: 2) }, marksDuplicates: false,
             selfPauseCarryOver: SelfPauseCarryOver(manual: .pause, basis: .idle, lastKnown: .idle, idleFor: 3),
             controlToken: "test-control", log: { _ in }
@@ -255,6 +255,38 @@ private func waitForCompletion(_ result: Cell<Result<Void, Error>?>) async throw
 
 @Suite("ライブのセッション", .timeLimit(.minutes(1)))
 struct LiveSessionITTests {
+    @Test("設定した close 期限で返事をしない接続を切ってセッションを終了する")
+    func closeDeadlineReachesWebSocketServer() async throws {
+        let fixture = Fixture()
+        let closeDeadline: Duration = .milliseconds(200)
+        let session = fixture.session(screen: .off, closeDeadline: closeDeadline)
+        defer { session.stop() }
+        let port = try await session.start()
+        let origin = try HelperEvent.origin(hostTime: fixture.origin).jsonString()
+        let receivedOrigin = Cell(false)
+        let reader = Task {
+            await runSlowReader(port: port, answersClose: false, onText: { text in
+                if text == origin { receivedOrigin.update { $0 = true } }
+            })
+        }
+        defer { reader.cancel() }
+        try await waitFor("返事をしない接続への原点配送") { receivedOrigin.value }
+        let (running, result) = runSession(session)
+        defer { running.cancel() }
+        try await waitFor("tap とマイクの開始") { fixture.tap.started.value && fixture.microphone.started.value }
+
+        let beganStopping = ContinuousClock.now
+        session.stop()
+        try await waitForCompletion(result)
+        let elapsed = beganStopping.duration(to: .now)
+
+        #expect(elapsed >= closeDeadline)
+        #expect(elapsed < .seconds(2))
+        let outcome = await reader.value
+        #expect(outcome.closeCode == 1000)
+        #expect(outcome.ending == .endOfStream)
+    }
+
     @Test("マイクの構成変更と録音終了の失敗が重なっても構成変更を返す")
     func microphoneConfigurationChangeWinsOverRecordingFailure() async throws {
         let fixture = Fixture()
