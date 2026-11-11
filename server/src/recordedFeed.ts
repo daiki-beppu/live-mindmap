@@ -32,7 +32,7 @@ export const recordedFeed = (options: {
   const { session } = options;
   const frameChanged = yield* Ref.make(yield* Deferred.make<void>());
   const notifyFrame = Effect.flatMap(Deferred.make<void>(), (next) => Effect.flatMap(Ref.getAndSet(frameChanged, next), (current) => Deferred.succeed(current, undefined)));
-  const hold = Effect.gen(function* () {
+  const untilUnpaused = Effect.gen(function* () {
     for (;;) {
       const changed = yield* Ref.get(frameChanged);
       if ((yield* session.diffUpdate).status !== "paused") return;
@@ -61,7 +61,7 @@ export const recordedFeed = (options: {
   const pacer = options.realtime ? createPacer((ms) => Effect.sleep(ms)) : undefined;
   const sentScreenOff = yield* Ref.make(false);
   const backlog = yield* createRecordedBacklog<RecordedItem, SessionWriteFailed>({
-    hold,
+    untilUnpaused,
     ...(pacer === undefined ? {} : { pace: (item: RecordedItem) => Effect.andThen(pacer.waitUntil(timeOf(item)), item.kind === "remark" ? roomForRemark : Effect.void) }),
     deliver: Effect.fnUntraced(function* (item) {
       if (item.kind === "screen") return yield* inlet.screen(item.change);
