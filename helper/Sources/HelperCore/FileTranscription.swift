@@ -287,12 +287,13 @@ final class FileLoudness {
         self.source = source
     }
 
-    func isBelowSilenceThreshold(start: Double, end: Double) -> Bool? {
-        guard start.isFinite, end.isFinite, end > start else { return nil }
+    func verdict(start: Double, end: Double) -> SilenceVerdict {
+        guard start.isFinite, end.isFinite, end > start else { return .unmeasurable(.emptySpan) }
+        guard end > 0 else { return .unmeasurable(.beforeFirstAudio) }
         let sampleRate = source.sampleRate
         let firstFrame = Int((max(0, start) * sampleRate).rounded(.up))
         let endFrame = Int((end * sampleRate).rounded(.up))
-        guard firstFrame < endFrame else { return nil }
+        guard firstFrame < endFrame else { return .unmeasurable(.emptySpan) }
 
         let timescale = CMTimeScale(sampleRate)
         let readStart = max(0, Double(firstFrame) / sampleRate - Self.margin)
@@ -300,26 +301,26 @@ final class FileLoudness {
         guard let (reader, output) = try? source.makeReader(.measuring, timeRange: CMTimeRange(
             start: CMTime(seconds: readStart, preferredTimescale: timescale),
             end: CMTime(seconds: readEnd, preferredTimescale: timescale)))
-        else { return nil }
+        else { return .unmeasurable(.unsupportedFormat) }
         defer { reader.cancelReading() }
 
         var sum = 0.0
         var counted = 0
-        var measurable = true
         while let sample = output.copyNextSampleBuffer() {
             let first = Int((CMSampleBufferGetPresentationTimeStamp(sample).seconds * sampleRate).rounded())
             if first >= endFrame { break }
-            guard let buffer = try? source.pcmBuffer(from: sample, .measuring) else { return nil }
-            measurable = forEachFrameMeanSquare(of: buffer) { frame, meanSquare in
+            guard let buffer = try? source.pcmBuffer(from: sample, .measuring) else { return .unmeasurable(.unsupportedFormat) }
+            let measurable = forEachFrameMeanSquare(of: buffer) { frame, meanSquare in
                 let position = first + frame
                 guard position >= firstFrame, position < endFrame else { return }
                 sum += Double(meanSquare)
                 counted += 1
             }
-            if !measurable { return nil }
+            if !measurable { return .unmeasurable(.unsupportedFormat) }
         }
-        if reader.status == .failed || counted == 0 { return nil }
-        return isSilentMeanSquare(sum / Double(counted))
+        if reader.status == .failed { return .unmeasurable(.unsupportedFormat) }
+        if counted == 0 { return .unmeasurable(.emptySpan) }
+        return isSilentMeanSquare(sum / Double(counted)) ? .silent : .audible
     }
 }
 
@@ -333,8 +334,8 @@ public func transcribeFile(
     let task = Task {
         do {
             for try await result in results {
-                let silent = try await onFileReadingQueue { loudness.isBelowSilenceThreshold(start: result.start, end: result.end) }
-                if silent ?? false { continue }
+                let verdict = try await onFileReadingQueue { loudness.verdict(start: result.start, end: result.end) }
+                if case .silent = verdict { continue }
                 continuation.yield(result)
             }
             continuation.finish()

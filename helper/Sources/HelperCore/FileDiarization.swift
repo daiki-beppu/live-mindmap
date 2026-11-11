@@ -19,7 +19,7 @@ public actor FileDiarizationFeed {
         while slot != nil, !released { try await waitForChange() }
         if released || finished { return }
         let nanos = UInt64((max(0, start) * 1_000_000_000).rounded())
-        slot = copyCaptured(CapturedAudio(buffer: buffer, hostTime: AudioConvertNanosToHostTime(nanos)))
+        slot = CapturedAudio(buffer: buffer, hostTime: AudioConvertNanosToHostTime(nanos)).ownedCopy()
         lastEnd = start + Double(buffer.frameLength) / buffer.format.sampleRate
         wake()
         while slot != nil, !released { try await waitForChange() }

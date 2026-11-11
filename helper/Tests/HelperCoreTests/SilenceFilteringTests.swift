@@ -414,8 +414,127 @@ struct SilenceFilteringTests {
                 channels: 1, interleaved: false, hostTime: hostTime))
         }
 
-        #expect(loudness.isBelowSilenceThreshold(start: 0.0, end: 0.5) == nil)
-        #expect(loudness.isBelowSilenceThreshold(start: 69.0, end: 69.5) == false)
+        guard case .unmeasurable(.olderThanRetention) = loudness.verdict(start: 0.0, end: 0.5) else {
+            Issue.record("保持範囲外の区間が olderThanRetention にならない")
+            return
+        }
+        guard case .audible = loudness.verdict(start: 69.0, end: 69.5) else {
+            Issue.record("保持範囲内の有音区間が audible にならない")
+            return
+        }
+    }
+
+    @Test("長さのない区間は emptySpan として測定不能を返す")
+    func distinguishesEmptySpan() {
+        let origin = AudioGetCurrentHostTime()
+        let loudness = TrackLoudness(origin: origin)
+        loudness.record(constantAudio(
+            value: silentValue, frames: 48_000, sampleRate: testSampleRate,
+            channels: 1, interleaved: false, hostTime: origin))
+
+        guard case .unmeasurable(.emptySpan) = loudness.verdict(start: 0.5, end: 0.5) else {
+            Issue.record("長さのない区間が emptySpan にならない")
+            return
+        }
+    }
+
+    @Test("音声未到着と最初の音声より前の区間は beforeFirstAudio として測定不能を返す")
+    func distinguishesBeforeFirstAudio() {
+        let origin = AudioGetCurrentHostTime()
+        let loudness = TrackLoudness(origin: origin)
+        guard case .unmeasurable(.beforeFirstAudio) = loudness.verdict(start: 0, end: 1) else {
+            Issue.record("音声未到着の区間が beforeFirstAudio にならない")
+            return
+        }
+
+        loudness.record(constantAudio(
+            value: silentValue, frames: 48_000, sampleRate: testSampleRate,
+            channels: 1, interleaved: false, hostTime: origin + hostTicks(milliseconds: 2000)))
+
+        guard case .unmeasurable(.beforeFirstAudio) = loudness.verdict(start: 0, end: 1) else {
+            Issue.record("最初の音声より前の区間が beforeFirstAudio にならない")
+            return
+        }
+    }
+
+    @Test("測定できない PCM 形式の区間は unsupportedFormat として測定不能を返す")
+    func distinguishesUnsupportedFormat() throws {
+        let origin = AudioGetCurrentHostTime()
+        let loudness = TrackLoudness(origin: origin)
+        let format = try #require(AVAudioFormat(
+            commonFormat: .pcmFormatInt16, sampleRate: testSampleRate, channels: 1, interleaved: false))
+        let buffer = try #require(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 480))
+        buffer.frameLength = 480
+        try #require(buffer.int16ChannelData)[0].update(repeating: 0, count: 480)
+
+        loudness.record(CapturedAudio(buffer: buffer, hostTime: origin))
+
+        guard case .unmeasurable(.unsupportedFormat) = loudness.verdict(start: 0, end: 0.01) else {
+            Issue.record("測定できない形式の区間が unsupportedFormat にならない")
+            return
+        }
+    }
+
+    @Test("同じ測定器でレート変更区間を測定不能として記録し、変更前の有音と変更後の無音の時刻を保つ")
+    func measuresSampleRateChangesWithoutShiftingTime() {
+        let origin = AudioGetCurrentHostTime()
+        let loudness = TrackLoudness(origin: origin)
+        loudness.record(constantAudio(
+            value: loudValue, frames: 48_000, sampleRate: testSampleRate,
+            channels: 1, interleaved: false, hostTime: origin))
+        guard case .audible = loudness.verdict(start: 0.25, end: 0.75) else {
+            Issue.record("変更前の区間が audible にならない")
+            return
+        }
+
+        loudness.record(constantAudio(
+            value: silentValue, frames: 24_000, sampleRate: 24_000,
+            channels: 1, interleaved: false, hostTime: origin + hostTicks(milliseconds: 1000)))
+        guard case .unmeasurable(.sampleRateChanged) = loudness.verdict(start: 1.25, end: 1.75) else {
+            Issue.record("変更区間が sampleRateChanged にならない")
+            return
+        }
+
+        loudness.record(constantAudio(
+            value: silentValue, frames: 48_000, sampleRate: testSampleRate,
+            channels: 1, interleaved: false, hostTime: origin + hostTicks(milliseconds: 2000)))
+
+        guard case .audible = loudness.verdict(start: 0.25, end: 0.75) else {
+            Issue.record("変更前の有音区間が失われた")
+            return
+        }
+        guard case .unmeasurable(.sampleRateChanged) = loudness.verdict(start: 0.75, end: 2.25) else {
+            Issue.record("変更区間を含む区間が sampleRateChanged にならない")
+            return
+        }
+        guard case .silent = loudness.verdict(start: 2.6, end: 2.9) else {
+            Issue.record("元のレートに戻った後の無音区間の時刻がずれた")
+            return
+        }
+    }
+
+    @Test("サンプルレートが変わった区間の結果は残し、その前後の無音の結果だけを捨てる")
+    func keepsResultsOverSampleRateChanges() async throws {
+        let origin = AudioGetCurrentHostTime()
+        let audio = AsyncThrowingStream<CapturedAudio, Error> { continuation in
+            for (second, rate) in [48_000.0, 24_000.0, 48_000.0].enumerated() {
+                continuation.yield(constantAudio(
+                    value: silentValue, frames: Int(rate), sampleRate: rate,
+                    channels: 1, interleaved: false,
+                    hostTime: origin + hostTicks(milliseconds: Double(second) * 1000)))
+            }
+            continuation.finish()
+        }
+        let before = TranscriptionResult(text: "前", isFinal: true, start: 0.25, end: 0.75)
+        let partial = TranscriptionResult(text: "変更中", isFinal: false, start: 1.25, end: 1.75)
+        let final = TranscriptionResult(text: "変更中", isFinal: true, start: 1.25, end: 1.75)
+        let after = TranscriptionResult(text: "後", isFinal: true, start: 2.6, end: 2.9)
+        let filtering = SilenceFilteringTranscriber(wrapping: FakeTranscriber(results: [before, partial, final, after]))
+        try await filtering.prepare()
+
+        let results = try await collectResults(try await filtering.transcribe(audio, origin: origin))
+
+        #expect(results == [partial, final])
     }
 
     @Test("区間の一部が保持範囲外へ押し出されていれば測れないとして残り、区間全体が保持範囲内で無音なら捨てられる")

@@ -88,42 +88,38 @@ final class RunAudio {
                 myAudio = try echoCancelled(microphone, reference)
             }
         }
-        var gatedRecording: AudioStream.Continuation?
-        var recordingOutput: AudioStream?
         if let recording {
             let their = try recording(.相手, theirAudio, origin)
             recordings.append(their.finished)
             theirAudio = their.stream
-            if myAudio != nil {
-                let (accepted, continuation) = AudioStream.makeStream(
-                    of: CapturedAudio.self, throwing: Error.self, bufferingPolicy: .bufferingOldest(downstreamBacklogLimit))
-                gatedRecording = continuation
-                let mine = try recording(.自分, accepted, origin)
-                recordings.append(mine.finished)
-                recordingOutput = mine.stream
-            }
         }
         let diarizerTask = await startDiarizer(on: &theirAudio, origin: origin)
         var tracks: [(Track, ResultStream)] = []
         do {
             tracks.append((.相手, try await theirTranscriber.transcribe(theirAudio, origin: origin)))
-        } catch {
-            gatedRecording?.finish(throwing: error)
-            diarizerTask?.cancel()
-            await diarizerTask?.value
-            throw error
-        }
-        if let myTranscriber, let myAudio {
-            tracks.append((.自分, mySegmentedResults(microphone: myAudio, first: myTranscriber, recording: gatedRecording, recordingOutput: recordingOutput, origin: origin)))
-        }
-        do {
+            if let myTranscriber, let myAudio {
+                let gated = try startGatedRecording(origin: origin)
+                tracks.append((.自分, mySegmentedResults(
+                    microphone: myAudio, first: myTranscriber,
+                    recording: gated?.input, recordingOutput: gated?.output, origin: origin)))
+            }
             try await relay(tracks, marksDuplicates)
         } catch {
+            stop()
             diarizerTask?.cancel()
             await diarizerTask?.value
             throw error
         }
         await diarizerTask?.value
+    }
+
+    private func startGatedRecording(origin: UInt64) throws -> (input: AudioStream.Continuation, output: AudioStream)? {
+        guard let recording else { return nil }
+        let (accepted, input) = AudioStream.makeStream(
+            of: CapturedAudio.self, throwing: Error.self, bufferingPolicy: .bufferingOldest(downstreamBacklogLimit))
+        let mine = try recording(.自分, accepted, origin)
+        recordings.append(mine.finished)
+        return (input, mine.stream)
     }
 
     private func startDiarizer(on audio: inout AudioStream, origin: UInt64) async -> Task<Void, Never>? {
