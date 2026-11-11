@@ -115,7 +115,7 @@ struct MultiTrackRelayITTests {
         let task = try await connect(to: server, port: port)
         defer { task.cancel(with: .goingAway, reason: nil) }
 
-        let times = [WordTime(location: 0, length: 2, start: 1, end: 1.5)]
+        let times = [WordTime(utf16Offset: 0, utf16Length: 2, start: 1, end: 1.5)]
         let mine = finishedStream([TranscriptionResult(text: "はい", isFinal: true, start: 1, end: 1.5, wordTimes: times)])
         let theirs = finishedStream([TranscriptionResult(text: "はい", isFinal: true, start: 1, end: 1.5, wordTimes: times)])
         try await relay(tracks: [(.自分, mine), (.相手, theirs)], to: server, duplicates: nil)

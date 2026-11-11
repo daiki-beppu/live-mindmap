@@ -76,7 +76,7 @@ private final class Lines: @unchecked Sendable {
     }
 }
 
-private let wordTimes = [WordTime(location: 0, length: 2, start: 0.1, end: 0.3)]
+private let wordTimes = [WordTime(utf16Offset: 0, utf16Length: 2, start: 0.1, end: 0.3)]
 private let diarization: [SpeakerDiarization] = [
     .segment(SpeakerSegment(start: 0.1, end: 0.3, slot: 1, isFinal: true)),
     .segment(SpeakerSegment(start: 0.3, end: 0.4, slot: 0, isFinal: false)),

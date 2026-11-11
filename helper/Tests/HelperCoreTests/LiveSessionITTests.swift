@@ -452,7 +452,7 @@ struct LiveSessionITTests {
         let off = HelperEvent.speakerOff(start: offsetSeconds(from: fixture.origin, to: fixture.time), reason: .途中で停止)
         let remark = event(from: TranscriptionResult(text: finalText, isFinal: true, start: 0, end: 1), track: .相手)
         let state = HelperEvent.selfPauseState(SelfPauseCarryOver(manual: .none, basis: .unknown, lastKnown: .using, idleFor: 0))
-        let resumed = HelperEvent.selfPause(paused: false, reason: .automatic, start: offsetSeconds(from: fixture.origin, to: fixture.time))
+        let resumed = HelperEvent.selfPause(.resumed(.automatic), start: offsetSeconds(from: fixture.origin, to: fixture.time))
         for event in [segment, settled, off, remark, state, resumed] { try await client.waitForEvent(event) }
         let speakerFrames = client.frames.value.filter { text in [segment, settled, off].contains { (try? $0.jsonString()) == text } }
         #expect(speakerFrames == (try [segment, settled, off].map { try $0.jsonString() }))

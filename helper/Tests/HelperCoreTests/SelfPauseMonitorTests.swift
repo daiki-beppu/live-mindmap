@@ -122,7 +122,7 @@ private final class Harness: @unchecked Sendable {
 
     var pauses: [(paused: Bool, reason: SelfPauseReason, start: Double)] {
         events.value.compactMap {
-            if case let .selfPause(paused, reason, start) = $0 { return (paused, reason, start) }
+            if case let .selfPause(state, start) = $0 { return (state.paused, state.reason, start) }
             return nil
         }
     }

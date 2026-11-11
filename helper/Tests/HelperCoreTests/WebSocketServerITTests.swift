@@ -187,7 +187,7 @@ struct WebSocketServerITTests {
             .screen(start: 2, image: "latest", lines: []),
             .screenOff(start: 3, reason: .許可なし),
             .tapSilent(start: 10),
-            .selfPause(paused: true, reason: .manual, start: 3),
+            .selfPause(.paused(.manual), start: 3),
             .selfPauseState(.initial),
             .speakerOff(start: 1, reason: .モデルなし),
             .fileDuration(duration: 120),
@@ -278,7 +278,7 @@ struct WebSocketServerITTests {
         }
         #expect(try await receiveText(client) == duration.jsonString())
         #expect(try await receiveText(client) == markerEvent().jsonString())
-        #expect(diagnostics.text.contains("file-duration") || diagnostics.text.contains("fileDuration"))
+        #expect(diagnostics.text.contains("helper event file-duration:"))
         #expect(diagnostics.text.contains("partial"))
     }
 
@@ -644,8 +644,8 @@ struct WebSocketServerITTests {
         let port = try await server.start()
         defer { Task { await server.stop() } }
 
-        let paused = HelperEvent.selfPause(paused: true, reason: .manual, start: 3)
-        let resumed = HelperEvent.selfPause(paused: false, reason: .manual, start: 9)
+        let paused = HelperEvent.selfPause(.paused(.manual), start: 3)
+        let resumed = HelperEvent.selfPause(.resumed(.manual), start: 9)
         await server.send(paused)
         await server.send(resumed)
 

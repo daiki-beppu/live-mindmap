@@ -72,21 +72,21 @@ struct SelfPauseAutomaticTests {
         #expect(rule.read(idle, at: 0) == nil)
         #expect(rule.read(idle, at: 1) == nil)
         #expect(rule.paused == false)
-        #expect(rule.read(idle, at: 2) == SelfPauseChange(paused: true, reason: .automatic))
+        #expect(rule.read(idle, at: 2) == SelfPauseChange.paused(.automatic))
         #expect(rule.paused == true)
         #expect(rule.read(idle, at: 3) == nil)
-        #expect(rule.read(using, at: 3.5) == SelfPauseChange(paused: false, reason: .automatic))
+        #expect(rule.read(using, at: 3.5) == SelfPauseChange.resumed(.automatic))
         #expect(rule.paused == false)
         #expect(rule.read(idle, at: 4) == nil)
         #expect(rule.read(idle, at: 5) == nil)
-        #expect(rule.read(idle, at: 6) == SelfPauseChange(paused: true, reason: .automatic))
+        #expect(rule.read(idle, at: 6) == SelfPauseChange.paused(.automatic))
     }
 
     @Test("読み取りの間隔が待ちより長くても、経過時間の分だけ待ちが進む（0.5 秒ごとの読み取りに限らない）")
     func elapsedTimeAdvancesWait() {
         var rule = makeRule(wait: 3)
         #expect(rule.read(idle, at: 10) == nil)
-        #expect(rule.read(idle, at: 20) == SelfPauseChange(paused: true, reason: .automatic))
+        #expect(rule.read(idle, at: 20) == SelfPauseChange.paused(.automatic))
     }
 
     @Test("既定の待ちは 3 秒")
@@ -95,7 +95,7 @@ struct SelfPauseAutomaticTests {
         var rule = SelfPauseRule(app: app, ownPID: me)
         _ = rule.read(idle, at: 0)
         #expect(rule.read(idle, at: 2.9) == nil)
-        #expect(rule.read(idle, at: 3) == SelfPauseChange(paused: true, reason: .automatic))
+        #expect(rule.read(idle, at: 3) == SelfPauseChange.paused(.automatic))
     }
 
     @Test("会議アプリが一瞬だけマイクを閉じても休止しない（待ちの途中で using に戻る）")
@@ -109,7 +109,7 @@ struct SelfPauseAutomaticTests {
         #expect(rule.read(idle, at: 3.5) == nil)
         #expect(rule.read(idle, at: 5) == nil)
         #expect(rule.paused == false)
-        #expect(rule.read(idle, at: 6.5) == SelfPauseChange(paused: true, reason: .automatic))
+        #expect(rule.read(idle, at: 6.5) == SelfPauseChange.paused(.automatic))
     }
 
     @Test("「分からない」の間はすぐ取り、理由は「判定できない」。読めない一瞬をはさんで同じ「使っていない」に戻ったら待ちをやり直さない")
@@ -121,7 +121,7 @@ struct SelfPauseAutomaticTests {
         #expect(rule.read(nil, at: 10) == nil)
         #expect(rule.paused == false)
         #expect(rule.read(idle, at: 10.5) == nil)
-        #expect(rule.read(idle, at: 11.5) == SelfPauseChange(paused: true, reason: .automatic))
+        #expect(rule.read(idle, at: 11.5) == SelfPauseChange.paused(.automatic))
     }
 
     @Test("休止中に「分からない」になると取り、理由は「判定できない」。戻ると待たずに休止する（待ちは済んでいる）")
@@ -130,8 +130,8 @@ struct SelfPauseAutomaticTests {
         _ = rule.read(idle, at: 0)
         _ = rule.read(idle, at: 2)
         #expect(rule.paused == true)
-        #expect(rule.read(nil, at: 3) == SelfPauseChange(paused: false, reason: .undetermined))
-        #expect(rule.read(idle, at: 3.5) == SelfPauseChange(paused: true, reason: .automatic))
+        #expect(rule.read(nil, at: 3) == SelfPauseChange.resumed(.undetermined))
+        #expect(rule.read(idle, at: 3.5) == SelfPauseChange.paused(.automatic))
     }
 
     @Test("「分からない」をはさんで using → idle に戻ったときは待ちをやり直す")
@@ -143,7 +143,7 @@ struct SelfPauseAutomaticTests {
         _ = rule.read(nil, at: 2)
         #expect(rule.read(idle, at: 2.5) == nil)
         #expect(rule.read(idle, at: 3.5) == nil)
-        #expect(rule.read(idle, at: 4.5) == SelfPauseChange(paused: true, reason: .automatic))
+        #expect(rule.read(idle, at: 4.5) == SelfPauseChange.paused(.automatic))
     }
 
     @Test("--app に当たるプロセスが無いときは、休止しない（unknown）")
@@ -167,7 +167,7 @@ struct SelfPauseManualTests {
     func manualPauseWhileUsing() {
         var rule = makeRule()
         _ = rule.read(using, at: 0)
-        #expect(rule.press(paused: true, at: 1) == SelfPauseChange(paused: true, reason: .manual))
+        #expect(rule.press(paused: true, at: 1) == SelfPauseChange.paused(.manual))
         #expect(rule.paused == true)
         #expect(rule.reason == .manual)
         #expect(rule.carryOver.manual == .pause)
@@ -184,7 +184,7 @@ struct SelfPauseManualTests {
         #expect(rule.read(nil, at: 3) == nil)
         #expect(rule.read(using, at: 4) == nil)
         #expect(rule.paused == true)
-        #expect(rule.read(idle, at: 5) == SelfPauseChange(paused: true, reason: .automatic))
+        #expect(rule.read(idle, at: 5) == SelfPauseChange.paused(.automatic))
         #expect(rule.carryOver.manual == .none)
         #expect(rule.carryOver.basis == .unknown)
         #expect(rule.read(idle, at: 5.5) == nil)
@@ -194,7 +194,7 @@ struct SelfPauseManualTests {
     @Test("手動で取った状態（休止中に再開）は、会議アプリがマイクを開くと外れ、自動（取る）に戻る")
     func manualTakeReleasedWhenAppOpensMic() {
         var rule = pausedAutomatically()
-        #expect(rule.press(paused: false, at: 3) == SelfPauseChange(paused: false, reason: .manual))
+        #expect(rule.press(paused: false, at: 3) == SelfPauseChange.resumed(.manual))
         #expect(rule.carryOver.manual == .take)
         #expect(rule.carryOver.basis == .idle)
         #expect(rule.read(idle, at: 4) == nil)
@@ -203,7 +203,7 @@ struct SelfPauseManualTests {
         #expect(rule.read(using, at: 21) == nil)
         #expect(rule.carryOver.manual == .none)
         #expect(rule.read(idle, at: 22) == nil)
-        #expect(rule.read(idle, at: 24) == SelfPauseChange(paused: true, reason: .automatic))
+        #expect(rule.read(idle, at: 24) == SelfPauseChange.paused(.automatic))
     }
 
     @Test("押した時点の自動の結論と同じ指示は、手動にしない。手動の休止中に使っている状態で取る指示を押すと、手動は無くなる")
@@ -211,7 +211,7 @@ struct SelfPauseManualTests {
         var rule = makeRule()
         _ = rule.read(using, at: 0)
         _ = rule.press(paused: true, at: 1)
-        #expect(rule.press(paused: false, at: 2) == SelfPauseChange(paused: false, reason: .manual))
+        #expect(rule.press(paused: false, at: 2) == SelfPauseChange.resumed(.manual))
         #expect(rule.carryOver.manual == .none)
         #expect(rule.carryOver.basis == .unknown)
         #expect(rule.paused == false)
@@ -220,12 +220,12 @@ struct SelfPauseManualTests {
     @Test("「分からない」の間に押した休止は手動の休止になり、基準は最初に読めた値になる。使っている → 使っていないで外れる")
     func manualPauseWhileUnknownTakesFirstReadAsBasis() {
         var rule = makeRule()
-        #expect(rule.press(paused: true, at: 0) == SelfPauseChange(paused: true, reason: .manual))
+        #expect(rule.press(paused: true, at: 0) == SelfPauseChange.paused(.manual))
         #expect(rule.carryOver.basis == .unknown)
         #expect(rule.read(using, at: 1) == nil)
         #expect(rule.carryOver.basis == .using)
         #expect(rule.carryOver.manual == .pause)
-        #expect(rule.read(idle, at: 2) == SelfPauseChange(paused: true, reason: .automatic))
+        #expect(rule.read(idle, at: 2) == SelfPauseChange.paused(.automatic))
         #expect(rule.carryOver.manual == .none)
     }
 
@@ -240,10 +240,10 @@ struct SelfPauseManualTests {
     func manualPauseBecomesAutomaticWhenConclusionCatchesUp() {
         var rule = makeRule(wait: 2)
         _ = rule.read(idle, at: 0)
-        #expect(rule.press(paused: true, at: 0.5) == SelfPauseChange(paused: true, reason: .manual))
+        #expect(rule.press(paused: true, at: 0.5) == SelfPauseChange.paused(.manual))
         #expect(rule.carryOver.manual == .pause)
         #expect(rule.read(idle, at: 1) == nil)
-        #expect(rule.read(idle, at: 2) == SelfPauseChange(paused: true, reason: .automatic))
+        #expect(rule.read(idle, at: 2) == SelfPauseChange.paused(.automatic))
         #expect(rule.carryOver.manual == .none)
         #expect(rule.read(idle, at: 3) == nil)
     }
@@ -266,7 +266,7 @@ struct SelfPauseRestartTests {
         _ = rule.read(idle, at: 0)
         _ = rule.read(idle, at: 1.5)
         #expect(rule.carryOver == SelfPauseCarryOver(manual: .none, basis: .unknown, lastKnown: .idle, idleFor: 1.5))
-        #expect(rule.press(paused: true, at: 1.5) == SelfPauseChange(paused: true, reason: .manual))
+        #expect(rule.press(paused: true, at: 1.5) == SelfPauseChange.paused(.manual))
         #expect(rule.carryOver == SelfPauseCarryOver(manual: .pause, basis: .idle, lastKnown: .idle, idleFor: 1.5))
     }
 
@@ -282,14 +282,14 @@ struct SelfPauseRestartTests {
     func restoredIdleProgressSkipsWait() {
         var rule = makeRule(wait: 3, restoring: SelfPauseCarryOver(manual: .none, basis: .unknown, lastKnown: .idle, idleFor: 3))
         #expect(rule.paused == false)
-        #expect(rule.read(idle, at: 0) == SelfPauseChange(paused: true, reason: .automatic))
+        #expect(rule.read(idle, at: 0) == SelfPauseChange.paused(.automatic))
     }
 
     @Test("復元した待ちの進み具合から続きを数える")
     func restoredIdleProgressContinues() {
         var rule = makeRule(wait: 3, restoring: SelfPauseCarryOver(manual: .none, basis: .unknown, lastKnown: .idle, idleFor: 2))
         #expect(rule.read(idle, at: 0) == nil)
-        #expect(rule.read(idle, at: 1) == SelfPauseChange(paused: true, reason: .automatic))
+        #expect(rule.read(idle, at: 1) == SelfPauseChange.paused(.automatic))
     }
 
     @Test("復元後に最後に読めた値と違う値が読めたら、待ちはやり直す")
@@ -297,7 +297,7 @@ struct SelfPauseRestartTests {
         var rule = makeRule(wait: 2, restoring: SelfPauseCarryOver(manual: .none, basis: .unknown, lastKnown: .using, idleFor: 0))
         #expect(rule.read(idle, at: 0) == nil)
         #expect(rule.read(idle, at: 1) == nil)
-        #expect(rule.read(idle, at: 2) == SelfPauseChange(paused: true, reason: .automatic))
+        #expect(rule.read(idle, at: 2) == SelfPauseChange.paused(.automatic))
     }
 
     @Test("手動の休止を復元しても、起動し直しや読めない一瞬では外れない。基準と同じ値が読めても外れない")
@@ -306,7 +306,7 @@ struct SelfPauseRestartTests {
         #expect(rule.read(nil, at: 0) == nil)
         #expect(rule.read(using, at: 1) == nil)
         #expect(rule.paused == true)
-        #expect(rule.read(idle, at: 2) == SelfPauseChange(paused: true, reason: .automatic))
+        #expect(rule.read(idle, at: 2) == SelfPauseChange.paused(.automatic))
     }
 
     private typealias Reading = (processes: [InputProcess]?, time: Double)
@@ -474,7 +474,7 @@ struct SelfPauseInvariantTests {
             }
             let expectChange = beforePaused != next.rule.paused || (next.rule.paused && beforeReason != next.rule.reason)
             if (change != nil) != expectChange { broken.append("read の報告の有無が状態の変化と合わない") }
-            if let change, change != SelfPauseChange(paused: next.rule.paused, reason: next.rule.reason) { broken.append("read の報告が状態と合わない") }
+            if let change, change != next.rule.state { broken.append("read の報告が状態と合わない") }
         case .pressPause, .pressTake:
             let wantsPause = step == .pressPause
             if wantsPause == next.rule.paused {
@@ -482,7 +482,7 @@ struct SelfPauseInvariantTests {
                 return nil
             }
             let change = next.rule.press(paused: wantsPause, at: next.now)
-            if change != SelfPauseChange(paused: wantsPause, reason: .manual) { broken.append("press の報告が手動の変化でない") }
+            if change != (wantsPause ? SelfPauseChange.paused(.manual) : .resumed(.manual)) { broken.append("press の報告が手動の変化でない") }
             next.pressed = next.rule.carryOver.manual
             next.changes = 0
         case .restart:
