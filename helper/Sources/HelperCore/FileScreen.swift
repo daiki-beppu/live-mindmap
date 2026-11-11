@@ -13,42 +13,35 @@ struct ScreenFrameThinner {
     }
 }
 
-/// 映像の読み出しは、デコードが済むまでスレッドを止めて待つ。Swift の並行処理のスレッドで呼ばず、専用の直列のキューで行う（音声の `fileReadingQueue` と同じ事情。Issue #1086）。
-let fileScreenQueue = DispatchQueue(label: "live-mindmap.file-screen")
-
-func onFileScreenQueue<T: Sendable>(_ body: @escaping @Sendable () -> T) async -> T {
-    await withCheckedContinuation { continuation in
-        fileScreenQueue.async { continuation.resume(returning: body()) }
-    }
-}
-
-/// AVAssetReader の読み出しと停止（`copyNextSampleBuffer`・`cancelReading`）は `fileScreenQueue` の上（と `deinit`）でだけ行う。読み出し中に別のスレッドから `cancelReading` が入ると落ちる（Issue #1198）。
-final class FileScreenReading: @unchecked Sendable {
+actor FileScreenReader {
     enum Opened {
         case noVideo
         case unreadable(String)
-        case reading(FileScreenReading)
+        case reading(FileScreenReader)
     }
+
+    private nonisolated let queue: DispatchSerialQueue
+    nonisolated var unownedExecutor: UnownedSerialExecutor { queue.asUnownedSerialExecutor() }
 
     private let reader: AVAssetReader
     private let output: AVAssetReaderTrackOutput
     private let imageContext = CIContext()
     private var thinner = ScreenFrameThinner()
     private var detector = ScreenChangeDetector.withoutTabDetection()
-    private(set) var lastTime: Double
-    var allEventsSentBefore: Double? { detector.fileProgress }
+    private var lastTime: Double
     private var finished = false
-    private let cancelLock = NSLock()
-    private var cancelled = false
-    private var isCancelled: Bool { cancelLock.withLock { cancelled } }
 
-    private init(reader: AVAssetReader, output: AVAssetReaderTrackOutput, startingAt: Double) {
+    private init(reader: AVAssetReader, output: AVAssetReaderTrackOutput, startingAt: Double, queue: DispatchSerialQueue) {
+        self.queue = queue
         self.reader = reader
         self.output = output
         self.lastTime = startingAt
     }
 
-    deinit { reader.cancelReading() }
+    isolated deinit {
+        dispatchPrecondition(condition: .onQueue(queue))
+        reader.cancelReading()
+    }
 
     static func open(_ url: URL, startingAt: Double = 0) async -> Opened {
         let asset = AVURLAsset(url: url)
@@ -59,60 +52,73 @@ final class FileScreenReading: @unchecked Sendable {
             return .unreadable(error.localizedDescription)
         }
         guard let track = tracks.first else { return .noVideo }
-        return await onFileScreenQueue { start(asset, track, startingAt: startingAt) }
+        let queue = DispatchSerialQueue(label: "live-mindmap.file-screen")
+        return await withCheckedContinuation { continuation in
+            queue.async {
+                continuation.resume(returning: start(asset, track, startingAt: startingAt, queue: queue))
+            }
+        }
     }
 
-    private static func start(_ asset: AVURLAsset, _ track: AVAssetTrack, startingAt: Double) -> Opened {
+    private static func start(_ asset: AVURLAsset, _ track: AVAssetTrack, startingAt: Double, queue: DispatchSerialQueue) -> Opened {
         do {
+            dispatchPrecondition(condition: .onQueue(queue))
             let reader = try AVAssetReader(asset: asset)
+            var started = false
+            defer { if !started { reader.cancelReading() } }
             let output = AVAssetReaderTrackOutput(
                 track: track, outputSettings: [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA])
             guard reader.canAdd(output) else { return .unreadable("映像を BGRA として読み出せない") }
             reader.add(output)
             if startingAt > 0 { reader.timeRange = CMTimeRange(start: CMTime(seconds: startingAt, preferredTimescale: 600), duration: .positiveInfinity) }
             guard reader.startReading() else { return .unreadable(reader.error?.localizedDescription ?? "不明") }
-            return .reading(FileScreenReading(reader: reader, output: output, startingAt: startingAt))
+            started = true
+            return .reading(FileScreenReader(reader: reader, output: output, startingAt: startingAt, queue: queue))
         } catch {
             return .unreadable(error.localizedDescription)
         }
     }
 
     func cancel() {
-        let first = cancelLock.withLock { () -> Bool in
-            defer { cancelled = true }
-            return !cancelled
-        }
-        if first { fileScreenQueue.async { self.reader.cancelReading() } }
+        dispatchPrecondition(condition: .onQueue(queue))
+        finished = true
+        reader.cancelReading()
     }
 
-    var readerStatus: AVAssetReader.Status { reader.status }
+    var readerStatus: AVAssetReader.Status {
+        dispatchPrecondition(condition: .onQueue(queue))
+        return reader.status
+    }
 
     enum Step {
-        case frame
-        case events([HelperEvent])
+        case frame(events: [HelperEvent], time: Double, allEventsSentBefore: Double?)
         case end
     }
 
     func step() -> Step {
-        if finished || isCancelled { return .end }
-        if !isCancelled, let sample = output.copyNextSampleBuffer() {
+        dispatchPrecondition(condition: .onQueue(queue))
+        func snapshot(_ events: [HelperEvent]) -> Step {
+            .frame(events: events, time: lastTime, allEventsSentBefore: detector.fileProgress)
+        }
+        if finished || Task.isCancelled { return .end }
+        if let sample = output.copyNextSampleBuffer() {
             let time = CMSampleBufferGetPresentationTimeStamp(sample).seconds
-            guard time.isFinite, thinner.admits(time), let rendered = render(sample) else { return .frame }
+            guard time.isFinite, thinner.admits(time), let rendered = render(sample) else { return snapshot([]) }
             lastTime = time
             let frame = ScreenFrame(luma: rendered.luma, time: time, title: nil)
             let events = detector.fileScreenEvent(for: frame, encode: { screenShot(of: rendered.image) })
-            return events.isEmpty ? .frame : .events(events)
+            return snapshot(events)
         }
         finished = true
-        guard !isCancelled else { return .end }
+        guard !Task.isCancelled else { return .end }
         if reader.status == .failed {
             printScreenError("動画の映像を最後まで読めなかった（音声だけで続ける）: \(reader.error?.localizedDescription ?? "不明")")
             var events = detector.screenEvent(windowGoneAt: lastTime)
             events.append(.screenOff(start: lastTime, reason: .許可なし))
-            return .events(events)
+            return snapshot(events)
         }
         let events = detector.finish()
-        return events.isEmpty ? .end : .events(events)
+        return events.isEmpty ? .end : snapshot(events)
     }
 
     private func render(_ sample: CMSampleBuffer) -> (luma: [UInt8], image: CGImage)? {
@@ -152,7 +158,7 @@ func relayFileScreen(
     from url: URL, to server: WebSocketServer, progress: FileReadingAlignment.Screen,
     startingAt: Double = 0, gate: FileReadingGate? = nil, afterFrame: (@Sendable (Double) async -> Void)?
 ) async {
-    switch await FileScreenReading.open(url, startingAt: startingAt) {
+    switch await FileScreenReader.open(url, startingAt: startingAt) {
     case .noVideo:
         break
     case .unreadable(let reason):
@@ -162,22 +168,15 @@ func relayFileScreen(
         await withTaskCancellationHandler {
             while !Task.isCancelled {
                 do { try await gate?.waitOpen() } catch { break }
-                let stepped = await onFileScreenQueue { () -> (events: [HelperEvent], time: Double, allEventsSentBefore: Double?)? in
-                    switch reading.step() {
-                    case .frame: return ([], reading.lastTime, reading.allEventsSentBefore)
-                    case .events(let events): return (events, reading.lastTime, reading.allEventsSentBefore)
-                    case .end: return nil
-                    }
-                }
-                guard let (events, time, allEventsSentBefore) = stepped else { break }
+                guard case .frame(let events, let time, let allEventsSentBefore) = await reading.step() else { break }
                 for event in events where !Task.isCancelled { await server.send(event) }
                 if let allEventsSentBefore { await progress.sentAllScreenEvents(before: allEventsSentBefore) }
                 await afterFrame?(time)
             }
         } onCancel: {
-            reading.cancel()
+            Task { await reading.cancel() }
         }
-        reading.cancel()
+        await reading.cancel()
     }
     await progress.finish()
 }
