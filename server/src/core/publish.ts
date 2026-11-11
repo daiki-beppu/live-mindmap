@@ -2,6 +2,7 @@ import { Schema } from "effect";
 import { escapeCell } from "./markdownTable.ts";
 import { SEALED_SCRIPT_ID, unlockPageScript } from "./passphrase.ts";
 import type { Sealed } from "./passphrase.ts";
+import { standaloneSource } from "./standaloneScript.ts";
 
 export const PUBLISH_DEFAULT_DAYS = 7;
 export const PUBLISH_MAX_DAYS = 30;
@@ -56,11 +57,13 @@ export function lockedPublishPage(sealed: Sealed): string {
     + `<script type="application/json" id="${SEALED_SCRIPT_ID}">${JSON.stringify(sealed).replaceAll("<", "\\u003c")}</script><script>${unlockPageScript()}</script></body></html>`;
 }
 
-const isPastExpiryAt = (expiresAtMs: number, nowMs: number): boolean => expiresAtMs <= nowMs;
+function isPastExpiryAt(expiresAtMs: number, nowMs: number): boolean {
+  return expiresAtMs <= nowMs;
+}
 
 export function publishWorkerScript(expiresAtMs: number): string {
   return `const EXPIRES_AT = ${JSON.stringify(expiresAtMs)};
-const isPastExpiryAt = ${isPastExpiryAt.toString()};
+${standaloneSource(isPastExpiryAt)}
 const AI_CRAWLERS = ${JSON.stringify(AI_CRAWLER_USER_AGENTS)};
 const ROBOTS_TAG = ${JSON.stringify(ROBOTS_TAG)};
 

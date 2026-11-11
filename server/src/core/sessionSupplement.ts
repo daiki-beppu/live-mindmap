@@ -8,6 +8,8 @@ type Trigger = { readonly input: Omit<SupplementInput, "explainedTerms">; readon
 type Pending = { readonly row: Omit<typeof SupplementEvent.Type, "reflectedAt">; readonly targets: readonly SupplementContext[] };
 type Retained = { readonly pending: Pending | undefined; readonly lastAddedAt: number | undefined };
 
+const ADDED_COOLDOWN_MS = 60_000;
+
 export function supplementTargets(before: MeetingMap, after: MeetingMap): string[] {
   return after.order.filter((id) => {
     const node = after.nodes[id]!;
@@ -53,13 +55,13 @@ export function validateSupplement(pending: Pending, state: SessionState) {
   return;
 }
 
-export const makeSessionSupplement = Effect.fnUntraced(function* (
+export const forkSupplementWorker = Effect.fnUntraced(function* (
   read: Effect.Effect<SessionState>,
   carriedTerms: readonly string[],
   synchronized: <A>(effect: Effect.Effect<A>) => Effect.Effect<A>,
 ) {
   const scope = yield* Effect.scope;
-  const triggers = yield* Queue.sliding<Trigger>(1);
+  const latestTrigger = yield* Queue.sliding<Trigger>(1);
   const latest = yield* Ref.make<Deferred.Deferred<void> | undefined>(undefined);
   const retained = yield* Ref.make<Retained>({ pending: undefined, lastAddedAt: undefined });
   const run = Effect.fnUntraced(function* (trigger: Trigger) {
@@ -79,7 +81,7 @@ export const makeSessionSupplement = Effect.fnUntraced(function* (
     if (decoded.op !== null) yield* Ref.update(retained, (s) => ({ ...s, pending: result }));
   });
   const worker = Effect.forever(Effect.gen(function* () {
-    const trigger = yield* Queue.take(triggers);
+    const trigger = yield* Queue.take(latestTrigger);
     yield* run(trigger).pipe(
       Effect.ignore({ log: "Warn", message: "この回の補足の生成を諦めます" }),
       Effect.ensuring(Deferred.succeed(trigger.done, undefined)),
@@ -93,13 +95,13 @@ export const makeSessionSupplement = Effect.fnUntraced(function* (
       if (targets.length === 0) return;
       const done = yield* Deferred.make<void>();
       yield* Ref.set(latest, done);
-      yield* Queue.offer(triggers, { input: { targets, carriedTerms }, ask, done });
+      yield* Queue.offer(latestTrigger, { input: { targets, carriedTerms }, ask, done });
     }),
     take: Effect.fnUntraced(function* (force: boolean) {
       const now = yield* Clock.currentTimeMillis;
       return yield* Ref.modify(retained, (s): [Pending | undefined, Retained] => {
         const pending = s.pending;
-        if (pending === undefined || (!force && pending.row.op !== null && pending.row.op.op !== "delete" && s.lastAddedAt !== undefined && now - s.lastAddedAt < 60_000)) return [undefined, s];
+        if (pending === undefined || (!force && pending.row.op !== null && pending.row.op.op !== "delete" && s.lastAddedAt !== undefined && now - s.lastAddedAt < ADDED_COOLDOWN_MS)) return [undefined, s];
         return [pending, { ...s, pending: undefined }];
       });
     }),

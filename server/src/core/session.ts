@@ -11,7 +11,7 @@ import { cloneNode, Dropped, emptyMap, Op, pointStatus, type DiffOutput, type Me
 import { reflectDiff, reflectSupplement, type ReflectionState } from "./reflection.ts";
 import { SupplementCategory, SupplementOperation } from "./supplement.ts";
 import type { SupplementAsk } from "./supplement.ts";
-import { makeSessionSupplement, SupplementInvalid, validateSupplement } from "./sessionSupplement.ts";
+import { forkSupplementWorker, SupplementInvalid, validateSupplement } from "./sessionSupplement.ts";
 import * as ScreenQueue from "./screenQueue.ts";
 import { hasContent, Remark } from "./remark.ts";
 import { acceptInferredNames, nameSpeaker as updateSpeakerName, restoreSpeakerName, speakerNameMap, SpeakerNameLogEvent, type SpeakerNameChange, type SpeakerNameTable } from "./speakerNames.ts";
@@ -375,7 +375,7 @@ const openSession = Effect.fnUntraced(function* (initial: SessionState, screens:
       Ref.update(ref, (state) => ({ ...state, retryEnabled: false, nextRetryAt: undefined, diffUpdate: { status: "stopped" as const } })),
     )),
   };
-  const supplements = yield* makeSessionSupplement(Ref.get(ref), carriedTerms, screenTransitions.withPermit);
+  const supplements = yield* forkSupplementWorker(Ref.get(ref), carriedTerms, screenTransitions.withPermit);
   const reflectPending = Effect.fnUntraced(function* (reflection: { readonly kind: "diff"; readonly reflectedAt: number } | { readonly kind: "stop" }) {
     const pending = yield* supplements.take(reflection.kind === "stop");
     if (pending === undefined) return false;
