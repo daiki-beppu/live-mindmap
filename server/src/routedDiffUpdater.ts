@@ -1,4 +1,4 @@
-import { Clock, Effect, Schema } from "effect";
+import { Cause, Clock, Effect, Exit, Result, Schema } from "effect";
 import { DiffUpdatePaused, DiffUpdater, type DiffInput, type PreviousResponse, type Remark, type ScreenChange } from "./core/index.ts";
 import type { JudgeAsk, JudgeQuestion } from "./systemOne.ts";
 
@@ -24,11 +24,25 @@ const dedupById = (remarks: readonly Remark[]) => {
 type Destination = typeof SONNET | typeof HAIKU;
 type Parts = { readonly ask: JudgeAsk; readonly sonnet: DiffUpdater["Service"]; readonly haiku: DiffUpdater["Service"] };
 
+const routeScreens = (unseen: Readonly<Record<Destination, readonly ScreenChange[]>>, to: Destination, arrived: readonly ScreenChange[]) => {
+  const other = to === SONNET ? HAIKU : SONNET;
+  return {
+    send: [...unseen[to], ...arrived],
+    unseenAfter: { ...unseen, [to]: [], [other]: [...unseen[other], ...arrived].slice(-UNSEEN_SCREENS_MAX) },
+  };
+};
+
+const coreRedeliversScreens = (exit: Exit.Exit<unknown, unknown>): boolean => {
+  if (Exit.isSuccess(exit)) return false;
+  const failure = Cause.findError(exit.cause);
+  return Result.isSuccess(failure) && Schema.is(DiffUpdatePaused)(failure.success);
+};
+
 export const routedUpdater = (parts: Parts) => Effect.sync(() => {
   let retained: readonly Remark[] = [];
   let last: Destination | undefined;
   const own: Record<Destination, PreviousResponse | undefined> = { [SONNET]: undefined, [HAIKU]: undefined };
-  const unseen: Record<Destination, readonly ScreenChange[]> = { [SONNET]: [], [HAIKU]: [] };
+  let unseen: Readonly<Record<Destination, readonly ScreenChange[]>> = { [SONNET]: [], [HAIKU]: [] };
 
   const update = Effect.fnUntraced(function* (input: DiffInput) {
     if (last !== undefined) own[last] = input.previousResponse;
@@ -44,12 +58,7 @@ export const routedUpdater = (parts: Parts) => Effect.sync(() => {
     const destination: Destination = likelihood !== undefined && likelihood < ROUTE_THRESHOLD ? HAIKU : SONNET;
     last = destination;
 
-    const arrived = input.screens ?? [];
-    const screens = [...unseen[destination], ...arrived];
-    const unseenBefore = { ...unseen };
-    unseen[destination] = [];
-    const other = destination === SONNET ? HAIKU : SONNET;
-    unseen[other] = [...unseen[other], ...arrived].slice(-UNSEEN_SCREENS_MAX);
+    const { send: screens, unseenAfter } = routeScreens(unseen, destination, input.screens ?? []);
     const { previousResponse: _dropped, screens: _screens, ...rest } = input;
     const handed = own[destination];
     const judge = outcome.ok
@@ -60,11 +69,12 @@ export const routedUpdater = (parts: Parts) => Effect.sync(() => {
       ...rest,
       ...(screens.length ? { screens } : {}),
       ...(handed ? { previousResponse: handed } : {}),
-    }).pipe(Effect.mapError((error) => {
-      if (!Schema.is(DiffUpdatePaused)(error)) return { _tag: error._tag, message: error.message, judge };
-      Object.assign(unseen, unseenBefore);
-      return error;
-    }));
+    }).pipe(
+      Effect.onExit((exit) => Effect.sync(() => {
+        if (!coreRedeliversScreens(exit)) unseen = unseenAfter;
+      })),
+      Effect.mapError((error) => Schema.is(DiffUpdatePaused)(error) ? error : { _tag: error._tag, message: error.message, judge }),
+    );
     return { ...result, judge, ...(selected.supplement === undefined ? {} : { supplement: selected.supplement }) };
   });
 
