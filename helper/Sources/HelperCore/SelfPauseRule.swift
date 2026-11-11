@@ -1,18 +1,18 @@
 import Foundation
 
-public enum InputJudgement: String, Sendable, Equatable {
+public enum InputJudgement: String, Sendable, Equatable, CaseIterable {
     case using
     case idle
     case unknown
 }
 
-public enum SelfPauseManual: String, Sendable, Equatable {
+public enum SelfPauseManual: String, Sendable, Equatable, CaseIterable {
     case none
     case pause
     case take
 }
 
-public enum SelfPauseReason: String, Sendable, Equatable {
+public enum SelfPauseReason: String, Sendable, Equatable, CaseIterable {
     case manual = "手動"
     case automatic = "自動"
     case undetermined = "判定できない"
@@ -30,13 +30,28 @@ public struct InputProcess: Sendable, Equatable {
     }
 }
 
-public struct SelfPauseChange: Sendable, Equatable {
-    public var paused: Bool
-    public var reason: SelfPauseReason
+public enum PausedReason: String, Sendable, Equatable, CaseIterable {
+    case manual = "手動"
+    case automatic = "自動"
+}
 
-    public init(paused: Bool, reason: SelfPauseReason) {
-        self.paused = paused
-        self.reason = reason
+public enum SelfPauseChange: Sendable, Equatable {
+    case paused(PausedReason)
+    case resumed(SelfPauseReason)
+
+    public var paused: Bool {
+        switch self {
+        case .paused: return true
+        case .resumed: return false
+        }
+    }
+
+    public var reason: SelfPauseReason {
+        switch self {
+        case .paused(.manual): return .manual
+        case .paused(.automatic): return .automatic
+        case .resumed(let reason): return reason
+        }
     }
 }
 
@@ -90,12 +105,19 @@ public struct SelfPauseRule: Sendable {
 
     private var autoPaused: Bool { judgement == .idle && idleFor >= wait }
 
-    public var paused: Bool { manual == .none ? autoPaused : manual == .pause }
-
-    public var reason: SelfPauseReason {
-        if manual != .none { return .manual }
-        return judgement == .unknown ? .undetermined : .automatic
+    public var state: SelfPauseChange {
+        switch manual {
+        case .pause: return .paused(.manual)
+        case .take: return .resumed(.manual)
+        case .none:
+            if autoPaused { return .paused(.automatic) }
+            return .resumed(judgement == .unknown ? .undetermined : .automatic)
+        }
     }
+
+    public var paused: Bool { state.paused }
+
+    public var reason: SelfPauseReason { state.reason }
 
     public var carryOver: SelfPauseCarryOver {
         SelfPauseCarryOver(manual: manual, basis: basis, lastKnown: lastKnown, idleFor: idleFor)
@@ -120,13 +142,13 @@ public struct SelfPauseRule: Sendable {
         if manual == .none { basis = .unknown }
     }
 
-    private func change(from before: (paused: Bool, reason: SelfPauseReason)) -> SelfPauseChange? {
+    private func change(from before: SelfPauseChange) -> SelfPauseChange? {
         guard paused != before.paused || (paused && reason != before.reason) else { return nil }
-        return SelfPauseChange(paused: paused, reason: reason)
+        return state
     }
 
     public mutating func read(_ processes: [InputProcess]?, at time: Double) -> SelfPauseChange? {
-        let before = (paused: paused, reason: reason)
+        let before = state
         advance(to: time)
         let value = judgeInput(processes: processes, app: app, ownPID: ownPID)
         let released = manual != .none && value != .unknown && basis != .unknown && value != basis
@@ -145,12 +167,12 @@ public struct SelfPauseRule: Sendable {
     }
 
     public mutating func press(paused wantsPause: Bool, at time: Double) -> SelfPauseChange? {
-        let before = (paused: paused, reason: reason)
+        let before = state
         advance(to: time)
         guard wantsPause != paused else { return change(from: before) }
         manual = wantsPause == autoPaused ? .none : (wantsPause ? .pause : .take)
         basis = manual == .none ? .unknown : judgement
         guard paused != before.paused else { return change(from: before) }
-        return SelfPauseChange(paused: paused, reason: .manual)
+        return paused ? .paused(.manual) : .resumed(.manual)
     }
 }

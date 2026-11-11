@@ -5,7 +5,7 @@ import HelperCore
 @Suite("発言の語ごとの読み", .timeLimit(.minutes(1)))
 struct WordsITTests {
     private func substring(_ text: String, _ word: Word) -> String {
-        (text as NSString).substring(with: NSRange(location: word.location, length: word.length))
+        (text as NSString).substring(with: NSRange(location: word.utf16Offset, length: word.utf16Length))
     }
 
     @Test("日本語の本文を語に区切り、位置と長さで本文の範囲を指す")
@@ -24,9 +24,9 @@ struct WordsITTests {
         #expect(!words.isEmpty)
         var end = 0
         for word in words {
-            #expect(word.location >= end)
-            #expect(word.length > 0)
-            end = word.location + word.length
+            #expect(word.utf16Offset >= end)
+            #expect(word.utf16Length > 0)
+            end = word.utf16Offset + word.utf16Length
         }
     }
 
@@ -48,7 +48,7 @@ struct WordsITTests {
         #expect(!words.isEmpty)
         for word in words { #expect(substring(text, word) == word.surface) }
         let last = try #require(words.last)
-        #expect(last.location + last.length == (text as NSString).length)
+        #expect(last.utf16Offset + last.utf16Length == (text as NSString).length)
         #expect((text as NSString).length > text.count)
     }
 

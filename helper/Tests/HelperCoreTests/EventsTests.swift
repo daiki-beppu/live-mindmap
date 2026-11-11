@@ -9,8 +9,8 @@ private func decode(_ event: HelperEvent) throws -> [String: Any] {
 }
 
 private let fixedWords = [
-    Word(surface: "こんにちは", romaji: "konnichiwa", location: 0, length: 5),
-    Word(surface: "𠮷", romaji: "", location: 5, length: 2),
+    Word(surface: "こんにちは", romaji: "konnichiwa", utf16Offset: 0, utf16Length: 5),
+    Word(surface: "𠮷", romaji: "", utf16Offset: 5, utf16Length: 2),
 ]
 private let fixedWordsJSON: [[String: Any]] = [
     ["surface": "こんにちは", "romaji": "konnichiwa", "location": 0, "length": 5],
@@ -20,48 +20,41 @@ private func wordsOf(_ json: [String: Any]) throws -> [[String: Any]] {
     try #require(json["words"] as? [[String: Any]])
 }
 
-private let helperEventExamples: [HelperEvent] = [
-    .remark(track: .相手, start: 1.5, end: 3, text: "こんにちは𠮷", duplicate: false, words: fixedWords,
-        wordTimes: [WordTime(location: 0, length: 5, start: 1.5, end: 2.25)]),
-    .partial(track: .自分, start: 4, end: 4.5, text: "はい", duplicate: true, words: [], wordTimes: []),
-    .origin(hostTime: 9_007_199_254_740_993),
-    .screen(start: 5, image: nil, lines: nil),
-    .screen(start: 6, image: "AQID", lines: ["出力しない行"], ocrFailed: true),
-    .screen(start: 7, image: "AQID", lines: ["港南店", "Zendesk"]),
-    .screen(start: 8, image: "AQID", lines: [], meetingTabTitle: "定例会議"),
-    .screenOff(start: 9, reason: .許可なし),
-    .tapSilent(start: 10.5),
-    .selfPause(paused: true, reason: .manual, start: 11),
-    .selfPause(paused: false, reason: .undetermined, start: 12),
-    .selfPauseState(SelfPauseCarryOver(manual: .pause, basis: .using, lastKnown: .idle, idleFor: 1.5)),
-    .speaker(track: .相手, start: 1.5, end: 2.75, slot: 2, isFinal: true),
-    .speakerOff(start: 13, reason: .モデルなし),
-    .fileDuration(duration: 120.5),
-    .fileAudioTracks(count: 2),
-    .speakerSettled(track: .相手, to: 14.5),
-    .speakerMixed(track: .相手, slot: 2, start: 95.5),
-    .speakerCentroid(track: .相手, slot: 2, centroid: [0.25, -0.5, 1]),
-]
-
-private func exampleCaseName(_ event: HelperEvent) -> String {
-    switch event {
-    case .remark: return "remark"
-    case .partial: return "partial"
-    case .origin: return "origin"
-    case .screen: return "screen"
-    case .screenOff: return "screen-off"
-    case .tapSilent: return "tap-silent"
-    case .selfPause: return "self-pause"
-    case .selfPauseState: return "self-pause-state"
-    case .speaker: return "speaker"
-    case .speakerOff: return "speaker-off"
-    case .fileDuration: return "file-duration"
-    case .fileAudioTracks: return "file-audio-tracks"
-    case .speakerSettled: return "speaker-settled"
-    case .speakerMixed: return "speaker-mixed"
-    case .speakerCentroid: return "speaker-centroid"
+private let helperEventExamples: [HelperEvent] = {
+    var examples: [HelperEvent] = [
+        .origin(hostTime: 9_007_199_254_740_993),
+        .screen(start: 5, image: nil, lines: nil),
+        .screen(start: 6, image: "AQID", lines: ["出力しない行"], ocrFailed: true),
+        .screen(start: 7, image: "AQID", lines: ["港南店", "Zendesk"]),
+        .screen(start: 8, image: "AQID", lines: [], meetingTabTitle: "定例会議"),
+        .tapSilent(start: 10.5),
+        .selfPauseState(SelfPauseCarryOver(manual: .pause, basis: .using, lastKnown: .idle, idleFor: 1.5)),
+        .fileDuration(duration: 120.5),
+        .fileAudioTracks(count: 2),
+    ]
+    for track in Track.allCases {
+        examples += [
+            .remark(track: track, start: 1.5, end: 3, text: "こんにちは𠮷", duplicate: false, words: fixedWords,
+                wordTimes: [WordTime(utf16Offset: 0, utf16Length: 5, start: 1.5, end: 2.25)]),
+            .partial(track: track, start: 4, end: 4.5, text: "はい", duplicate: true, words: [], wordTimes: []),
+            .speaker(track: track, start: 1.5, end: 2.75, slot: 2, isFinal: true),
+            .speakerSettled(track: track, to: 14.5),
+            .speakerMixed(track: track, slot: 2, start: 95.5),
+            .speakerCentroid(track: track, slot: 2, centroid: [0.25, -0.5, 1]),
+        ]
     }
-}
+    examples += ScreenOffReason.allCases.map { .screenOff(start: 9, reason: $0) }
+    examples += SpeakerOffReason.allCases.map { .speakerOff(start: 13, reason: $0) }
+    examples += PausedReason.allCases.map { .selfPause(.paused($0), start: 11) }
+    examples += SelfPauseReason.allCases.map { .selfPause(.resumed($0), start: 12) }
+    examples += SelfPauseManual.allCases.map {
+        .selfPauseState(SelfPauseCarryOver(manual: $0, basis: .unknown, lastKnown: .unknown, idleFor: 0))
+    }
+    examples += InputJudgement.allCases.map {
+        .selfPauseState(SelfPauseCarryOver(manual: .none, basis: $0, lastKnown: $0, idleFor: 0))
+    }
+    return examples
+}()
 
 @Suite("イベントの形")
 struct EventsTests {
@@ -82,8 +75,15 @@ struct EventsTests {
             Issue.record("見本を読めません: \(error)。再生成: \(updateCommand)")
             return
         }
-        let cases = helperEventExamples.map(exampleCaseName).joined(separator: ", ")
+        let cases = helperEventExamples.map(\.wireType).joined(separator: ", ")
         #expect(stored == generated, "見本と Swift の出力が異なります（\(cases)）。再生成: \(updateCommand)")
+    }
+
+    @Test("全イベントの wireType は JSON の type と一致する")
+    func wireTypeMatchesEncodedType() throws {
+        for event in helperEventExamples {
+            #expect(try decode(event)["type"] as? String == event.wireType)
+        }
     }
 
     @Test("確定結果は発言イベントになり、トラック・開始・終了・本文・重複の印を持つ")
@@ -144,7 +144,7 @@ struct EventsTests {
         for track in [Track.相手, Track.自分] {
             for isFinal in [true, false] {
                 let e = event(from: TranscriptionResult(text: "本文", isFinal: isFinal, start: 0, end: 1), track: track, words: { text in
-                    [Word(surface: text, romaji: "honbun", location: 0, length: 2)]
+                    [Word(surface: text, romaji: "honbun", utf16Offset: 0, utf16Length: 2)]
                 })
                 let json = try decode(e)
                 #expect(json["type"] as? String == (isFinal ? "remark" : "partial"))
@@ -162,7 +162,7 @@ struct EventsTests {
 
     @Test("words の JSON 要素は surface・romaji・location・length だけを持ち、位置と長さは数値")
     func wordJSONShape() throws {
-        let json = try decode(.remark(track: .相手, start: 0, end: 1, text: "x", duplicate: false, words: [Word(surface: "x", romaji: "", location: 3, length: 1)], wordTimes: []))
+        let json = try decode(.remark(track: .相手, start: 0, end: 1, text: "x", duplicate: false, words: [Word(surface: "x", romaji: "", utf16Offset: 3, utf16Length: 1)], wordTimes: []))
         let word = try #require(try wordsOf(json).first)
         #expect(Set(word.keys) == ["surface", "romaji", "location", "length"])
         #expect(word["location"] as? Int == 3)
@@ -178,8 +178,8 @@ struct EventsTests {
     }
 
     private static let fixedWordTimes = [
-        WordTime(location: 0, length: 5, start: 1.5, end: 2.25),
-        WordTime(location: 5, length: 2, start: 2.25, end: 3),
+        WordTime(utf16Offset: 0, utf16Length: 5, start: 1.5, end: 2.25),
+        WordTime(utf16Offset: 5, utf16Length: 2, start: 2.25, end: 3),
     ]
     private static let fixedWordTimesJSON: [[String: Any]] = [
         ["location": 0, "length": 5, "start": 1.5, "end": 2.25],
@@ -347,8 +347,8 @@ struct EventsTests {
 
     @Test("self-pause は paused・reason・start を持ち、休止にも再開にも同じ形で使える")
     func selfPauseEventShape() throws {
-        for paused in [true, false] {
-            let json = try decode(.selfPause(paused: paused, reason: .manual, start: 12.5))
+        for (state, paused) in [(SelfPauseChange.paused(.manual), true), (.resumed(.manual), false)] {
+            let json = try decode(.selfPause(state, start: 12.5))
             #expect(Set(json.keys) == ["type", "paused", "reason", "start"])
             #expect(json["type"] as? String == "self-pause")
             #expect(json["paused"] as? Bool == paused)
@@ -360,9 +360,14 @@ struct EventsTests {
     @Test("self-pause の reason は、手動・自動・判定できないがそれぞれの文字列で出る")
     func selfPauseReasonValues() throws {
         for (reason, text) in [(SelfPauseReason.manual, "手動"), (.automatic, "自動"), (.undetermined, "判定できない")] {
-            #expect(try decode(.selfPause(paused: true, reason: reason, start: 1))["reason"] as? String == text)
+            #expect(try decode(.selfPause(.resumed(reason), start: 1))["reason"] as? String == text)
         }
-        #expect(try HelperEvent.selfPause(paused: true, reason: .automatic, start: 12.5).jsonString()
+        for reason in PausedReason.allCases {
+            let json = try decode(.selfPause(.paused(reason), start: 1))
+            #expect(json["paused"] as? Bool == true)
+            #expect(json["reason"] as? String == reason.rawValue)
+        }
+        #expect(try HelperEvent.selfPause(.paused(.automatic), start: 12.5).jsonString()
             == "{\"paused\":true,\"reason\":\"自動\",\"start\":12.5,\"type\":\"self-pause\"}")
     }
 

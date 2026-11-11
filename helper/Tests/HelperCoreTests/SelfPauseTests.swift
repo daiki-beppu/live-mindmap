@@ -126,7 +126,7 @@ struct SelfPauseServingTests {
         let events = Events()
         let rule = SelfPauseRule(app: "x", ownPID: 1)
         await announceSelfPause(rule, at: 7, origin: 7, emit: { events.append($0) })
-        #expect(events.values == [.selfPause(paused: false, reason: .undetermined, start: 0), .selfPauseState(.initial)])
+        #expect(events.values == [.selfPause(.resumed(.undetermined), start: 0), .selfPauseState(.initial)])
     }
 
     @Test("手動の休止を引き継いで始めたときは、paused=true・理由は手動を通知する")
@@ -135,6 +135,6 @@ struct SelfPauseServingTests {
         let carry = SelfPauseCarryOver(manual: .pause, basis: .using, lastKnown: .using, idleFor: 0)
         let rule = SelfPauseRule(app: "x", ownPID: 1, restoring: carry)
         await announceSelfPause(rule, at: 7, origin: 7, emit: { events.append($0) })
-        #expect(events.values == [.selfPause(paused: true, reason: .manual, start: 0), .selfPauseState(carry)])
+        #expect(events.values == [.selfPause(.paused(.manual), start: 0), .selfPauseState(carry)])
     }
 }

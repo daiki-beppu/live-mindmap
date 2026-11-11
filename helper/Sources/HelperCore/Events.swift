@@ -1,6 +1,6 @@
 import Foundation
 
-public enum Track: String, Sendable, Equatable {
+public enum Track: String, Sendable, Equatable, CaseIterable {
     case 自分
     case 相手
 }
@@ -21,11 +21,11 @@ public struct TranscriptionResult: Sendable, Equatable {
     }
 }
 
-public enum ScreenOffReason: String, Sendable, Equatable {
+public enum ScreenOffReason: String, Sendable, Equatable, CaseIterable {
     case 許可なし
 }
 
-public enum SpeakerOffReason: String, Sendable, Equatable {
+public enum SpeakerOffReason: String, Sendable, Equatable, CaseIterable {
     case モデルなし
     case 読み込みに失敗
     case 途中で停止
@@ -48,7 +48,7 @@ public enum HelperEvent: Sendable, Equatable {
     case screen(start: Double, image: String?, lines: [String]?, ocrFailed: Bool = false, meetingTabTitle: String? = nil)
     case screenOff(start: Double, reason: ScreenOffReason)
     case tapSilent(start: Double)
-    case selfPause(paused: Bool, reason: SelfPauseReason, start: Double)
+    case selfPause(SelfPauseChange, start: Double)
     case selfPauseState(SelfPauseCarryOver)
     case speaker(track: Track, start: Double, end: Double, slot: Int, isFinal: Bool)
     case speakerOff(start: Double, reason: SpeakerOffReason)
@@ -90,6 +90,28 @@ public enum HelperEvent: Sendable, Equatable {
     }
 }
 
+extension HelperEvent {
+    public var wireType: String {
+        switch self {
+        case .remark: return "remark"
+        case .partial: return "partial"
+        case .origin: return "origin"
+        case .screen: return "screen"
+        case .screenOff: return "screen-off"
+        case .tapSilent: return "tap-silent"
+        case .selfPause: return "self-pause"
+        case .selfPauseState: return "self-pause-state"
+        case .speaker: return "speaker"
+        case .speakerOff: return "speaker-off"
+        case .fileDuration: return "file-duration"
+        case .fileAudioTracks: return "file-audio-tracks"
+        case .speakerSettled: return "speaker-settled"
+        case .speakerMixed: return "speaker-mixed"
+        case .speakerCentroid: return "speaker-centroid"
+        }
+    }
+}
+
 extension HelperEvent: Encodable {
     private enum CodingKeys: String, CodingKey {
         case type, track, start, end, text, duplicate, words, wordTimes, hostTime, image, lines, reason, paused, slot, final, duration, to, count
@@ -99,9 +121,9 @@ extension HelperEvent: Encodable {
 
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(wireType, forKey: .type)
         switch self {
         case let .remark(track, start, end, text, duplicate, words, wordTimes):
-            try container.encode("remark", forKey: .type)
             try container.encode(track.rawValue, forKey: .track)
             try container.encode(start, forKey: .start)
             try container.encode(end, forKey: .end)
@@ -110,7 +132,6 @@ extension HelperEvent: Encodable {
             try container.encode(words, forKey: .words)
             try container.encode(wordTimes, forKey: .wordTimes)
         case let .partial(track, start, end, text, duplicate, words, wordTimes):
-            try container.encode("partial", forKey: .type)
             try container.encode(track.rawValue, forKey: .track)
             try container.encode(start, forKey: .start)
             try container.encode(end, forKey: .end)
@@ -119,11 +140,9 @@ extension HelperEvent: Encodable {
             try container.encode(words, forKey: .words)
             try container.encode(wordTimes, forKey: .wordTimes)
         case let .origin(hostTime):
-            try container.encode("origin", forKey: .type)
             // 64 bit の値は JSON の number では桁が落ちるので、文字列として積む。
             try container.encode(String(hostTime), forKey: .hostTime)
         case let .screen(start, image, lines, ocrFailed, meetingTabTitle):
-            try container.encode("screen", forKey: .type)
             try container.encode(start, forKey: .start)
             if let image {
                 try container.encode(image, forKey: .image)
@@ -139,51 +158,40 @@ extension HelperEvent: Encodable {
             }
             try container.encodeIfPresent(meetingTabTitle, forKey: .meetingTabTitle)
         case let .screenOff(start, reason):
-            try container.encode("screen-off", forKey: .type)
             try container.encode(start, forKey: .start)
             try container.encode(reason.rawValue, forKey: .reason)
         case let .tapSilent(start):
-            try container.encode("tap-silent", forKey: .type)
             try container.encode(start, forKey: .start)
-        case let .selfPause(paused, reason, start):
-            try container.encode("self-pause", forKey: .type)
-            try container.encode(paused, forKey: .paused)
-            try container.encode(reason.rawValue, forKey: .reason)
+        case let .selfPause(state, start):
+            try container.encode(state.paused, forKey: .paused)
+            try container.encode(state.reason.rawValue, forKey: .reason)
             try container.encode(start, forKey: .start)
         case let .selfPauseState(state):
-            try container.encode("self-pause-state", forKey: .type)
             try container.encode(state.manual.rawValue, forKey: .manual)
             try container.encode(state.basis.rawValue, forKey: .basis)
             try container.encode(state.lastKnown.rawValue, forKey: .lastKnown)
             try container.encode(state.idleFor, forKey: .idleFor)
         case let .speaker(track, start, end, slot, isFinal):
-            try container.encode("speaker", forKey: .type)
             try container.encode(track.rawValue, forKey: .track)
             try container.encode(start, forKey: .start)
             try container.encode(end, forKey: .end)
             try container.encode(slot, forKey: .slot)
             try container.encode(isFinal, forKey: .final)
         case let .speakerOff(start, reason):
-            try container.encode("speaker-off", forKey: .type)
             try container.encode(start, forKey: .start)
             try container.encode(reason.rawValue, forKey: .reason)
         case let .fileDuration(duration):
-            try container.encode("file-duration", forKey: .type)
             try container.encode(duration, forKey: .duration)
         case let .fileAudioTracks(count):
-            try container.encode("file-audio-tracks", forKey: .type)
             try container.encode(count, forKey: .count)
         case let .speakerSettled(track, to):
-            try container.encode("speaker-settled", forKey: .type)
             try container.encode(track.rawValue, forKey: .track)
             try container.encode(to, forKey: .to)
         case let .speakerMixed(track, slot, start):
-            try container.encode("speaker-mixed", forKey: .type)
             try container.encode(track.rawValue, forKey: .track)
             try container.encode(slot, forKey: .slot)
             try container.encode(start, forKey: .start)
         case let .speakerCentroid(track, slot, centroid):
-            try container.encode("speaker-centroid", forKey: .type)
             try container.encode(track.rawValue, forKey: .track)
             try container.encode(slot, forKey: .slot)
             try container.encode(centroid, forKey: .centroid)

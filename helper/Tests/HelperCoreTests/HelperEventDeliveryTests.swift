@@ -10,7 +10,7 @@ struct HelperEventDeliveryTests {
             (.screen(start: 1, image: "image", lines: []), .retain(.screen)),
             (.screenOff(start: 1, reason: .許可なし), .retain(.screenOff)),
             (.tapSilent(start: 10), .retain(.tapSilent)),
-            (.selfPause(paused: true, reason: .manual, start: 1), .retain(.selfPause)),
+            (.selfPause(.paused(.manual), start: 1), .retain(.selfPause)),
             (.selfPauseState(.initial), .retain(.selfPauseState)),
             (.speakerOff(start: 1, reason: .モデルなし), .retain(.speakerOff)),
             (.fileDuration(duration: 120), .retain(.fileDuration)),

@@ -76,7 +76,7 @@ public final class SelfPauseMonitor: @unchecked Sendable {
                 gated = change.paused
                 requestGate(change.paused, hostTime)
             }
-            await emit(.selfPause(paused: change.paused, reason: change.reason, start: seconds))
+            await emit(.selfPause(change, start: seconds))
         }
         let state = rule.carryOver
         if state != announced {
