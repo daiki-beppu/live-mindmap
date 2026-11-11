@@ -1,8 +1,6 @@
 import Testing
 @testable import HelperCore
 
-// 録画の映像のフレームを、ライブと同じ 4 fps（`screenFramesPerSecond`）に間引く規則。フレームの時刻（PTS、秒）だけで決まる純粋な部分。
-
 @Suite("録画の映像の間引き（4 fps）")
 struct ScreenFrameThinningTests {
     private func admitted(_ times: [Double]) -> [Double] {

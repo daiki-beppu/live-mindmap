@@ -2,9 +2,6 @@ import { describe, expect, it } from "vitest";
 import type { Remark } from "../src/core/index.ts";
 import { fmtTime, remarkLine } from "../src/remarkLine.ts";
 
-// Issue #1021: 発言を 1 行にする書式は 1 つの関数が持つ。クラウドのプロンプトもローカルのプロンプトも、この関数を通す。
-// 形は「ID [mm:ss] 話者: 本文」。話者は 相手 A / 相手 / 自分。名前（後の sub-issue）が付くと「相手 B（田中）」になる。
-
 const remark = (fields: Partial<Remark>): Remark => ({ id: "r12", track: "相手", start: 194.9, end: 196, text: "本文", ...fields });
 
 describe("remarkLine: 発言を 1 行にする", () => {

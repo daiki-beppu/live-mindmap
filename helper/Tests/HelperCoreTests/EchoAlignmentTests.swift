@@ -2,9 +2,6 @@ import Foundation
 import Testing
 @testable import HelperCore
 
-// 参照（タップ）とマイクを hostTime で揃える状態機械。I/O を持たないので、差し替えの canceller の呼び出し順で確かめる。
-// 参照の区切り j は全サンプルが Float(j + 1)、無音で埋めた区切りは 0。区切り j の開始時刻は base + 10 ms × j。
-
 private let base: UInt64 = 1_000_000_000
 
 @Suite("エコーキャンセルの時刻合わせ", .timeLimit(.minutes(1)))
@@ -21,10 +18,7 @@ struct EchoAlignmentTests {
         let events = canceller.events
         let reverseTags = reverseFrames(events).compactMap { uniformValue($0) }
         #expect(reverseTags.count == reverseFrames(events).count)
-        // 参照は先頭から 1 区切りずつ、飛ばさず繰り返さず渡る
         #expect(reverseTags == (1...reverseTags.count).map { Float($0) })
-        // k 番目の capture（時刻 90 + 10k ms）の前には、その時刻までに終わった参照 9 + k 区切りがすべて渡り、
-        // それより先の参照（11 + k 区切り以降）は渡らない。先頭どうしで揃えると、最初の capture の前の reverse は 1 回になる
         let counts = reverseCountsBeforeEachCapture(events)
         #expect(counts.count == 5)
         for (k, count) in counts.enumerated() {
@@ -50,7 +44,6 @@ struct EchoAlignmentTests {
         let events = canceller.events
         #expect(captureFrames(events).count == 5)
         #expect(output.flatMap(\.samples).count == 5 * echoTestFrameSamples)
-        // 参照は本物の区切り（無音でない）が先に渡っている
         #expect(reverseFrames(events).allSatisfy { uniformValue($0) != 0 })
         if case .reverse? = events.first {} else { Issue.record("最初の呼び出しが reverse ではない: \(String(describing: events.first))") }
     }
@@ -66,9 +59,7 @@ struct EchoAlignmentTests {
         let events = canceller.events
         let counts = reverseCountsBeforeEachCapture(events)
         #expect(counts.count == 8)
-        // どの capture の前にも、reverse が 1 回以上渡っている
         #expect(counts.allSatisfy { $0 >= 1 })
-        // 参照が始まる前（最初の 5 区間）は無音、始まったあとは本物の参照
         let reverses = reverseFrames(events)
         #expect(reverses.prefix(5).allSatisfy { uniformValue($0) == 0 })
         #expect(reverses.dropFirst(5).allSatisfy { uniformValue($0) != 0 })
@@ -108,7 +99,6 @@ struct EchoAlignmentTests {
         #expect(Array(reverses.prefix(5)).compactMap { uniformValue($0) } == [1, 2, 3, 4, 5])
         #expect(reverses.count > 5)
         #expect(reverses.dropFirst(5).allSatisfy { $0.allSatisfy { $0 == 0 } })
-        // k 番目の capture（時刻 10k ms）の前には、その時刻までの参照（本物と無音の合計）が k 区切り以上渡っている
         for (k, count) in reverseCountsBeforeEachCapture(events).enumerated() {
             #expect(count >= k, "capture \(k) の前の reverse の回数")
         }
@@ -132,7 +122,6 @@ struct EchoAlignmentTests {
     func fillsSilenceWhenReferenceIsMissingForTooLong() {
         let canceller = RecordingEchoCanceller()
         var aligner = EchoAligner(canceller: canceller)
-        // 1 秒分のマイク。参照は届かない
         aligner.addCapture(captureSamples(chunks: 0..<100), hostTime: base)
 
         let output = aligner.drain(force: false)
@@ -151,7 +140,6 @@ struct EchoAlignmentTests {
         _ = aligner.drain(force: true)
         #expect(!captureFrames(canceller.events).isEmpty)
 
-        // すでに無音で埋めた 0〜100 ms の参照が遅れて届く。続きのマイクを処理する
         aligner.addReference(referenceSamples(chunks: 0..<10), hostTime: base)
         aligner.addCapture(captureSamples(chunks: 10..<12), hostTime: base + hostTicks(milliseconds: 100))
         _ = aligner.drain(force: true)
@@ -164,7 +152,6 @@ struct EchoAlignmentTests {
     func outputKeepsFirstMicrophoneHostTime() throws {
         let canceller = RecordingEchoCanceller()
         var aligner = EchoAligner(canceller: canceller)
-        // 参照の区切りとは 10 ms の境に合わない時刻（123 ms）でマイクが始まる
         let micStart = base + hostTicks(milliseconds: 123)
         aligner.addReference(referenceSamples(chunks: 0..<30), hostTime: base)
         let input = captureSamples(chunks: 0..<4)
@@ -181,7 +168,7 @@ struct EchoAlignmentTests {
         let canceller = RecordingEchoCanceller()
         var aligner = EchoAligner(canceller: canceller)
         aligner.addReference(referenceSamples(chunks: 0..<30), hostTime: base)
-        let input = captureSamples(chunks: 0..<3)  // 1440 サンプル
+        let input = captureSamples(chunks: 0..<3)
 
         aligner.addCapture(Array(input[0..<700]), hostTime: base)
         aligner.addCapture(Array(input[700..<960]), hostTime: base + hostTicks(milliseconds: 700.0 / 48))

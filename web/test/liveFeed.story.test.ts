@@ -7,10 +7,6 @@ import { init, update, type Model } from "../src/app/liveFeed/main.ts";
 import { Message } from "../src/app/liveFeed/message.ts";
 import { spoken, spokenBubble, spokenFrame } from "./fixtures/captions.ts";
 
-// ライブの受信（Issue #828）の update。「つながった」「frame を受けた」「切れた」の事実の Message の列を、同じ Model の上に続けて流し、
-// 今の useLiveFeed.test.ts と liveFeed.test.ts が見ている値（受信・切断・つなぎ直し・つないだときに server が先に送る値）を確かめる。
-// 状態の更新の規則は web/src/liveFeed.ts（applyFrame / applyOpen / applyClose）が持つ。ここでは update がそれを使っていることを、結果の Model で見る。
-
 const NOTICE = "共有画面は使っていません";
 const TAP_NOTICE = "相手の音声が届いていません";
 

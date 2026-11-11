@@ -7,8 +7,6 @@ import {
   fillLog, logText, minRunLog, offlineLog, overlapLog, remarkLine, restartLog, segLine, settledLine, startLine, textsOf, waitLog, type Line,
 } from "./speakerReplayFixtures.ts";
 
-// Issue #1030: bench/speakerReplay.ts の CLI。標準出力は JSON 1 つ（発言・ラベル・混入・つなぎ直し・起動し直し）で、発言の本文を標準出力にも標準エラーにも出さない。
-
 type Output = {
   remarks: Array<{ source: string; track: string; start: number; end: number; speaker?: string }>;
   labels: string[];
@@ -18,7 +16,6 @@ type Output = {
 };
 
 const privateText = ["REMARKPRIVATEALPHA REMARKPRIVATEOMEGA", "RAWPRIVATEALPHA RAWPRIVATEOMEGA"];
-// 本文の目印を持つ短い log（2 人に切れる）。raw にも別の目印を置く
 const privateLog = (): Line[] => [
   startLine(0),
   segLine(1, 0, 0, 2), segLine(1, 1, 2, 4), settledLine(2, 4),
@@ -81,7 +78,6 @@ describe("speakerReplay の CLI（light IT）", () => {
     expect(speakersOf(JSON.parse(stdout) as Output)).toEqual(["相手 A", "相手 B", undefined]);
   }).pipe(Effect.scoped));
 
-  // 旗の名前が、対応する規則に配線されている（unit は同じ fixture で関数を直接呼ぶ）
   const flagCases = [
     { flag: "--without-longest-overlap", name: "最も長い重なり", log: overlapLog, on: ["相手 A", "相手 B", "相手 A"], off: ["相手 A", "相手 B", "相手 B"] },
     { flag: "--without-fill", name: "誰もいない語を寄せる", log: fillLog, on: ["相手 A", "相手 B"], off: ["相手 A", undefined, "相手 B"] },

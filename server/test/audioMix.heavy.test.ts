@@ -8,9 +8,6 @@ import { Effect, Layer } from "effect";
 import { AudioMix } from "../src/audioMix.ts";
 import type { HelperCommand } from "../src/helpers.ts";
 
-// 本物の AudioMix の Layer が、effect/process の本物の spawner で `mix --session <dir> --out <path>` を 1 回起動して終わりを待つこと。
-// ヘルパーは偽物（fixtures/fake-helper.ts の mix）。ヘルパーの音声処理そのものはここでは確かめない。
-// 失敗の写像は audioMix.test.ts（偽の ChildProcessSpawner）
 const fakeHelper = join(import.meta.dirname, "fixtures/fake-helper.ts");
 
 const workspace = Effect.fnUntraced(function* () {

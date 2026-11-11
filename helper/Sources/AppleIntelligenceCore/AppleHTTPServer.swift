@@ -65,7 +65,7 @@ public actor AppleHTTPServer {
                 try await reply(connection, status: 200, object: object)
             } catch {
                 do { try await reply(connection, status: 500, object: ["error": String(describing: error)]) }
-                catch { /* 切断済みの接続へは応答できない。以下で必ず解放する。 */ }
+                catch {}
             }
             connections.removeValue(forKey: ObjectIdentifier(connection))
             connection.cancel()

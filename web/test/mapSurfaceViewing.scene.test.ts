@@ -11,9 +11,6 @@ import { layout } from "../src/layout.ts";
 import { INITIAL_VIEWING, type ViewingState } from "../src/viewing.ts";
 import { foldingActions } from "./foldingActions.ts";
 
-// マップの表示面の「見る状態」（Issue #818）の Scene。描いた view から入り、選ぶ・畳む・開く・縁の点が、今の画面（MapNode.tsx・MapView.tsx）と同じ DOM になることを見る。
-// 比べる相手は既存の純粋な関数（foldView・layout・edgeDots）。Scene は Model を見せないので、押した後の viewing の値そのものは Story（mapSurfaceViewing.story.test.ts）で見る
-
 type MapSurfaceModel = typeof Model.Type;
 type VNode = Parameters<typeof textContent>[0];
 const app = { update, view: (model: Parameters<typeof view>[0], h: Parameters<typeof view>[2]) => view(model, { notice: () => null }, h) };
@@ -21,10 +18,8 @@ const app = { update, view: (model: Parameters<typeof view>[0], h: Parameters<ty
 const node = (id: string, parent: string | null, kind: Exclude<SnapshotNode["kind"], "補足"> = "議題", extra: Partial<Exclude<SnapshotNode, { kind: "補足" }>> = {}): Exclude<SnapshotNode, { kind: "補足" }> => ({ id, parent, kind, text: id, evidence: parent ? ["r1"] : [], ...extra });
 const snap = (nodes: SnapshotNode[], extra: Partial<Snapshot> = {}): Snapshot => ({ nodes, round: 3, changes: [], remarks: [], ...extra });
 
-// 済みの議題 A（論点 A1 を持つ）は畳まれ、話し中の今の議題 B は畳まれない
 const single = (extra: Partial<Snapshot> = {}): Snapshot =>
   snap([node("root", null, "会議"), node("A", "root", "議題", { talkStatus: "済み" }), node("A1", "A", "論点", { pointStatus: "未決" }), node("B", "root", "議題")], { currentTopic: "B", now: 100, ...extra });
-// 済みの議題 A・A2 が続き、「議題 2 件」（run:A）にまとめられる
 const bundled = (): Snapshot =>
   snap([node("root", null, "会議"), node("A", "root", "議題", { talkStatus: "済み" }), node("A1", "A", "論点", { pointStatus: "未決" }), node("A2", "root", "議題", { talkStatus: "済み" }), node("B", "root", "議題")], {
     currentTopic: "B",
@@ -39,7 +34,6 @@ const measuredModel = (snapshot: Snapshot, mode: MapSurfaceModel["mode"] = "live
   nodeHeights: HashMap.make(...Object.entries(HEIGHTS)),
   viewing,
 });
-// 表示面の要素の Mount は毎回 resolve する。結果は大きさだけの測定（目標の位置は変わらない）
 const mounted = Mount.resolve(ObserveMapSurface, Message.MeasuredMapSurface({ ...SIZE, nodeHeights: {} }));
 const clickedNode = (nodeId: string) => Mount.resolve(ObserveMapSurface, Message.ClickedNodeButton({ nodeId, clientX: 0, clientY: 0 }));
 
@@ -126,7 +120,6 @@ describe("mapSurface の Scene: ノード本体の click で選ぶ", () => {
       expectScene(bodyButtonOf("A1")).toHaveAttr("aria-pressed", "true"),
       expectScene(mapNodeOf("A")).not.toHaveClass("map-node--folded"),
       expectScene(countOf("A")).toBeAbsent(),
-      // 選んだだけでは人が開いたことにならないので、畳む小さな丸は付かない
       expectScene(foldDotOf("A")).toBeAbsent(),
       tap((simulation) => {
         expect(renderedIds(simulation.html).sort()).toEqual(shown.nodes.map((n) => n.id).sort());
@@ -162,7 +155,6 @@ describe("mapSurface の Scene: 隠れた数の丸で開く・小さな丸で畳
       expectScene(pressableCountOf("A")).toHaveAttr("aria-label", "開く"),
       expectScene(pressableCountOf("A")).toHaveText(String(hidden)),
       expectScene(wrapperOf("A1")).toBeAbsent(),
-      // 畳んでいないノードに丸は無い
       expectScene(countOf("B")).toBeAbsent(),
       expectScene(foldDotOf("A")).toBeAbsent(),
       mounted,
@@ -197,7 +189,6 @@ describe("mapSurface の Scene: 隠れた数の丸で開く・小さな丸で畳
       expectScene(mapNodeOf("A")).not.toHaveClass("map-node--folded"),
       expectScene(countOf("A")).toBeAbsent(),
       expectScene(foldDotOf("A")).toHaveAttr("aria-label", "畳む"),
-      // 本体の click と違い、丸を押しても A は選ばれない
       expectScene(mapNodeOf("A")).not.toHaveClass("map-node--selected"),
       click(foldDotOf("A")),
       expectScene(wrapperOf("A1")).toBeAbsent(),
@@ -274,7 +265,6 @@ describe("mapSurface の Scene: まとめのノード（議題 N 件）の丸で
       expectScene(wrapperOf("run:A")).toBeAbsent(),
       expectScene(wrapperOf("A")).toExist(),
       expectScene(wrapperOf("A2")).toExist(),
-      // 中身は畳んだまま
       expectScene(mapNodeOf("A")).toHaveClass("map-node--folded"),
       expectScene(mapNodeOf("A2")).toHaveClass("map-node--folded"),
       expectScene(wrapperOf("A1")).toBeAbsent(),
@@ -286,7 +276,6 @@ describe("mapSurface の Scene: まとめのノード（議題 N 件）の丸で
 });
 
 describe("mapSurface の Scene: 縁の点（画面の外で変わったノード）", () => {
-  // A は畳まれ、中の論点 A1 が今回変わった → 点滅するのは見せている A。画面の外へパンして、A を画面の外に出す
   const changed = (): Snapshot => single({ changes: [{ change: "追加", node: "A1", kind: "論点", text: "A1", round: 3, at: 0 } as Snapshot["changes"][number]] });
   const panned = (cameraMode: MapSurfaceModel["camera"]["mode"], mode: MapSurfaceModel["mode"] = "live", size = true): MapSurfaceModel => ({
     ...measuredModel(changed(), mode),
@@ -296,7 +285,6 @@ describe("mapSurface の Scene: 縁の点（画面の外で変わったノード
   const MANUAL = "manual";
   const dotsOf = (html: VNode) => findAll(html, "button.edge-dot");
 
-  // 期待する点: 画面に映っている viewport（DOM の transform）と、目標の位置・高さから、edgeDots が返す値
   const expectedDots = (html: VNode) => {
     const [x, y, zoom] = viewportTransform(html) as [number, number, number];
     const shown = foldView(changed(), undefined, null);
@@ -372,7 +360,6 @@ describe("mapSurface の Scene: 縁の点（画面の外で変わったノード
   });
 
   it("点を押すと、そのノードへ寄る（今の倍率のまま、ノードの中心が画面の中央に来る viewport の transform になる）。畳んだ A を開くことはない（丸とは別の操作）", () => {
-    // 寄せ先は、目標の位置と高さで測った A。倍率は押す前のまま（1）
     const shown = foldView(changed(), undefined, null);
     const expected = nodeFocusViewport(nodeRect("A", layout(shown.nodes, HEIGHTS), { A: { height: HEIGHTS.A } }), 1, SIZE);
     let before: number[] = [];
@@ -390,7 +377,6 @@ describe("mapSurface の Scene: 縁の点（画面の外で変わったノード
         expect(x).toBeCloseTo(expected.x, 6);
         expect(y).toBeCloseTo(expected.y, 6);
         expect(zoom).toBeCloseTo(expected.zoom, 6);
-        // 寄せた先では A が画面に映るので、点はもう出ない
         expect(dotsOf(simulation.html)).toHaveLength(0);
       }),
       expectScene(wrapperOf("A1")).toBeAbsent(),

@@ -84,23 +84,23 @@ describe("開始前の確かめ", () => {
 
   it.effect("入口ごとの入力と準備結果を型で区別する", () => Effect.gen(function* () {
     const checks = yield* StartupChecks;
-    // @ts-expect-error recorded は共有画面の入力を受け取らない
+    // @ts-expect-error
     expectTypeOf(() => checks.report({ entry: "recorded", route: "claude", noMap: false, screen: true }));
-    // @ts-expect-error play は共有画面の入力を受け取らない
+    // @ts-expect-error
     expectTypeOf(() => checks.report({ entry: "play", route: "claude", screen: false }));
-    // @ts-expect-error noMap は recorded だけの入力
+    // @ts-expect-error
     expectTypeOf(() => checks.report({ entry: "start", route: "claude", screen: true, noMap: true }));
-    // @ts-expect-error resume は updater を準備しない
+    // @ts-expect-error
     expectTypeOf(() => checks.prepare({ entry: "resume", route: "claude", screen: true, plan }));
-    // @ts-expect-error noMap は updater を準備しない
+    // @ts-expect-error
     expectTypeOf(() => checks.prepare({ entry: "recorded", noMap: true, plan }));
     const map = yield* checks.prepare(mapRows[0]);
     expectTypeOf(map.updaterLayer).toExtend<Layer.Layer<DiffUpdater, UpdaterUnavailable>>();
     const resume = yield* checks.prepare({ entry: "resume", route: "claude", screen: false });
-    // @ts-expect-error resume の戻り値は warnings だけ
+    // @ts-expect-error
     expectTypeOf(resume.updaterLayer);
     const noMap = yield* checks.prepare({ entry: "recorded", noMap: true });
-    // @ts-expect-error noMap の戻り値は warnings だけ
+    // @ts-expect-error
     expectTypeOf(noMap.updaterLayer);
   }).pipe(Effect.provide(checksLayer())));
 

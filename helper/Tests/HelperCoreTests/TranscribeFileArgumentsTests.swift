@@ -2,9 +2,6 @@ import Foundation
 import Testing
 import HelperCore
 
-// `transcribe-file --file <path> [--port <n>]` の引数解釈（main.swift にはテストターゲットがないので、HelperCore の純粋関数で確かめる）。
-// 流儀は `run` の parseRunArguments と同じ: 不正な引数は usage を伴って拒否する。
-
 @Suite("transcribe-file の引数解釈（parseTranscribeFileArguments）")
 struct TranscribeFileArgumentsTests {
     @Test("--file だけで起動できる。port の既定は run と同じ 8765")

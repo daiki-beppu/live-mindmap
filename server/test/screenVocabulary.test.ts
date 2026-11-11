@@ -1,14 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { requestScreenWords, screenCandidates } from "../src/core/index.ts";
 
-// 共有画面の文字（OCR の行）から、語彙の候補を取る規則（Issue #643、仕様 #633「共有画面から候補を取る規則」）。I/O を持たない純粋な関数。
-// 入力は、これまでの画面で短い行が出た画面の数（seen）と、この画面の行。出力は、候補（この画面で取れた語）と、更新した数。
-// 規則: カタカナ 3 字以上 / 漢字 3〜12 字（々を含む）/ 大文字を含む英字の語 / 3 画面以上に出た 2〜4 字の漢字・かなだけの行。
-// 小文字と数字だけの英字の語（1on1）とひらがなだけの行は取らない。
-
 const sorted = (xs: readonly string[]) => [...xs].sort();
 
-// 画面ごとの行を順に流し、各画面で取れた候補を返す（数は画面をまたいで引き継ぐ）
 function run(screens: ReadonlyArray<ReadonlyArray<string>>): string[][] {
   let seen: ReadonlyMap<string, number> = new Map();
   return screens.map((lines) => {
@@ -105,7 +99,6 @@ describe("screenCandidates（共有画面の行 → 語彙の候補）", () => {
       const b = screenCandidates(a.seen, ["葛西"]);
       expect(b.candidates).toEqual([]);
       expect(screenCandidates(b.seen, ["葛西"]).candidates).toEqual(["葛西"]);
-      // 同じ a.seen から別の続きを作っても、b の結果に影響されない
       expect(screenCandidates(a.seen, ["葛西"]).candidates).toEqual([]);
     });
   });

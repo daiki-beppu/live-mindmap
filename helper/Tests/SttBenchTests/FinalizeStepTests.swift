@@ -1,8 +1,6 @@
 import Testing
 @testable import stt_bench
 
-// watchdog の 1 回分の処理。偽の finalize を渡すので SpeechAnalyzer は使わない。
-
 private struct FakeFinalizeError: Error {}
 
 @Suite("finalize の watchdog")

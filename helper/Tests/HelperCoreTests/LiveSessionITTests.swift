@@ -264,7 +264,6 @@ struct LiveSessionITTests {
         defer { end.finish() }
         let session = fixture.session(screen: .off, makeRecording: { track, stream, _ in
             created.update { $0.append(track) }
-            // 音声へ録音の失敗を流さず、run 本体と finish の異なる失敗を競合させる。
             let finished = Task<Void, Error> {
                 for await _ in ending {}
                 failed.update { $0.append(track) }

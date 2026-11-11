@@ -4,8 +4,6 @@ import { reviewSnapshot, Snapshot } from "../src/core/index.ts";
 import { expectDecodeSuccess } from "./fixtures/coreSchema.ts";
 import logText from "./fixtures/session.log.jsonl?raw";
 
-// 今の形式の log.jsonl（fixtures/session.log.jsonl）から作った Snapshot が、core の Snapshot Schema で decode・encode して往復する
-
 const lines = logText
   .split("\n")
   .filter((l) => l !== "")

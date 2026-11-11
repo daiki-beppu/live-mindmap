@@ -1,5 +1,3 @@
-// bench の sessionStats・speechEnds の Command が、PATH 上の ffmpeg を本物の子プロセスの spawner で起動して録音を読むこと。
-// ffmpeg は PATH に置いた偽の実行ファイル。引数の読み取りや行の書式は benchCommand.it.test.ts
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "@effect/vitest";
@@ -10,7 +8,6 @@ import { command as speechEndsCommand } from "../bench/speechEnds.ts";
 import { runCommand, taggedFailure, temporaryDirectory } from "./benchRun.ts";
 import { logText } from "./fixtures/benchCommand.ts";
 
-// ffmpeg の代わりに PATH へ置く実行ファイル。長さと音量は、本物と同じく stderr に出す
 const withFfmpeg = (root: string, script: string | undefined) => {
   const bin = join(root, "bin");
   mkdirSync(bin);
@@ -21,7 +18,6 @@ const withFfmpeg = (root: string, script: string | undefined) => {
   vi.stubEnv("PATH", bin);
 };
 
-// 偽の ffmpeg が受け取った引数（1 行 1 引数）を root/args に残す前置き
 const recordArgs = (root: string) => `printf '%s\\n' "$@" > '${join(root, "args")}'`;
 const recordedArgs = (root: string) => readFileSync(join(root, "args"), "utf8").trim().split("\n");
 

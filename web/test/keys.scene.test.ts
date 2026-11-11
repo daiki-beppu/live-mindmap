@@ -7,11 +7,6 @@ import { Message } from "../src/app/review/message.ts";
 import { audioApp, audioContext, descendants, hasClass, plainApp, plainContext, settle, stateAt } from "./reviewHarness.ts";
 import { attrOf, one, styleOf, type VNode } from "./sceneTree.ts";
 
-// 見返しのキーの一覧（Issue #822）の Scene。描いた view から入り、? で開いた一覧が、表から作った行で、マップの区画の中に出ること、
-// 開いたままマップを動かせること（背景を止めない）を見る。? のキーは文書の keydown（描いた木の外）から届くので Subscription.emit で流す。
-// Scene は座標を持たないので「マップの区画の中」は、.map の子孫であることで確かめる（実際の座標は切り替えの段の heavy IT）。
-// 閉じる側（Esc・? の 2 回目）は Popover が Command（フォーカスを戻す）を出すので、update の Story（keys.story.test.ts）で確かめる
-
 const NO_MODIFIERS = { metaKey: false, ctrlKey: false, altKey: false };
 const pressQuestion = Subscription.emit(Message.PressedKey({ key: "?", ...NO_MODIFIERS }));
 
@@ -86,7 +81,6 @@ describe("キーの一覧の Scene: 開いたままマップを動かせる（�
     let before = "";
     scene(
       plainApp,
-      // ? で開いた Model（update が PressedKey を受けた結果）から始める。ObserveMapSurface を保留のまま残して、wheel を届けるため
       given(plainApp.update(measuredModel(plainContext, plainApp), Message.PressedKey({ key: "?", ...NO_MODIFIERS })).model),
       tap((simulation) => {
         before = viewportTransform(simulation.html);

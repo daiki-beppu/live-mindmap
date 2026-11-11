@@ -58,12 +58,9 @@ private typealias Support = DuplicateMarkerTestSupport
 struct DuplicateMarkerTests {
     @Test("判定の済んだ自分の途中結果と確定結果は、1 つの流れに積んだ順で取り出せる（確定結果が同じ発話の途中結果を追い越さない）")
     func mineDecisionsCarryPartialAndRemarkInOrder() async {
-        // 相手の流れが終わっている状態。途中結果は保留されずその場で判定され、確定結果の判定も待たずに返るため、
-        // 送信順序を 1 つの流れが決めていなければ確定結果が先に出ていく。
         let marker = DuplicateMarker(sleep: { _ in })
         await marker.finishTheirs()
 
-        // `relayMine` と同じ順に呼ぶ（途中結果 → 確定結果の到着 → 判定 → 出力）。
         let mineFinal = Support.final("明日の会議は十時", 10.5, 12)
         await marker.hold(minePartial: Support.partialResult("明日の会議は十時", 10.5, 12))
         await marker.emitHeldPartialAndEndRecheck()
@@ -79,10 +76,6 @@ struct DuplicateMarkerTests {
 
     @Test("保留中に自分の途中結果が書き換わった後、実際に保留の上限へ到達したときに流れるのは新しいほうの内容")
     func deadlineAfterRewriteEmitsLatestPartial() async {
-        // 上限を、実時間ではなく外からの合図で到達させる。`rewriteDuringHoldKeepsOriginalLimit` は
-        // 流れの終了（finishMine 経由）で解放するため、書き換え後に実際にタイマーが発火した経路は
-        // ここで確認する。判定器を直接呼び、各 `hold` の完了を待ってから上限へ進める
-        // （流れへの投入だけでは、保留値の更新がタイマーより先に終わる保証がない）。
         let (entered, enteredContinuation) = AsyncStream.makeStream(of: Void.self)
         let (limit, limitContinuation) = AsyncStream.makeStream(of: Void.self)
         defer { limitContinuation.finish() }
@@ -93,7 +86,6 @@ struct DuplicateMarkerTests {
 
         await marker.hold(minePartial: Support.partialResult("マリ", 10, 11))
         await Support.awaitSignal(entered)
-        // 保留中に書き換わる（タイマーが作り直されないことは `rewriteDuringHoldKeepsOriginalLimit` で確認済み）。
         await marker.hold(minePartial: Support.partialResult("マリコ", 10, 11.5))
         limitContinuation.yield()
 
@@ -101,7 +93,6 @@ struct DuplicateMarkerTests {
         let released = await decisions.next()
         #expect(released?.result == Support.partialResult("マリコ", 10, 11.5))
         #expect(released?.duplicate == false)
-        // 古い「マリ」が別に流れていないことを確かめる。
         await marker.finishMineDecisions()
         let rest = await decisions.next()
         #expect(rest == nil)
@@ -114,7 +105,6 @@ struct DuplicateMarkerTests {
         let marker = DuplicateMarker(sleep: { durations.append($0) }, now: { clock.value })
         clock.advance(to: 100)
 
-        // 壁時計なら、この差は出ない。時計の値だけで待ち時間が決まる。
         _ = await marker.resolve(Support.final(Support.sentence, 90, 92), heldSince: 100)
         clock.advance(to: 103)
         _ = await marker.resolve(Support.final(Support.other, 93, 95), heldSince: 100)
@@ -140,7 +130,6 @@ struct DuplicateMarkerTests {
         defer { reader.cancel() }
 
         await marker.hold(minePartial: Support.partialResult("明日の", 1, 2))
-        // 壁時計で 1.3 秒たっても、時計（音声の時刻）が進んでいなければ流れない
         try await Task.sleep(for: .milliseconds(1300))
         #expect(received.values.isEmpty)
 

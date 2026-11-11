@@ -2,12 +2,6 @@ import AVFoundation
 import CryptoKit
 import Foundation
 
-// 合成会議を、進行役の行だけの 自分 トラックと、残りの 相手 トラックに分ける（Issue #1031）。
-// 素材は合成会議のフォルダ（timeline.tsv・voices.json・lines/）。lines/ の 1 行 1 本の音声を、timeline.tsv の start の位置に置く
-// （meeting.m4a の一部を無音にして作らない）。音声の置き方は素材リポジトリの synth/synth.mjs と同じ。
-// 診断には行番号と数だけを出し、発言の本文は出さない。
-
-/// timeline.tsv の 1 行（話者・開始秒・終了秒・本文）。
 struct TimelineRow: Equatable {
     var speaker: String
     var start: Double
@@ -37,12 +31,9 @@ enum TracksError: Error, CustomStringConvertible {
     }
 }
 
-/// 合成した行の後ろに置く無音（synth.mjs の TAIL）。
 private let trailingSilenceSeconds = 3.0
-/// 行末の雑音とみなす 1 ms の最大振幅（synth.mjs の JUNK_PEAK = 12000 / 32768）。
 private let junkPeak: Float = 12_000.0 / 32_768.0
 
-/// timeline.tsv を読む。`#` で始まる行（#MARK）と空行は飛ばす。4 列（話者・開始・終了・本文）でなければ、行番号だけで失敗にする。
 func parseTimelineRows(_ text: String) throws -> [TimelineRow] {
     var rows: [TimelineRow] = []
     for (index, line) in text.split(separator: "\n", omittingEmptySubsequences: false).enumerated() {
@@ -58,20 +49,16 @@ func parseTimelineRows(_ text: String) throws -> [TimelineRow] {
     return rows
 }
 
-/// 進行役（`selfSpeaker`）の行を 自分、残りを 相手 に分ける。元の順を保つ。進行役が台本にいなければ失敗にする。
 func splitRows(_ rows: [TimelineRow], selfSpeaker: String) throws -> (mine: [TimelineRow], others: [TimelineRow]) {
     guard rows.contains(where: { $0.speaker == selfSpeaker }) else { throw TracksError.unknownSelf(selfSpeaker) }
     return (rows.filter { $0.speaker == selfSpeaker }, rows.filter { $0.speaker != selfSpeaker })
 }
 
-/// 1 行 1 本の音声のファイル名。sha1(声 + 改行 + 本文)の先頭 16 桁 + .wav（synth.mjs の fileOf と同じ）。
 func lineFileName(voice: String, text: String) -> String {
     let digest = Insecure.SHA1.hash(data: Data("\(voice)\n\(text)".utf8))
     return digest.map { String(format: "%02x", $0) }.joined().prefix(16) + ".wav"
 }
 
-/// 行の末尾の雑音を、同じ長さの無音にする（synth.mjs の silenceJunkTail と同じ）。
-/// 最後の 1 ms が大きければ雑音とみなし、大きい 1 ms の窓が続く間を無音にして、手前の 10 ms を直線的に絞る。長さは変えない。
 func silenceJunkTail(_ samples: [Float], sampleRate: Double) -> [Float] {
     let window = Int(sampleRate / 1000)
     func peak(_ from: Int) -> Float {
@@ -87,18 +74,14 @@ func silenceJunkTail(_ samples: [Float], sampleRate: Double) -> [Float] {
     return out
 }
 
-/// 秒の位置のフレーム。四捨五入する。
 func framePosition(seconds: Double, sampleRate: Double) -> Int {
     Int((seconds * sampleRate).rounded())
 }
 
-/// トラックの長さ（秒）。最後の行の end + 3 秒。
 func trackDuration(of rows: [TimelineRow]) -> Double {
     (rows.map(\.end).max() ?? 0) + trailingSilenceSeconds
 }
 
-/// 各行を start の位置に置いた 1 本のトラックにする。長さは `frames` 以上（行が長ければ行の終わりまで。音声を削らない）。
-/// 重なった行の足し合わせが 1 を超えるときは、切り詰めず全体を同じ比率で小さくする。
 func renderTrack(_ parts: [PlacedSamples], frames: Int) -> [Float] {
     var track = [Float](repeating: 0, count: max(frames, parts.map { $0.startFrame + $0.samples.count }.max() ?? 0))
     for part in parts {
@@ -123,8 +106,6 @@ private func readSamples(_ url: URL) throws -> (samples: [Float], sampleRate: Do
     return (Array(UnsafeBufferPointer(start: channel, count: Int(buffer.frameLength))), file.processingFormat.sampleRate)
 }
 
-/// 会議のフォルダ（timeline.tsv・voices.json・lines/）から、`自分.wav` と `相手.wav` を `outDir` に書く。2 本の長さは同じ。
-/// 標準出力に出すのは行数と秒数だけ。
 func buildTracks(meeting: URL, outDir: URL, selfSpeaker: String) throws {
     let timeline = try String(contentsOf: meeting.appendingPathComponent("timeline.tsv"), encoding: .utf8)
     let rows = try parseTimelineRows(timeline)
@@ -149,7 +130,6 @@ func buildTracks(meeting: URL, outDir: URL, selfSpeaker: String) throws {
         }
     }
 
-    // 2 本の長さをそろえるため、先に両方の音声を読んで、サンプリング周波数と長さを決める。1 本ずつ組み立てて書き、メモリを減らす
     let minePlaced = try place(rows.indices.filter { rows[$0].speaker == selfSpeaker })
     let othersPlaced = try place(rows.indices.filter { rows[$0].speaker != selfSpeaker })
     guard let rate = sampleRate else { throw TracksError.noRows }

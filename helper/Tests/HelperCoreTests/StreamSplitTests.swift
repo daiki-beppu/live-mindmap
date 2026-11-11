@@ -3,8 +3,6 @@ import Foundation
 import Testing
 @testable import HelperCore
 
-// タップの流れを、AEC の参照と `相手` の文字起こしの両方へ配る。
-
 private struct StubFailure: Error, Equatable {}
 
 private func audio(hostTime: UInt64) -> CapturedAudio {
@@ -34,7 +32,6 @@ struct StreamSplitTests {
         let (upstream, input) = AsyncThrowingStream.makeStream(of: CapturedAudio.self, throwing: Error.self)
         let (first, second) = split(upstream)
 
-        // 相手のタップと同じ 2ch interleaved。サンプルごとに値を変え、中身が丸ごと写ったかを確かめる
         let original = constantAudio(value: 0, frames: 480, sampleRate: 48_000, channels: 2, interleaved: true, hostTime: 7)
         let samples = original.buffer.floatChannelData![0]
         for i in 0..<(480 * 2) { samples[i] = Float(i) / 1000 }
@@ -78,7 +75,6 @@ struct StreamSplitTests {
 
         let reader = Task<Void, Error> { for try await _ in first {} }
         input.yield(audio(hostTime: 1))
-        // first の読み手を取り消す。取り消しで first の流れは終わった扱いになる
         reader.cancel()
         _ = try? await reader.value
 
@@ -95,7 +91,6 @@ struct StreamSplitTests {
         let (upstream, input) = AsyncThrowingStream.makeStream(of: CapturedAudio.self, throwing: Error.self)
         let (first, second) = split(upstream)
 
-        // second は 1 件ずつ読み、未消費を常に 1 件以下に保つ。first は読まない
         var secondTimes: [UInt64] = []
         var secondIterator = second.makeAsyncIterator()
         for time in 1...total {

@@ -1,5 +1,3 @@
-// Helpers.launch が空きポートを探している間（node:net の listen が終わる前）に中断されたら、探すための待受けを閉じる。
-// 待受けを CreatePortProbe で偽物にし、listen の完了を手元で操作して、中断・遅れて届く割り当てを観測する
 import { describe, expect, it } from "@effect/vitest";
 import { Deferred, Effect, Fiber, Layer } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
@@ -22,7 +20,6 @@ class FakeProbe {
     this.listening = false;
     callback?.();
   }
-  // OS がポートを割り当てた（listen のコールバックを呼ぶ）
   assign() {
     this.listening = true;
     this.onListening?.();

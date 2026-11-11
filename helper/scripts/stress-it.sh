@@ -1,7 +1,4 @@
 #!/bin/bash
-# CI の混み合いを手元で再現して helper の IT を流す（#1681）。使い方: bash helper/scripts/stress-it.sh [回数]。先に swift build --build-tests が要る
-# STRESS_EFFICIENCY_CORES=1 なら yes を走らせず、swift test を taskpolicy -b で効率コアに寄せて流す（#1819）
-# STRESS_UNIT=1 なら IT の代わりに unit を流す（#1854）
 set -euo pipefail
 runs="${1:-3}"
 jobs="${STRESS_JOBS:-$(( $(sysctl -n hw.ncpu) * 8 / 5 ))}"

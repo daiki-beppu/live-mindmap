@@ -2,9 +2,6 @@ import Foundation
 import Testing
 @testable import HelperCore
 
-// 録画のファイルに記録された作成日時の読み取り（fileCreationDate）の IT。
-// 確かめること: 作成日時のメタデータを持つファイルではその日時、持たないファイルと読めないファイルでは nil。
-
 private typealias Support = FileAudioTestSupport
 
 @Suite("ファイルの作成日時（fileCreationDate）", .timeLimit(.minutes(1)))
@@ -20,7 +17,7 @@ struct FileCreationDateITTests {
 
         let date = await fileCreationDate(of: movie)
 
-        #expect(date == Date(timeIntervalSince1970: 1_790_816_523)) // 2026-10-01T01:02:03Z
+        #expect(date == Date(timeIntervalSince1970: 1_790_816_523))
     }
 
     @Test("作成日時のメタデータを持たない WAV は nil（ファイルシステムの日時で代用しない）")

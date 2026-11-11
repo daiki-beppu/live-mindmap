@@ -52,12 +52,10 @@ describe("束ねる effect は 1 つ（lockfile）", () => {
 
 describe("web の Vite の設定", () => {
   it("tsconfig.json に JSX の設定（jsx）が無い", () => {
-    // tsconfig.json は JSONC（コメントあり）なので JSON.parse せず、本文に jsx のキーが無いことを見る
     expect(read(webRoot, "tsconfig.json")).not.toMatch(/"jsx"\s*:/);
   });
 });
 
-// Issue #829: 会議中の画面を Foldkit へ切り替えて、React と React に結び付いた依存を web から消した
 describe("React と React 用の依存は web に無い（Issue #829）", () => {
   const REMOVED = ["react", "react-dom", "@xyflow/react", "@videojs/react", "@tanstack/react-hotkeys", "@tanstack/hotkeys", "@types/react", "@types/react-dom", "@vitejs/plugin-react"];
 

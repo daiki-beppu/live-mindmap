@@ -1,6 +1,5 @@
 import { unusedApple } from "./fixtures/appleIntelligence.ts";
 import { evalManagedDeps } from "./fixtures/evalManagedDeps.ts";
-// 回帰評価（eval コマンド）。fixture は合成データで、実際の録音サンプルは使わない。
 import { readFileSync, writeFileSync } from "node:fs";
 import { appendFile, copyFile, mkdtemp, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -19,13 +18,11 @@ import { fakeListener } from "./fakeListener.ts";
 import { fakeAudioMix } from "./fixtures/audioMix.ts";
 import { fakeScreenJpeg } from "./fixtures/screenJpeg.ts";
 
-// play の updater と配信を差し替える。評価の対象は保存されたマップなので、配信は偽物でよい
 const external = vi.hoisted(() => ({ openClaudeUpdater: vi.fn(), openListener: vi.fn() }));
 vi.mock("../src/claude.ts", async (importOriginal) => ({
   ...(await import("./fixtures/claudeModule.ts")).fakeClaudeModule(() => external.openClaudeUpdater()),
   AgentSdk: (await importOriginal<typeof import("../src/claude.ts")>()).AgentSdk,
 }));
-// 配信の待受け（openListener）だけを偽物にする。serveFeed は本物のまま
 vi.mock("../src/http.ts", async (importOriginal) => ({
   ...await importOriginal<typeof import("../src/http.ts")>(),
   openListener: external.openListener,
@@ -37,7 +34,6 @@ beforeEach(() => {
   external.openListener.mockImplementation(fakeListener().open);
 });
 
-// 旧 CliDeps の置き換え。保存先は ConfigProvider、標準出力は Console、撮影は MapCapture の Layer
 function dependencies(sessionsDir: string) {
   const stdout: string[] = [];
   const stderr: string[] = [];
@@ -61,14 +57,11 @@ function dependencies(sessionsDir: string) {
   return { layer, stdout, stderr };
 }
 
-// タグ付きの失敗から、タグと自身のフィールドを取り出す（フィールド名に依存しない観測のため）
 const carries = (values: Record<string, unknown>, text: string) =>
   Object.values(values).some((v) => typeof v === "string" && v.includes(text));
 
 const fixture = join(import.meta.dirname, "fixtures/short.transcript.json");
-// short.transcript.json の発言: r1 [0.5, 9.8] / r2 [9.8, 19.2] / r3 [19.2, 28.0]。差分更新は発言 1 件ごとに 1 回（r1・r2・r3 の 3 回）。
 
-// 入れ子のあるマップ（深さ 3）。決定は r1 と r3、TODO は r2 を根拠にする。
 const scriptA: Op[][] = [
   [
     { op: "add", ref: "t1", parent: "root", kind: "議題", text: "採用", evidence: ["r1"] },
@@ -79,7 +72,6 @@ const scriptA: Op[][] = [
   [{ op: "add", ref: "t5", parent: "n2", kind: "決定", text: "2 回にする", evidence: ["r1", "r3"] }],
 ];
 
-// 浅いマップ（深さ 2）。議題 2、課題 1。
 const scriptB: Op[][] = [
   [
     { op: "add", ref: "t1", parent: "root", kind: "議題", text: "予算", evidence: ["r1"] },
@@ -89,10 +81,6 @@ const scriptB: Op[][] = [
   [],
 ];
 
-// play を 1 回流し、ランのフォルダを返す。ランごとにセッションの置き場を分けて、開始時刻の衝突を避ける。
-// script は「発言 r1・r2 が揃った時点の手」と「r3 の手」の 2 手で書く。発言は 1 件ずつ渡るので、r1 の呼び出しは何もせず（ops なし）、
-// script[0] を r2 の呼び出し、script[1] を r3 の呼び出しで返す。r1 の手は、r2 の呼び出しの時点で既知の発言（r1・r2）だけを根拠にしている。
-// usages を渡すと、n 回目（r1 の呼び出しが 0 回目）の差分更新がその n 番目のトークン数を結果と一緒に返す（渡さない・足りない回は返さない）
 const play = (script: Op[][], file = fixture, usages: DiffUsage[] = []) =>
   Effect.gen(function* () {
     const steps: Op[][] = [[], ...script];
@@ -108,7 +96,7 @@ const play = (script: Op[][], file = fixture, usages: DiffUsage[] = []) =>
     });
     const { layer, stdout } = dependencies(sessionsDir);
     yield* runCli(["play", file]).pipe(Effect.provide(layer));
-    return dirname(stdout.join("").split("\n")[0]!); // play は書き出したファイルのパスを出す（#41）
+    return dirname(stdout.join("").split("\n")[0]!);
   });
 
 const evalCli = (args: string[]) =>
@@ -119,7 +107,6 @@ const evalCli = (args: string[]) =>
     return stdout.join("");
   });
 
-// eval の失敗を、表示ではなくタグ付きの失敗値として観測する（日本語 1 行は cliEntry.it.test.ts が入口で観測する）
 const evalFailure = (args: string[]) =>
   Effect.gen(function* () {
     const sessionsDir = yield* Effect.promise(() => mkdtemp(join(tmpdir(), "live-mindmap-eval-")));
@@ -131,10 +118,8 @@ const evalFailure = (args: string[]) =>
     return { tag: failure._tag, values: Object.fromEntries(Object.entries(failure)) };
   });
 
-// Markdown の表を、見出しをキーにした行の配列にする
 function parseTable(text: string): { header: string[]; rows: Record<string, string>[] } {
   const lines = text.split("\n").filter((l) => l.trim().startsWith("|"));
-  // GFM と同じく `\` とその次の 1 文字を一組として読み、エスケープされていない `|` だけで区切る
   const cells = (l: string) => {
     const inner = l.trim().replace(/^\|/, "").replace(/(?<!\\(?:\\\\)*)\|$/, "");
     const out: string[] = [];
@@ -447,7 +432,6 @@ describe("eval: 複数のランを並べる", () => {
 describe("eval: log.jsonl から数える 3 指標", () => {
   const LOG_HEADERS = ["書き換え/発言", "1 ノードの書き換えの最多", "話し中の兄弟の最多"];
   const USAGE_HEADERS = ["入力トークン", "キャッシュ書き込みトークン", "キャッシュ読み出しトークン", "出力トークン"];
-  // r2 の呼び出しで議題と要点を立て、r3 の呼び出しで要点の本文を変える（書き換え 1 回）。発言は 3 件
   const scriptRewrite: Op[][] = [
     [
       { op: "add", ref: "t1", parent: "root", kind: "議題", text: "ツールの共有", evidence: ["r1"] },
@@ -508,8 +492,6 @@ describe("eval: 正解との再現率（時刻の重なり）", () => {
     expect(after).toBe(before);
   }));
 
-  // 決定のノード「2 回にする」の根拠は r1 [0.5, 9.8] と r3 [19.2, 28.0]、TODO のノード「求人票を直す」の根拠は r2 [9.8, 19.2]。
-  // 1 つのノードは正解 1 件にしか当たらないので、正解は 1 件ずつ評価する。
   const decision = ["2回"];
   const todo = ["求人票"];
   const overlap: [string, "決定" | "TODO", number, number, string[], string][] = [
@@ -562,7 +544,6 @@ describe("eval: 正解との再現率（時刻の重なり）", () => {
 });
 
 describe("eval: 種別違い（正解が別の種別のノードとして出た数）", () => {
-  // 決定の正解に時刻（r3 [19.2, 28.0]）もキーワードも合うが、種別が要点のノードだけがあるマップ
   const scriptPointOnly: Op[][] = [
     [{ op: "add", ref: "t1", parent: "root", kind: "議題", text: "採用", evidence: ["r1"] }],
     [{ op: "add", ref: "t2", parent: "n1", kind: "要点", text: "2 回にする", evidence: ["r3"] }],
@@ -587,7 +568,6 @@ describe("eval: 種別違い（正解が別の種別のノードとして出た�
   }));
 
   it.effect("TODO の正解にも同じように数える（決定のノードとして出た TODO は TODO の種別違い）", () => Effect.gen(function* () {
-    // 決定ノード「2 回にする」は r1・r3 が根拠。TODO の正解を r3 の区間に置く
     const { row } = yield* run({ 決定: [], TODO: [{ text: "x", from: 20, to: 25, keywords: ["2回"] }] }, scriptA);
     expect(row["TODO の種別違い"]).toBe("1");
     expect(row["TODO の再現率"]).toBe("0/1 (0%)");
@@ -625,7 +605,6 @@ describe("eval: 種別違い（正解が別の種別のノードとして出た�
   }));
 
   it.effect("同じ種別の候補はあるが割り当てで外れた正解も、別の種別のノードに当たれば数える", () => Effect.gen(function* () {
-    // 決定ノード 1 つ（r3 を根拠）に当たる正解が 2 件。1 件は決定で再現でき、もう 1 件は要点のノードに当たる
     const script: Op[][] = [
       [{ op: "add", ref: "t1", parent: "root", kind: "議題", text: "採用", evidence: ["r1"] }, { op: "add", ref: "t2", parent: "t1", kind: "論点", text: "面接は何回か", evidence: ["r2"] }],
       [
@@ -655,7 +634,6 @@ describe("eval: 種別違い（正解が別の種別のノードとして出た�
 });
 
 describe("eval: 正解との再現率（キーワード）", () => {
-  // 決定の親は論点に限る。議題と論点を r2 の呼び出しで作り、決定は r3 の呼び出しで足す（r3 は r3 の呼び出しから根拠に使える。論点は scriptA と同じく n2）
   const base: Op[] = [
     { op: "add", ref: "t1", parent: "root", kind: "議題", text: "採用", evidence: ["r1"] },
     { op: "add", ref: "t2", parent: "t1", kind: "論点", text: "面接は何回か", evidence: ["r2"] },
@@ -665,7 +643,6 @@ describe("eval: 正解との再現率（キーワード）", () => {
     nodes.map(({ text, evidence = ["r1"] }, i): Op => ({ op: "add", ref: `d${i}`, parent: "n2", kind: "決定", text, evidence })),
   ];
   const decisionNode = (text: string, evidence?: string[]) => decisionNodes({ text, evidence });
-  // 決定の再現率の列だけを返す
   const decisionRecall = (script: Op[][], items: { from: number; to: number; keywords: unknown }[]) => Effect.gen(function* () {
     const truth = { 決定: items.map((i) => ({ text: "x", ...i })), TODO: [] };
     const { rows } = parseTable(yield* evalCli(["--truth", yield* writeTruth(truth), yield* play(script)]));
@@ -694,8 +671,6 @@ describe("eval: 正解との再現率（キーワード）", () => {
   }));
 
   it.effect("当てられる組み合わせが複数あるときは、当たる件数が最大になる割り当てを選ぶ（先頭から貪欲に当てると 1 件になる例）", () => Effect.gen(function* () {
-    // N1「予算」「上限」を含む / N2「予算」だけ。T1「予算」は N1・N2 に、T2「上限」は N1 にだけ当たる。
-    // T1 を先に N1 へ当てると T2 が余る。T1→N2、T2→N1 なら 2 件。
     const script = decisionNodes({ text: "予算の上限を決める" }, { text: "予算は据え置く" });
     const items = [
       { from: 1, to: 5, keywords: ["予算"] },
@@ -907,7 +882,6 @@ describe("eval: 差分更新のトークン数の合計", () => {
 });
 
 describe("eval --screen-truth: 共有画面の正解の列", () => {
-  // scriptA のノード（根拠）: 議題「採用」r1 [0.5, 9.8] / 論点「面接は何回か」r2 / 案「1 回で足りる」r2 / TODO「求人票を直す」r2 [9.8, 19.2] / 決定「2 回にする」r1・r3 [19.2, 28.0]
   const SCREEN_HEADERS = ["指す発言", "うち記憶", "話だけ", "出てはいけない"];
   const point = (keywords: unknown, from = 1, to = 5, extra: Record<string, unknown> = {}) => ({ text: "x", from, to, keywords, ...extra });
   const screenTruth = (parts: { 指す発言?: unknown[]; 話だけ?: unknown[]; 出てはいけない?: unknown[] }) => ({
@@ -999,7 +973,6 @@ describe("eval --screen-truth: 共有画面の正解の列", () => {
     }));
 
     it.effect("一対一の割り当ては、取れる数が最大になるように組む（先の正解がノードを譲る）", () => Effect.gen(function* () {
-      // 先の正解は「面接は何回か」「1 回で足りる」のどちらにも当たり、後の正解は「面接は何回か」だけに当たる
       const row = yield* screenRow(screenTruth({ 指す発言: [point(["回"], 10, 15), point(["面接"], 10, 15)] }));
       expect(row["指す発言"]).toBe("2/2");
     }));
@@ -1053,7 +1026,6 @@ describe("eval --screen-truth: 共有画面の正解の列", () => {
     }));
 
     it.effect("memory の項目が、他の項目とノードを取り合っても、取れた数は食い違わない", () => Effect.gen(function* () {
-      // 後ろの memory 項目は「面接は何回か」にしか当たらず、前の memory でない項目と競合する
       const row = yield* screenRow(screenTruth({
         指す発言: [point(["回"], 10, 15), point(["面接"], 10, 15, { memory: true })],
       }));
@@ -1064,7 +1036,6 @@ describe("eval --screen-truth: 共有画面の正解の列", () => {
 
   describe("出てはいけない（時刻を問わず、キーワードを含むノードがあれば漏れ）", () => {
     it.effect("時刻を持たない項目でも、どの時刻のノードに含まれても漏れに数える", () => Effect.gen(function* () {
-      // 「求人票」は r2、「2回」は r1・r3 の根拠のノード。項目に時刻は無い
       const row = yield* screenRow(screenTruth({ 出てはいけない: [{ keywords: ["求人票"] }, { keywords: ["2回"] }] }));
       expect(row["出てはいけない"]).toBe("2/2");
     }));

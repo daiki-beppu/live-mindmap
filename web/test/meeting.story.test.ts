@@ -29,14 +29,9 @@ import {
   type Model,
 } from "./meetingHarness.ts";
 
-// 会議中の Foldkit プログラム（Issue #829）の update の Story。update を直接動かし、Model が Schema に通ること・出る Command・キーの意味（会議中の行だけ）を見る。
-// 描いた木に出るもの（待ち表示・並び・知らせの文言・マップ・右の列）は meeting.scene.test.ts が見る。
-// Story は保留の Command を残したまま次の Message を送れない。出す・消すときの Toast の動きと点滅の再生し直しは settleStory で解く
-
 const names = (result: { commands?: ReadonlyArray<{ name: string }> }): string[] => (result.commands ?? []).map((c) => c.name).sort();
 const measured = surfaceMessage(MapSurfaceMessage.MeasuredMapSurface({ ...SIZE, nodeHeights: HEIGHTS }));
 
-// 続けて流して、最後の update の結果を返す（途中の Command は読み捨てる。Model の組み立て用）
 const run = (messages: ReadonlyArray<MeetingMessage>, from: Model = init(false)): { model: Model; commands?: ReadonlyArray<{ name: string }> } =>
   messages.reduce<{ model: Model; commands?: ReadonlyArray<{ name: string }> }>((acc, next) => update(acc.model, next), { model: from });
 
@@ -99,7 +94,6 @@ describe("会議中の update: Model は本物の Schema に通る", () => {
   });
 
   it("スナップショットが届く前の Message では、画面の元になる値を変えても同じ初期の形（受信以外の入力は空振り）", () => {
-    // 表示面・キーは、スナップショットが届くまで（表示面が無い間）は何も起こさない
     const start = init(false);
     for (const input of [measured, keyMessage("="), keyMessage("E"), keyMessage("?"), keyMessage("Escape")]) {
       const result = update(start, input);
@@ -164,7 +158,6 @@ describe("会議中の update: キー（会議中の行だけ。見返しのキ�
   });
 });
 
-// 狭い幅で開いたとき（Issue #1236 の一部）: 画面の部品は最初のスナップショットで作るので、そのときに右の列と字幕を隠して始める。E・C で今までどおり出せる
 describe("会議中の update: 狭い幅で開いたときの右の列と字幕", () => {
   const sessionOf = (m: Model) => {
     if (m.session._tag === "None") throw new Error("スナップショットを受けた後なのに画面の部品がありません");
@@ -272,7 +265,6 @@ describe("会議中の update: 取り込みの知らせの時間（RESUMED_NOTIC
   });
 });
 
-// 保留の動き（Toast の出入り）を解いた後の Model を取り出す。Story の settle を Model だけに適用する
 const settleThrough = (from: Model): Model => {
   let out: Model = from;
   story(
@@ -290,7 +282,6 @@ describe("会議中の update: 受信の事実の順に依らず、画面が出�
   it("つながった・切れた を繰り返しても Model は Schema に通り、スナップショットは保たれる（切れても画面は消えない）", () => {
     const result = run([snapshotMessage(FIRST), connectedMessage(), disconnectedMessage(), connectedMessage(), disconnectedMessage()]);
     expect(Schema.is(MeetingModel)(result.model)).toBe(true);
-    // 画面が出ている（待ち表示に戻らない）ことは、最初のスナップショットの前の Model と違うことで見る
     expect(result.model).not.toEqual(init(false));
     expect(names(result).filter((n) => n === "RestartBlink")).toEqual([]);
   });

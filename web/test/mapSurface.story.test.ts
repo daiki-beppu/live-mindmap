@@ -11,10 +11,6 @@ import { layout } from "../src/layout.ts";
 import { interpolate, startPositions } from "../src/motion.ts";
 import { foldingActions } from "./foldingActions.ts";
 
-// マップの表示面（Issue #814）の update。Mount が出す Message 1 つで、画面の大きさとノードの実測を受ける。
-// 配置・畳んだ後の木・カメラの目標は、Snapshot と表示状態から毎回導く。関係づけだけの更新では、畳み方の判断に使う文脈を維持する。
-// カメラ（Issue #819）の欄は viewport（今見せているビューポート）と、出来事の履歴で決まる事実（placedRound・keepAnchor・pendingShift）と、見返しの 10 秒を計り直す idleStamp
-
 type MapSurfaceModel = typeof Model.Type;
 
 const node = (id: string, parent: string | null, kind: Exclude<SnapshotNode["kind"], "補足"> = "議題"): Exclude<SnapshotNode, { kind: "補足" }> => ({ id, parent, kind, text: id, evidence: parent ? ["r1"] : [] });
@@ -143,7 +139,6 @@ describe("mapSurface の Model: パンの欄", () => {
   });
 });
 
-// 画面上の移動量の比較。測っていない Model の viewport は原点・倍率 1 から始まるので、移動量はそのまま viewport の x・y になる（倍率は変わらない）。-0 と 0 は区別しない
 const expectPan = (m: MapSurfaceModel, x: number, y: number) => {
   expect(m.camera.viewport.x).toBeCloseTo(x, 9);
   expect(m.camera.viewport.y).toBeCloseTo(y, 9);
@@ -551,8 +546,6 @@ describe("mapSurface の update: クリックとドラッグの見分け（MapNo
   });
 });
 
-// マップの動き（Issue #817）: 差分更新の反映で、表示位置が今の位置から新しい目標へ 500ms で補間される。
-// Model に持つのは補間の始まりの位置（start）と経過 ms（elapsedMs）だけ。表示する位置は displayedPositions が毎回導く
 describe("mapSurface の update: 差分更新の反映で位置が補間される", () => {
   const HEIGHTS = { root: 40, A: 64, P: 88 };
   const next: Snapshot = { ...snapshot, round: 2, nodes: [...snapshot.nodes, node("D", "A", "案")] };
@@ -580,7 +573,6 @@ describe("mapSurface の update: 差分更新の反映で位置が補間され�
       given(initial("live")),
       message(measure(HEIGHTS)),
       model((m) => {
-        // 最初の測定では補間を始めない
         expect(Option.isNone(m.motion)).toBe(true);
       }),
       message(Message.ChangedSnapshot({ snapshot: next })),
@@ -589,7 +581,6 @@ describe("mapSurface の update: 差分更新の反映で位置が補間され�
         const target = targetOf(m);
         expect(Object.keys(target).sort()).toEqual(["A", "D", "P", "root"]);
         const expectedStart = startPositions(shownOf(m), before, target);
-        // この入力は、既存ノードも動き、新しいノードも出るものでなければ検証にならない
         expect(expectedStart["root"]).not.toEqual(target["root"]);
         expect(expectedStart["D"]).toEqual(before["A"]);
         expect(Option.isSome(m.motion)).toBe(true);
@@ -603,7 +594,6 @@ describe("mapSurface の update: 差分更新の反映で位置が補間され�
         const target = targetOf(m);
         const expectedStart = startPositions(shownOf(m), layout(shownOf(initial("live")), HEIGHTS), target);
         expectPositions(displayedPositions(m), interpolate(expectedStart, target, 0.5));
-        // 各座標は 始まり + (目標 − 始まり) × 0.875
         expect(displayedPositions(m)["root"]!.y).toBeCloseTo(expectedStart["root"]!.y + (target["root"]!.y - expectedStart["root"]!.y) * 0.875, 6);
       }),
       message(tick(250)),
@@ -652,7 +642,6 @@ describe("mapSurface の update: 差分更新の反映で位置が補間され�
         const expectedStart = startPositions(shownOf(m), shownMid, targetOf(m));
         expectPositions(startOf(m), expectedStart);
         expectPositions(displayedPositions(m), expectedStart);
-        // 途中の位置は始まり（前の始まり）とも目標とも違う
         expect(shownMid["root"]).not.toEqual(layout(shownOf(initial("live")), HEIGHTS)["root"]);
       }),
       message(tick(500)),
@@ -769,10 +758,7 @@ describe("mapSurface の Model: motion の欄", () => {
   });
 });
 
-// ズーム（Issue #816）。ビューポートは Model の viewport で、見せる値と update が使う値は同じ。結果は zoomAtPoint と同じ（今の @xyflow／MapView と同じだけ変わる）。
-// 測った後の viewport は、自動のカメラが全体を収めた位置（この Snapshot に今の議題は無い）
 const measuredLive = (isMac = false): MapSurfaceModel => update(initial("live", isMac), Message.MeasuredMapSurface({ width: 800, height: 600, nodeHeights: { root: 40, A: 64, P: 88 } })).model;
-// still は同じ寸法を測った Model（全体を収めた viewport。ズームもパンも受けない）
 const stillMeasured = (): MapSurfaceModel => update(initial("still"), Message.MeasuredMapSurface({ width: 800, height: 600, nodeHeights: { root: 40, A: 64, P: 88 } })).model;
 const POINT = { x: 300, y: 200 };
 const expectViewport = (actual: { x: number; y: number; zoom: number }, expected: { x: number; y: number; zoom: number }) => {
@@ -908,7 +894,6 @@ describe("mapSurface の update: Ctrl＋ホイール（ピンチ）でズーム�
   });
 });
 
-// 人が置いた viewport は絶対の値で、画面の大きさが変わっても動かない（全体を収める位置との比ではない）。倍率は 0.5〜2 のまま
 describe("mapSurface の update: 画面の大きさが変わっても、人が置いた viewport は動かない（live）", () => {
   const SMALL = { width: 300, height: 200 };
   const LARGE = { width: 4000, height: 3000 };
@@ -1071,7 +1056,6 @@ describe("mapSurface の update: キーの一覧の開閉（ToggledKeyList）", 
 
 describe("mapSurface の update: 反映番号が変わったら点滅をやり直す", () => {
   const change = (nodeId: string, round: number): Snapshot["changes"][number] => ({ change: "更新", node: nodeId, kind: "論点", text: nodeId, round, at: 0 });
-  // 直接変わるノード P（今の議題 B の下）と、畳まれた済みの議題 A の中の A1（畳んだ A が点滅の対象になる）
   const nodesOf = (): SnapshotNode[] => [
     node("root", null, "会議"),
     { ...node("A", "root"), talkStatus: "済み" },
@@ -1134,7 +1118,6 @@ describe("mapSurface の update: 反映番号が変わったら点滅をやり�
   });
 });
 
-// 狭い幅の根拠のシートの閉じるボタン（Issue #969）。Esc と違い、選びだけを外す
 describe("mapSurface の update: 根拠のシートの閉じるボタン（ClickedEvidenceClose）", () => {
   it("選んでいたノードの選びが外れ、カメラのモードと人の開閉は残る", () => {
     const base = measuredLive();

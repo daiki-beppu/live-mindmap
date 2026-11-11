@@ -8,10 +8,6 @@ import { Message } from "../src/app/review/message.ts";
 import { shownText } from "../src/app/sessionLayout/toast.ts";
 import { audioApp, audioContext, commandNames, DURATION, plainApp, plainContext, restartedBlink, settleNotice, sideHiddenOf, stateAt } from "./reviewHarness.ts";
 
-// 見返しを 1 つのプログラムに組み上げた（Issue #826）update の Story。
-// 見る状態（表示面の viewing）を、人が時刻を動かすすべての操作・右の列と字幕の操作・見る状態の知らせとつなげたことを、同じ Model の上の続きで見る。
-// 会議の長さは 200 秒。反映は 10・100・160 秒
-
 const NO_MODIFIERS = { metaKey: false, ctrlKey: false, altKey: false };
 type Mods = Partial<typeof NO_MODIFIERS>;
 const keyOf = (id: string, mods: Mods = {}) => Message.PressedKey({ key: id as never, ...NO_MODIFIERS, ...mods });
@@ -25,10 +21,8 @@ type Context = typeof plainContext;
 type App = typeof plainApp;
 const appOf = (context: Context): App => (context === plainContext ? plainApp : audioApp);
 
-// 表示面を測り終えた、時刻 time の Model
 const measured = (context: Context, time: number, patch: Partial<Model["playback"]> = {}): Model =>
   appOf(context).update(stateAt(context, time, patch), surface(MapSurfaceMessage.MeasuredMapSurface({ width: 800, height: 600, nodeHeights: { root: 40, n1: 40, n2: 40, n3: 40 } }))).model;
-// = で拡大した（見る状態が manual の）Model
 const manualAt = (context: Context, time: number, patch: Partial<Model["playback"]> = {}): Model => {
   const manual = appOf(context).update(measured(context, time, patch), keyOf("=")).model;
   expect(manual.mapSurface.camera.mode).toBe("manual");

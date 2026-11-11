@@ -3,9 +3,6 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { selectionOf, testIds } from "./swiftTestSelection.ts";
 
-// Issue #549: helper の typecheck と test は、同じ引数の `swift build --build-tests` を先に呼び、テストは `swift test --skip-build` で回す。
-// 引数が違うと別のビルド設定になり、`pnpm typecheck` と `cd helper && pnpm test` を交互に回すたびに 5〜10 秒の作り直しが起きる。
-// helper/package.json の script を読み、`pnpm <script>` の参照を展開して、実際に走る swift コマンドの列を確かめる
 const scripts = (
   JSON.parse(readFileSync(join(import.meta.dirname, "../../helper/package.json"), "utf8")) as {
     scripts: Record<string, string>;
@@ -23,8 +20,6 @@ const swiftCommands = (name: string): string[] => expand(name).filter((c) => c.s
 const swiftBuild = (name: string): string[] => swiftCommands(name).filter((c) => c.startsWith("swift build"));
 const swiftTest = (name: string): string[] => swiftCommands(name).filter((c) => c.startsWith("swift test"));
 
-// Issue #550: Suite の型名の接尾辞（…Tests＝unit、…ITTests＝軽い IT、…HeavyTests＝重い IT）で層を選ぶ script。
-// どの層も typecheck のビルドを 1 回だけ使い、swift test は 1 回で --skip-build 付きにする
 const testScripts = ["test", "test:it", "test:it:heavy", "test:it:all"];
 
 const layers: Record<string, string[]> = {
@@ -81,7 +76,6 @@ describe("helper の層ごとの test script", () => {
     expect(swiftTest(name)[0]).toMatch(/^swift test\b.*--skip-build/);
   });
 
-  // 層の選択は表記ではなく結果で確かめる: script の --skip / --filter を取り出し、代表的なテスト ID が選ばれるかを見る
   it.each(Object.keys(layers))("%s は定義どおりの層だけを選ぶ", (name) => {
     const selects = selection(name);
     for (const [layer, ids] of Object.entries(testIds)) {

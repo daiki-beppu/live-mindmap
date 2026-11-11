@@ -97,7 +97,6 @@ describe("撮影 scope の資源所有権", () => {
     expect(Result.isFailure(result)).toBe(true);
     if (Result.isSuccess(result)) return;
     expect(result.failure).toBeInstanceOf(CaptureFailed);
-    // 入っているのに起動できないときは、入れ方を勧めない（入っていないときの ChromiumMissing だけが入れ方を持つ）
     expect(result.failure.message).toContain("Chromium を起動できません");
     expect(result.failure.message).toContain("launch failed");
     expect(result.failure.message).not.toContain("pnpm cli install");
@@ -140,7 +139,6 @@ describe("撮影 scope の資源所有権", () => {
   }));
 
   it.effect("撮影の処理（fn）が失敗しても、そのエラーをそのまま伝える（握りつぶさない・CaptureFailed に包まない）", () => Effect.gen(function* () {
-    // fn の失敗の型は withCapturePage が決めないので、撮影自身の CaptureFailed とは別のタグで確かめる
     const result = yield* Effect.result(withCapturePage(snapshot, () => new FnFailed({ message: "fn の失敗" })).pipe(Effect.provide(playwright)));
     expect(Result.isFailure(result)).toBe(true);
     if (Result.isSuccess(result)) return;

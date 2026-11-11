@@ -1,10 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { acceptInferredNames, nameSpeaker, restoreSpeakerName, type InferredSpeakerName, type Remark } from "../src/core/index.ts";
 
-// Issue #1026: 話者の名前の規則（GLOSSARY「話者の名前」、#610 の Alloy の manualNameSticks・namesNeverRemoved）。
-// nameSpeaker(現在の表, 変更) は、表が変わるときだけ新しい表（ラベル → { name, source }）を返し、変わらないときは undefined を返す純粋な関数。
-// 渡した表は書き換えない。出どころの「推定」は後の sub-issue が書く。今回の画面とサーバーが書くのは「手入力」だけで、規則はここで固める
-
 const table = (...rows: Array<[string, string, "推定" | "手入力"]>) => new Map(rows.map(([label, name, source]) => [label, { name, source }] as const));
 
 describe("restoreSpeakerName", () => {
@@ -89,8 +85,6 @@ describe("nameSpeaker", () => {
   });
 });
 
-// Issue #1027: AI が付けた名前の付け替え（aiRenameOnlyBySelfIntro）。推定の変更は、根拠の種類 basis（名乗り / 呼びかけへの応答）を持つ。
-// AI の名前を AI が付け替えるのは、新しい根拠が本人の名乗りのときだけ
 describe("nameSpeaker: 推定の付け替え（aiRenameOnlyBySelfIntro）", () => {
   it("名前の無いラベルには、どちらの根拠でも推定の名前が付く", () => {
     for (const basis of ["名乗り", "呼びかけへの応答"] as const) {
@@ -149,14 +143,13 @@ describe("nameSpeaker: 推定の付け替え（aiRenameOnlyBySelfIntro）", () =
   });
 });
 
-// サーバーが AI の名前を確かめる。通るのは、根拠の発言が消費済み（known）で、その発言が 相手 の発言かつ話者がラベルと一致する名前だけ
 const remarkOf = (id: string, track: "自分" | "相手", speaker?: string): Remark => ({ id, track, start: 0, end: 1, text: "発言", ...(speaker !== undefined ? { speaker } : {}) });
 const inferred = (label: string, evidence: string, name = "田中", basis: InferredSpeakerName["basis"] = "名乗り"): InferredSpeakerName => ({ label, name, evidence, basis });
 const remarksById = (...remarks: Remark[]) => new Map(remarks.map((r) => [r.id, r]));
 
 describe("acceptInferredNames", () => {
   const remarks = remarksById(remarkOf("r1", "相手", "相手 A"), remarkOf("r2", "相手", "相手 B"), remarkOf("r3", "自分", "自分"), remarkOf("r4", "相手"), remarkOf("r5", "相手", "相手 B"));
-  const known = new Set(["r1", "r2", "r3", "r4"]); // r5 は発言の表にあるが、まだ消費していない
+  const known = new Set(["r1", "r2", "r3", "r4"]);
 
   it("根拠の発言が消費済みで、話者がラベルと一致する名前は通る。基準になった根拠の種類も残る", () => {
     const accepted = acceptInferredNames([inferred("相手 B", "r2", "田中", "名乗り"), inferred("相手 A", "r1", "鈴木", "呼びかけへの応答")], known, remarks);

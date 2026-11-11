@@ -423,7 +423,6 @@ describe("recordedFeed", () => {
     yield* Ref.set(r.state, { status: "running" });
     yield* r.observe;
     yield* until(() => pending.length > 0 || r.arrivals.length > 0, "再開後の待機または投入");
-    // hold後のpacerの起点は仕様で固定せず、再開後に必要な時刻だけ進める。
     if (pending.length > 0) yield* TestClock.adjust(pending[0]! - (yield* virtualNow));
     yield* r.feed.finish;
     expect(labels(r)).toEqual(["相手@2"]);

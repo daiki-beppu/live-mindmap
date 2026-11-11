@@ -2,8 +2,6 @@ import { describe, expect, it } from "vitest";
 import { lockedPublishPage, sealWithPassphrase } from "../src/core/index.ts";
 import type { Sealed } from "../src/core/passphrase.ts";
 
-// 合言葉つきの外側のページに埋める暗号文（Issue #1477）。base64 の暗号文はそのまま埋め、中身が何でも <script> を閉じない
-
 const embedded = (page: string): string => {
   const match = /<script type="application\/json" id="[^"]+">([\s\S]*?)<\/script>/.exec(page);
   if (match === null) throw new Error("暗号文を埋めた <script> がありません");

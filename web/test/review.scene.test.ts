@@ -12,9 +12,6 @@ import { Message as ReviewMessage } from "../src/app/review/message.ts";
 import { ObserveSeekPointer } from "../src/app/review/mount.ts";
 import { settle, TOOLTIPS_PLAIN, tooltipMounts } from "./reviewHarness.ts";
 
-// 見返しの Foldkit プログラム（Issue #823）の Scene。描いた view から入り、その時刻の Snapshot のノードが表示面に出ることを見る。
-// 比べる相手は、既存の純粋な関数 foldView が、その時刻の Snapshot から返すノード（live の表示面と同じ畳み方）
-
 const remark = (id: string, end: number, text: string) => ({ at: "x", type: "remark", remark: { id, track: "相手", start: end - 5, end, text } });
 const add = (ref: string, parent: string, kind: string, text: string, evidence: string[]) => ({ op: "add", ref, parent, kind, text, evidence });
 const diff = (fresh: string[], ops: unknown[]) => ({ at: "x", type: "diff", input: { recent: [], fresh, nodeCount: 0 }, ops, dropped: [] });
@@ -95,7 +92,6 @@ describe("見返しの Scene: 時刻のマップが表示面に出る", () => {
     scene(
       app,
       given(at(10)),
-      // 操作の行（#825）の Mount: シークバーのポインタと、ボタンごとのツールチップ
       Mount.expectExact(ObserveMapSurface, SlideCaptions, ObserveSeekPointer, ...tooltipMounts(TOOLTIPS_PLAIN)),
       tap((simulation) => expect(renderedIds(simulation.html).sort()).toEqual(expectedIds(10).sort())),
       measuredAll(10),

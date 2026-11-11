@@ -1,9 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createTrackMerge } from "../src/core/index.ts";
 
-// Issue #1091: cli recorded --self。トラックごとに end の順に届く発言を、トラックをまたいで end の順の 1 本にまとめる規則（ADR 0003 の純粋な段）。
-// 固定の待ち時間は持たない。片方のトラックが黙っている間は、そのトラックの次の要素が届くか drain（終わり）まで、もう一方を出さない。
-
 type Item = { track: "相手" | "自分"; end: number; label: string };
 const item = (track: Item["track"], end: number, label = `${track}${end}`): Item => ({ track, end, label });
 const merge = () => createTrackMerge<Item>({ tracks: ["相手", "自分"], trackOf: (x) => x.track, timeOf: (x) => x.end });
@@ -15,7 +12,6 @@ describe("createTrackMerge（トラックをまたいで end の順にまとめ�
     expect(m.offer(item("相手", 2))).toEqual([]);
     expect(m.offer(item("相手", 6))).toEqual([]);
 
-    // 自分 の 4 秒が届く: 相手 の 2 秒、自分 の 4 秒の順に出る。相手 の 6 秒は、自分 の次の要素を待つ
     expect(labels(m.offer(item("自分", 4)))).toEqual(["相手2", "自分4"]);
     expect(m.offer(item("自分", 7))).toEqual([item("相手", 6)]);
     expect(labels(m.drain())).toEqual(["自分7"]);
@@ -86,7 +82,6 @@ describe("createTrackMerge（トラックをまたいで end の順にまとめ�
   });
 });
 
-// 決まった種から 0 以上 1 未満の数を順に返す（線形合同法。試すたびに同じ列になる）
 function seededRandom(seed: number): () => number {
   let state = seed;
   return () => {
@@ -95,13 +90,11 @@ function seededRandom(seed: number): () => number {
   };
 }
 
-// 1 トラックの、end が昇順（同じ end も含む）の要素の列（0〜7 個）
 function ascendingTrack(random: () => number, track: Item["track"]): Item[] {
   let end = 0;
   return Array.from({ length: Math.floor(random() * 8) }, (_, i) => item(track, (end += Math.floor(random() * 4)), `${track}-${i}`));
 }
 
-// 2 本の列を、それぞれの中の順を保ったまま、でたらめに混ぜた届き方にする
 function interleave(random: () => number, theirs: Item[], mine: Item[]): Item[] {
   const rest: [Item[], Item[]] = [[...theirs], [...mine]];
   const arrivals: Item[] = [];

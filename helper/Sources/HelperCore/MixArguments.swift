@@ -1,8 +1,5 @@
 import Foundation
 
-// `mix` サブコマンドの引数の解釈。`run` と同じく純粋関数にして `HelperCoreTests` から検証する。
-
-/// `mix` サブコマンドの引数を解釈した結果。`track` が nil なら全トラックを混ぜる。
 public struct MixArguments: Equatable {
     public var session: String
     public var out: String
@@ -15,7 +12,6 @@ public struct MixArguments: Equatable {
     }
 }
 
-/// `arguments` は `mix` サブコマンドの語の後に続く引数の列。`--track` に指定できるのは `自分` だけ。
 public func parseMixArguments(_ arguments: [String]) -> Result<MixArguments, RunArgumentsError> {
     var session: String?
     var out: String?

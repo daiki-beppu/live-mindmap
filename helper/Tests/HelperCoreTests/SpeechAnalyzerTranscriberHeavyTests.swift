@@ -4,7 +4,6 @@ import Foundation
 import Testing
 import HelperCore
 
-// 本物の SpeechAnalyzer を使う。ja-JP のモデルがない・使えない環境では prepare() が失敗するので、その場合はテストも失敗する（環境の問題として報告する）。
 // CI のランナーはモデルを持たず、テストのプロセスはモデルのダウンロードの状態も確かめられない（SFSpeechErrorDomain Code=1）ので、CI では流さない。
 
 @Suite("SpeechAnalyzerTranscriber の停止", .timeLimit(.minutes(2)), .disabled(if: ProcessInfo.processInfo.environment["CI"] != nil, "CI のランナーには ja-JP の音声認識モデルが無い"))
@@ -43,9 +42,6 @@ struct SpeechAnalyzerTranscriberHeavyTests {
         #expect(outcome == 0)
     }
 }
-
-// Issue #1019: 語ごとの区間。本物の SpeechAnalyzer の `audioTimeRange` から取り出した区間が、remark / partial の JSON に載る。
-// `say` の声（Kyoko）で作った音声を、実時間に合わせて 0.1 秒ずつ流す（途中結果を出させるため）。
 
 private struct WordTimeJSON {
     var location: Int
@@ -104,7 +100,6 @@ private func spokenEvents(_ sentence: String) async throws -> [SpokenEvent] {
 
     var events: [SpokenEvent] = []
     for try await result in try await transcriber.transcribe(audio, origin: origin) {
-        // 実際の経路と同じ組み立て（相手・自分のどちらでも形は同じ）
         let json = try event(from: result, track: .相手).jsonString()
         let object = try #require(JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any])
         let times = try #require(object["wordTimes"] as? [[String: Any]], "JSON に wordTimes が無い")

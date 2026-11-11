@@ -18,20 +18,6 @@ import { fakeReadings } from "./fixtures/readings.ts";
 import { collectingConsole, failingBuild, failingCapture, fakeExportServices, type ExportServicesOptions } from "./fixtures/exportServices.ts";
 import { trackedFileSystem } from "./fixtures/trackedFileSystem.ts";
 
-// Issue #240 段 3（ADR 0008）→ Issue #243 段 6: SessionSinks の実物 Layer を、実 tmpdir + 偽の DiffUpdater／capture で確かめる。
-// updater・ログ・いま話している文字・書き出しを開く契約（CT-SINK-SCOPE）
-// がこのファイルの対象。段 6 で、SessionSinks は新しいセッション（makeSession）を直接使う。
-// 1 秒の途中結果（SETTLE_QUIET_MS）の待ちは、音声の時刻（後続の結果の end）で進める（壁時計では進まない。本物の時間では待たない）。
-//
-// 想定する契約（server/src/sessionSinks.ts）:
-// - `SessionSinks.layer` が実物の Layer を作る。撮影・見返し用の HTML のビルド・mix・FileSystem は Layer の文脈から受け取る（テストの sinksLayer が偽物を渡す）。
-//   updaterLayer は core の Service DiffUpdater を作る Layer で、セッションごとに Layer.build(Layer.fresh(...)) して使う
-// - `createDir(sessionsDir)` がセッションのフォルダを作る（失敗すれば以後 open を呼ばない。要件3の前提）
-// - `open({ dir, title, send })` がセッションの Scope の中で 1 回呼ばれ、updater をそのセッションの Scope で開き、
-//   `LiveSink`（partial・final・end・interrupted・stopRelays・appendLog。end の結果が writeOut を持つ）を返す。
-//   Scope を閉じると updater が閉じる
-
-// 開いた数・閉じた数・呼ばれた数を数える偽の DiffUpdater の Layer。開くたびに別の実体（id）を作る
 function makeFakeUpdater() {
   const state = { opened: 0, closed: 0, calls: 0, callIds: [] as number[] };
   const updaterLayer = Layer.effect(
@@ -57,8 +43,6 @@ function makeFakeUpdater() {
   return { updaterLayer, state };
 }
 
-// 終了時の書き出しが文脈から受け取る Service（撮影・見返し用の HTML のビルド・mix）は偽物の Layer で渡す。
-// 撮影は空のファイルを書くだけ、HTML は書き出し（ログの読み込み・埋め込み・書き込み）が本物でビルドだけ偽物
 // ログ・export.json は実物の FileSystem で書くので、書き込みの完了は Effect のスケジューラの外にある。
 // 時間を進める前後の待ち（settle・waitUntil）は、実行中のファイル操作が終わるまで実時間で待つ（trackedFileSystem）
 const fileIo = trackedFileSystem();
@@ -73,8 +57,6 @@ const waitUntil = Effect.fnUntraced(function* (condition: string, predicate: () 
 const sinksLayer = ({ updaterLayer, ...services }: { updaterLayer: Layer.Layer<DiffUpdater> } & ExportServicesOptions) =>
   Layer.merge(SessionSinks.layer, Layer.succeed(TestUpdaterLayer, updaterLayer)).pipe(Layer.provide(fakeExportServices({ fileSystem: fileIo.layer, ...services })));
 
-// Issue #1021: 相手の発言は話者の確定区間が揃うまで（最大 3 秒）出ない。話者に関係しない観測のテストは、始めに speaker-off を渡して、相手の発言を待たずに話者なしで出す。
-// 話者の決定と待ちは、末尾の describe（speakerOff: false で開く）が対象にする
 const SPEAKER_OFF = { type: "speaker-off", start: 0, reason: "モデルなし" } as const;
 
 const withTmpSessionsDir = Effect.fn("withTmpSessionsDir")(function* () {
@@ -124,7 +106,7 @@ describe("SessionSinks（実物 Layer）", () => {
       const sessionsDir = yield* withTmpSessionsDir();
       const sinks = yield* SessionSinks;
       const dir = yield* sinks.createDir(sessionsDir);
-      expect(state.opened).toBe(0); // フォルダを作っただけでは開かない
+      expect(state.opened).toBe(0);
 
       const scope = yield* Scope.make();
       yield* Scope.provide(
@@ -143,7 +125,7 @@ describe("SessionSinks（実物 Layer）", () => {
     return Effect.gen(function* () {
       const tmp = yield* withTmpSessionsDir();
       const blocker = join(tmp, "blocker");
-      writeFileSync(blocker, ""); // 親のフォルダの位置に通常ファイルを置き、mkdir できなくする
+      writeFileSync(blocker, "");
       const sinks = yield* SessionSinks;
 
       const result = yield* Effect.exit(sinks.createDir(join(blocker, "sessions")));
@@ -159,9 +141,6 @@ describe("SessionSinks（実物 Layer）", () => {
     }).pipe(Effect.provide(sinksLayer({ updaterLayer })));
   });
 
-  // Issue #1020 → #1021: sink.speaker で渡した speaker・speaker-off は、生の値のまま受け取った順で log.jsonl に先に書かれ、at が付く。差分更新の入力には載らない。
-  // 相手の発言は話者の確定区間が揃うまで保留されるので、発言の行は保留が解ける speaker-off の後ろに並ぶ。
-  // speaker-mixed（Issue #1024）と speaker-centroid（Issue #1025）も同じく生の値のまま残る。起動し直しの合図（speakersRenumbered）は log.jsonl に行を足さない
   it.effect("sink.speaker の speaker・speaker-off は生の値のまま log.jsonl に受け取った順で書かれ、差分更新の入力に載らない", () => {
     const inputs: DiffInput[] = [];
     const updaterLayer = Layer.succeed(
@@ -449,7 +428,7 @@ describe("SessionSinks（実物 Layer）", () => {
         expect(Cause.squash(exit.cause)).toMatchObject({ message: expect.stringContaining(blockedPath) });
         expect(Cause.squash(exit.cause)).toMatchObject({ message: expect.stringMatching(/EISDIR|is a directory/i) });
       }
-      expect(warnings.errors).toEqual([]); // 諦めた警告ではない
+      expect(warnings.errors).toEqual([]);
     })).pipe(Effect.provide(sinksLayer({ updaterLayer: makeFakeUpdater().updaterLayer }))));
 
   it.effect("writeOut で書く map.html には、そのセッションの log.jsonl の出来事がそのまま埋め込まれる", () =>
@@ -471,8 +450,6 @@ describe("SessionSinks（実物 Layer）", () => {
       expect(log.length).toBeGreaterThan(0);
     })).pipe(Effect.provide(sinksLayer({ updaterLayer: makeFakeUpdater().updaterLayer }))));
 
-  // Layer はメモ化されるので、サーバーで 1 回だけ作ると 2 つのセッションが 1 つの updater（query）を使い回してしまう。
-  // セッションごとに Layer.build(Layer.fresh(updaterLayer)) するので、同じ SessionSinks の上で続けて開いたセッションは別の updater を持つ
   it.live("同じ SessionSinks で 2 つのセッションを続けて開閉すると、updater は別の実体で、開いた回数・閉じた回数がどちらも 2 になる（CT-PER-SESSION-UPDATER）", () => {
     const { updaterLayer, state } = makeFakeUpdater();
     return Effect.gen(function* () {
@@ -489,26 +466,24 @@ describe("SessionSinks（実物 Layer）", () => {
       yield* Scope.close(firstScope, Exit.void);
       expect(state).toMatchObject({ opened: 1, closed: 1 });
 
-      yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 5))); // フォルダ名は開始時刻（実時間のミリ秒）
+      yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 5)));
       const secondScope = yield* Scope.make();
       const second = yield* Scope.provide(sinks.open({ updaterLayer: (yield* TestUpdaterLayer), model: defaultClaude, dir: yield* sinks.createDir(sessionsDir), title: "二つ目", ...noop }), secondScope);
       yield* second.speaker(SPEAKER_OFF);
-      expect(state).toMatchObject({ opened: 2, closed: 1 }); // 2 つ目は 1 つ目を使い回さず、新しく開く
+      expect(state).toMatchObject({ opened: 2, closed: 1 });
       yield* second.final({ track: "相手", start: 0, end: 1, text: "ふたつめの発言" });
       yield* (yield* second.end({ kind: "入れ切る" })).writeOut;
       yield* Scope.close(secondScope, Exit.void);
 
       expect(state).toMatchObject({ opened: 2, closed: 2 });
-      expect(state.callIds).toEqual([1, 2]); // それぞれのセッションの差分更新は、そのセッションの updater（別の実体）が受けた
+      expect(state.callIds).toEqual([1, 2]);
     }).pipe(Effect.provide(sinksLayer({ updaterLayer })));
   });
 
 });
 
-// 送った字幕のフレームの読み取り
 const lastTexts = (speaks: readonly CaptionsFrame[], track: "相手" | "自分") => speaks.at(-1)?.bubbles.filter((b) => b.track === track).map((b) => b.text);
 
-// 公開したスナップショット・送った captions を記録する Sink の組み立て
 const openRecordingSink = Effect.fn("openRecordingSink")(function* ({ speakerOff = true, vocab = [] }: { speakerOff?: boolean; vocab?: ReadonlyArray<string> } = {}) {
   const sessionsDir = yield* withTmpSessionsDir();
   const sinks = yield* SessionSinks;
@@ -528,9 +503,6 @@ const openRecordingSink = Effect.fn("openRecordingSink")(function* ({ speakerOff
   return { sink, dir, speaks, published };
 });
 
-// 差分更新に渡った入力を記録する偽の DiffUpdater の Layer。
-// katakana（英字の語のカタカナの読み。Issue #642）は、table の語だけ答える。
-// updateGate.gate を設定すると、差分更新はその Deferred が完了するまで返らない（呼び出し中のまま止めて、反映前の状態を見る）
 const makeRecordingUpdater = (table: Record<string, string> = {}) => {
   const calls: DiffInput[] = [];
   const updateGate: { gate: Deferred.Deferred<void> | null } = { gate: null };
@@ -620,7 +592,6 @@ describe("SessionSinks（実物 Layer）: 発言の確定・途中結果・書�
       expect(JSON.parse(readFileSync(join(dir, "map.json"), "utf8")).root).toMatchObject({ kind: "会議", text: "週次", children: [] });
     })).pipe(Effect.provide(sinksLayer({ updaterLayer: makeRecordingUpdater().updaterLayer }))));
 
-  // base の server.heavy.test.ts の移動先
   it.effect("writeOut は最後の差分更新（r3 を含む）が終わるまで待ち、その後に Scope を閉じて updater を閉じる。閉じた後には呼ばれない（base:581）", () => {
     const state = { calls: [] as string[][], closed: 0, callsAfterClose: 0 };
     const updaterLayer = Layer.effect(
@@ -634,7 +605,7 @@ describe("SessionSinks（実物 Layer）: 発言の確定・途中結果・書�
         return DiffUpdater.of({
           update: (input) =>
             Effect.gen(function* () {
-              yield* Effect.sleep(30); // 反映に時間がかかる（TestClock で進める）
+              yield* Effect.sleep(30);
               if (state.closed > 0) state.callsAfterClose++;
               state.calls.push(input.fresh.map((u) => u.id));
               return { ops: [] };
@@ -656,11 +627,11 @@ describe("SessionSinks（実物 Layer）: 発言の確定・途中結果・書�
       const { writeOut } = yield* sink.end({ kind: "入れ切る" });
       const flushing = yield* Effect.forkChild(writeOut);
       for (let i = 0; i < 3; i++) {
-        yield* TestClock.adjust(30); // r1 の反映、続けて（r1 の呼び出し中に届いた）r2+r3 のまとめの反映が、それぞれ 30 ms かかる
+        yield* TestClock.adjust(30);
         yield* settle;
       }
       yield* Fiber.join(flushing);
-      expect(state.calls).toEqual([["r1"], ["r2", "r3"]]); // writeOut が戻った時点で、3 件とも差分更新に渡っている。r1 はすぐ、r2・r3 は r1 の呼び出し中に届いたので 1 回にまとまる
+      expect(state.calls).toEqual([["r1"], ["r2", "r3"]]);
       expect(state.closed).toBe(0);
       yield* Scope.close(scope, Exit.void);
       yield* TestClock.adjust(100);
@@ -675,24 +646,23 @@ describe("SessionSinks（実物 Layer）: 発言の確定・途中結果・書�
     return Effect.scoped(Effect.gen(function* () {
       const { sink, speaks } = yield* openRecordingSink();
       const reply = yield* Deferred.make<void>();
-      updateGate.gate = reply; // 差分更新は呼ばれても返らない（反映前のまま）
+      updateGate.gate = reply;
 
       yield* sink.partial({ track: "自分", start: 5, end: 6, text: "じぶんのとちゅう", duplicate: false });
       yield* sink.final(finalRemark("相手", 1, 5, "採用の面接について"));
       yield* TestClock.adjust(SPEAKING_INTERVAL_MS);
       yield* waitUntil("lastTexts(speaks, \"相手\")?.[0] === \"採用の面接について\"", () => lastTexts(speaks, "相手")?.[0] === "採用の面接について");
-      expect(lastTexts(speaks, "相手")).toEqual(["採用の面接について"]); // 反映前: 確定した発言の本文が出ている
-      expect(calls.map((c) => c.fresh.map((u) => u.id))).toEqual([["r1"]]); // 発言 1 件ですぐ呼ばれているが、まだ返っていない
+      expect(lastTexts(speaks, "相手")).toEqual(["採用の面接について"]);
+      expect(calls.map((c) => c.fresh.map((u) => u.id))).toEqual([["r1"]]);
 
       yield* Deferred.succeed(reply, undefined);
       yield* waitUntil("lastTexts(speaks, \"相手\")?.length === 0", () => lastTexts(speaks, "相手")?.length === 0);
       expect(calls.map((c) => c.fresh.map((u) => u.id))).toEqual([["r1"]]);
-      expect(lastTexts(speaks, "相手")).toEqual([]); // 反映後: 処理済みの発言が消えている
-      expect(lastTexts(speaks, "自分")).toEqual(["じぶんのとちゅう"]); // 反映に渡していない途中結果は残る
+      expect(lastTexts(speaks, "相手")).toEqual([]);
+      expect(lastTexts(speaks, "自分")).toEqual(["じぶんのとちゅう"]);
     })).pipe(Effect.provide(sinksLayer({ updaterLayer })));
   });
 
-  // フォルダ名は開始時刻（実時間のミリ秒）なので、このテストだけ実時間の短い待ち（5 ms）を使う
   it.live("同じ sessionsDir の 2 つ目のセッションは、発言が 1 件も無くても、作成直後の export.json がそのセッションのマップ（前のセッションではない。base:510）", () =>
     Effect.scoped(Effect.gen(function* () {
       const sessionsDir = yield* withTmpSessionsDir();
@@ -714,12 +684,6 @@ describe("SessionSinks（実物 Layer）: 発言の確定・途中結果・書�
     })).pipe(Effect.provide(sinksLayer({ updaterLayer: makeRecordingUpdater().updaterLayer }))));
 });
 
-// Issue #640: 利用者が足した語で発言を直す。
-// open の vocab が、語を Readings（読みのサブコマンド）にまとめて 1 回渡して読みを作り、
-// log.jsonl に vocab の行（表記・読み・出どころ user。読みが無い語は romaji: null）を書いてから、語彙に読みのある語を足す。
-// 開始を待たせないため、読みは open が返った後に非同期で作られる。
-// 関所を通った後の本文を補正して発言にする（確定結果・1 秒更新されなかった途中結果・end のどの出口でも）。途中結果（captions）は直さない。
-// 読みの語は実際のトークナイザの出力。remark の行の text は直した本文、raw は直す前の本文、words は直す前の本文の位置のまま
 describe("SessionSinks（実物 Layer）: 利用者が足した語で発言を直す（Issue #640）", () => {
   type Token = readonly [surface: string, romaji: string];
   const utterance = (...tokens: Token[]) => {
@@ -731,9 +695,7 @@ describe("SessionSinks（実物 Layer）: 利用者が足した語で発言を�
     });
     return { text: tokens.map(([surface]) => surface).join(""), words };
   };
-  // 江南店に行きます（港南店の崩れ）
   const garbled = utterance(["江南", "kounan"], ["店", "ten"], ["に", "ni"], ["行き", "iki"], ["ます", "masu"]);
-  // 英字の語はモデルのカタカナの読みを読みのサブコマンドに渡してローマ字にする（Issue #642）
   const KATAKANA = { Zendesk: "ゼンデスク" };
   const READINGS = { 港南店: "kounanten", ゼンデスク: "zendesuku" };
   const vocabLines = (dir: string) => logEvents(dir).filter((e) => e.type === "vocab");
@@ -746,7 +708,7 @@ describe("SessionSinks（実物 Layer）: 利用者が足した語で発言を�
       readings.gate.current = yield* Deferred.make<void>();
       const { sink, dir } = yield* openRecordingSink({ vocab: ["港南店", "Zendesk"] });
       yield* settle;
-      expect(vocabLines(dir)).toEqual([]); // まだ読みができていない
+      expect(vocabLines(dir)).toEqual([]);
 
       yield* sink.final({ track: "相手", start: 1, end: 3, text: garbled.text, words: garbled.words });
       yield* waitUntil("読み取得前の発言がログへ届く", () => remarkLines(dir).length === 1);
@@ -758,7 +720,6 @@ describe("SessionSinks（実物 Layer）: 利用者が足した語で発言を�
       yield* sink.final({ track: "相手", start: 10, end: 12, text: garbled.text, words: garbled.words });
       yield* waitUntil("読み取得後の発言がログへ届く", () => remarkLines(dir).length === 2);
 
-      // 先の発言は直し直されず、後の発言だけが直る。先の発言の行は vocab の行より前にある
       expect(remarkLines(dir).map((e) => [e.remark.id, e.remark.text, e.raw])).toEqual([
         ["r1", "江南店に行きます", "江南店に行きます"],
         ["r2", "港南店に行きます", "江南店に行きます"],
@@ -771,10 +732,6 @@ describe("SessionSinks（実物 Layer）: 利用者が足した語で発言を�
 
 });
 
-// Issue #643: 共有画面の文字（screen の lines）から語彙に入る。
-// SessionSink.screen({ start, image, lines }) が、lines から規則で候補を取り、まだ読みを頼んでいない語だけを Readings にまとめて 1 回渡す。
-// log.jsonl には screen の行（lines つき）→ vocab の行（出どころ screen。読みが作れなかった語は romaji: null）の順に書き、
-// その後に語彙へ足す。画面が変わっても語彙は減らさず、足す前に締めた発言は直し直さない。lines が空でも、読みが失敗しても、セッションは続く。
 describe("SessionSinks（実物 Layer）: 共有画面の文字から語彙に入る（Issue #643）", () => {
   type Token = readonly [surface: string, romaji: string];
   const utterance = (...tokens: Token[]) => {
@@ -786,7 +743,6 @@ describe("SessionSinks（実物 Layer）: 共有画面の文字から語彙に�
     });
     return { text: tokens.map(([surface]) => surface).join(""), words };
   };
-  // 江南店に行きます（港南店の崩れ）
   const garbled = utterance(["江南", "kounan"], ["店", "ten"], ["に", "ni"], ["行き", "iki"], ["ます", "masu"]);
   const KATAKANA = { Zendesk: "ゼンデスク" };
   const READINGS = { 港南店: "kounanten", ゼンデスク: "zendesuku" };
@@ -870,11 +826,6 @@ describe("SessionSinks（実物 Layer）: 録画の組み立て", () => {
   });
 });
 
-// Issue #645: 過去のセッションの語彙を引き継ぐ。
-// セッションの置き場（LIVE_MINDMAP_SESSIONS = createDir に渡す sessionsDir）の中に、全セッションをまたぐ溜まりのファイルを 1 つ置く。
-// 開始（open）で溜まりの語を読みごと vocab の行（出どころ carried）として語彙に入れ（読みは作り直さない）、
-// 終了（writeOut）で、直した後の発言に出た語と利用者が足した語を溜まりへ入れ、共有画面に映っただけの語は入れない。
-// 最後に話されてから一定のセッション数だけ話されなかった語（足した語を除く）は落ちる。
 describe("SessionSinks（実物 Layer）: 過去のセッションの語彙を引き継ぐ（Issue #645）", () => {
   type Token = readonly [surface: string, romaji: string];
   const utterance = (...tokens: Token[]) => {
@@ -886,7 +837,6 @@ describe("SessionSinks（実物 Layer）: 過去のセッションの語彙を�
     });
     return { text: tokens.map(([surface]) => surface).join(""), words };
   };
-  // 江南店に行きます（港南店の崩れ）／港南店に行きます（正しい表記）
   const garbled = utterance(["江南", "kounan"], ["店", "ten"], ["に", "ni"], ["行き", "iki"], ["ます", "masu"]);
   const correct = utterance(["港南店", "kounanten"], ["に", "ni"], ["行き", "iki"], ["ます", "masu"]);
   const READINGS = { 港南店: "kounanten", Zendesk: "zendesuku", 葛西: "kasai" };
@@ -897,10 +847,7 @@ describe("SessionSinks（実物 Layer）: 過去のセッションの語彙を�
   type Sink = Effect.Success<ReturnType<typeof openRecordingSink>>["sink"];
   type Context = { sink: Sink; dir: string };
 
-  // セッションを 1 つ流す: 開く → script → 発言を締める → 書き出し（終了の処理）→ 閉じる。同じ sessionsDir で続けて呼ぶと、前のセッションの溜まりを引き継ぐ。
-  // exports: false は、終了の処理を通らなかったセッション（書き出しを呼ばずに閉じる）
   const runSession = Effect.fn("runSession")(function* (sessionsDir: string, script: (context: Context) => Effect.Effect<void, ExportFilesFailed | SessionWriteFailed>, options: { exports?: boolean; vocab?: ReadonlyArray<string> } = {}) {
-    // セッションのフォルダ名は開始時刻（ミリ秒）。続けて開いても重ならないよう実時間で少し待つ
     yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 3)));
     return yield* Effect.scoped(Effect.gen(function* () {
       const sinks = yield* SessionSinks;
@@ -917,10 +864,8 @@ describe("SessionSinks（実物 Layer）: 過去のセッションの語彙を�
   });
 
   const showScreen = (sink: Sink, start: number, lines: ReadonlyArray<string>) => sink.screen({ start, image: jpeg, lines });
-  // 画面に映った語が語彙に入る（vocab の行が n 行になる）まで待つ
   const awaitVocabLines = (dir: string, n: number) => waitUntil("existsSync(join(dir, \"log.jsonl\")) && vocabLines(dir).length === n", () => existsSync(join(dir, "log.jsonl")) && vocabLines(dir).length === n);
 
-  // 港南店と Zendesk が画面に映り、港南店だけが話される（Zendesk は映っただけ）
   const spokeOnlyKounan = ({ sink, dir }: Context) =>
     Effect.gen(function* () {
       yield* showScreen(sink, 1, ["港南店", "Zendesk"]);
@@ -988,8 +933,8 @@ describe("SessionSinks（実物 Layer）: 過去のセッションの語彙を�
         }));
         yield* Deferred.await(started);
         yield* settle;
-        expect(vocabLines(dir)).toHaveLength(1); // 足した語の記録はまだ無い
-        expect(readPool(sessionsDir).words[0]).toMatchObject({ source: "spoken" }); // 溜まりは記録を待っている
+        expect(vocabLines(dir)).toHaveLength(1);
+        expect(readPool(sessionsDir).words[0]).toMatchObject({ source: "spoken" });
         expect(readPool(sessionsDir).words.map((w: { surface: string }) => w.surface)).toEqual(["港南店"]);
         expect(yield* Deferred.isDone(finished)).toBe(false);
         yield* Deferred.succeed(readingGate, undefined);
@@ -1014,7 +959,6 @@ describe("SessionSinks（実物 Layer）: 過去のセッションの語彙を�
     }).pipe(Effect.provide(layer));
   });
 
-  // Issue #646: cli vocab forget はファイルだけを書き換える（実行中のサーバーには何も送らない）。ここでは forget に当たる書き換えをファイルへ直接行う
   const forgetFromFile = (sessionsDir: string, surface: string) => {
     const pool = readPool(sessionsDir);
     writeFileSync(vocabularyPoolPath(sessionsDir), JSON.stringify({ ...pool, words: pool.words.filter((w: { surface: string }) => w.surface !== surface) }));
@@ -1031,7 +975,7 @@ describe("SessionSinks（実物 Layer）: 過去のセッションの語彙を�
         forgetFromFile(sessionsDir, "港南店");
       }));
 
-      expect(vocabLines(second)).toHaveLength(1); // 今のセッションの語彙はそのまま
+      expect(vocabLines(second)).toHaveLength(1);
       expect(readPool(sessionsDir)).toEqual({ sessions: 2, words: [] });
     }).pipe(Effect.provide(layer));
   });

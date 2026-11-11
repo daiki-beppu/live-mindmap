@@ -1,7 +1,3 @@
-// 閲覧の口（viewingPort.ts の openViewingPort。Issue #832）の IT。本物のソケットで、127.0.0.1 の別の待受けが
-// 静的な画面（ログを埋め込まない single-file ビルド）と /ws の配信だけを、与えたホスト名の Origin にだけ通すことを確かめる。
-// 配信は操作の口（serveFeed）と同じ Viewers の実体を使う。本物の tunnel・PIN・iPad は使わない。
-// /ws の配信が WebSocket の制御フレーム ping を一定の間隔で送ること（Issue #833。間隔はテストで縮める）も、同じ待受けで確かめる。
 import { describe, expect, it, vi } from "@effect/vitest";
 import { Context, Effect, Exit, Layer, Scope } from "effect";
 import { HttpServer } from "effect/http";
@@ -22,10 +18,6 @@ const snapshotFrame = (s: typeof snapshot) => ({ type: "snapshot", snapshot: s }
 const intakeFrame = { type: "intake", status: "running" } as const;
 const modeFrame = { type: "session-mode", local: false } as const;
 
-// 操作の口（serveFeed）と閲覧の口を、同じ Viewers で立てる。閲覧の口だけを閉じられる Scope を別に持つ
-// pingIntervalMs を渡すと、両方の口の ping の間隔をその値にする。渡さなければ本番の既定値
-// openViewingPort は待受けのポートと allow（許す Origin のホスト名を後から 1 つ決める）を返す。
-// allowHost を false にすると、ホスト名を決めないまま返す（tunnel のホスト名が出る前の状態）
 const ports = Effect.fnUntraced(function* (pingIntervalMs?: number, allowHost = true) {
   const ctx = yield* openListener(0, pingIntervalMs);
   const viewers = Context.get(ctx, Viewers);
@@ -44,7 +36,6 @@ const ports = Effect.fnUntraced(function* (pingIntervalMs?: number, allowHost = 
 const get = (port: number, path: string, origin?: string, method = "GET") =>
   fetch(`http://127.0.0.1:${port}${path}`, { method, headers: origin === undefined ? {} : { origin } });
 
-// upgrade が断られたときの HTTP ステータス。upgrade できてしまったら 101 を返す
 const upgradeStatus = (port: number, path: string, origin: string | undefined) =>
   Effect.tryPromise(() => new Promise<number>((resolve, reject) => {
     const ws = new WebSocket(`ws://127.0.0.1:${port}${path}`, origin === undefined ? {} : { origin });
@@ -66,7 +57,6 @@ describe("閲覧の口（Issue #832）", () => {
 
   it.live("/ws 以外のパス・メソッドは断る（/session/*・/apps・/check・/deps/*・/update・POST /・/index.html）。/ws の upgrade は通る", () => Effect.gen(function* () {
     const p = yield* ports();
-    // 負例の前に、同じ待受けで通る経路が通ることを示す
     expect((yield* Effect.tryPromise(() => get(p.viewingPort, "/", undefined))).status).toBe(200);
     expect((yield* connect(p.viewingPort, "/ws", ALLOWED)).isOpen()).toBe(true);
     const refused = [
@@ -82,7 +72,6 @@ describe("閲覧の口（Issue #832）", () => {
         expect([method, path, response.status]).toEqual([method, path, 404]);
       }
     }
-    // / への upgrade は配信にならない（101 にならず、通常の GET として画面を返す）
     expect(yield* upgradeStatus(p.viewingPort, "/", ALLOWED)).toBe(200);
   }));
 
@@ -102,14 +91,12 @@ describe("閲覧の口（Issue #832）", () => {
 
   it.live("ホスト名が決まる前は、Origin 付きの GET / も /ws の upgrade もすべて 403。決まった後は同じ待受けでそのホスト名だけが通る", () => Effect.gen(function* () {
     const p = yield* ports(undefined, false);
-    // 決まる前: 守っている状態に到達していることを、Origin の無い GET / が通ることで先に示す
     expect((yield* Effect.tryPromise(() => get(p.viewingPort, "/", undefined))).status).toBe(200);
     for (const origin of [ALLOWED, "https://evil.example"]) {
       expect([origin, (yield* Effect.tryPromise(() => get(p.viewingPort, "/", origin))).status]).toEqual([origin, 403]);
       expect([origin, yield* upgradeStatus(p.viewingPort, "/ws", origin)]).toEqual([origin, 403]);
     }
     expect(yield* upgradeStatus(p.viewingPort, "/ws", undefined)).toBe(403);
-    // 決まった後
     yield* p.allow(HOST);
     expect(yield* upgradeStatus(p.viewingPort, "/ws", ALLOWED)).toBe(101);
     expect((yield* Effect.tryPromise(() => get(p.viewingPort, "/", ALLOWED))).status).toBe(200);
@@ -146,10 +133,8 @@ describe("閲覧の口（Issue #832）", () => {
     const next = { ...snapshot, round: 2 };
     yield* p.send(snapshotFrame(next));
     yield* Effect.tryPromise(() => vi.waitFor(() => expect(viewing.frames.at(-1)).toEqual(snapshotFrame(next))));
-    // 送ったものは何も返ってこず、閉じられない
     expect(viewing.frames).toEqual([snapshotFrame(snapshot), snapshotFrame(next)]);
     expect(viewing.isOpen()).toBe(true);
-    // 新しく繋いだクライアントには、送ったメッセージの影響のない保持値が届く
     const later = yield* connect(p.viewingPort, "/ws", ALLOWED);
     yield* Effect.tryPromise(() => vi.waitFor(() => expect(later.frames).toEqual([snapshotFrame(next)])));
   }));
@@ -159,7 +144,6 @@ describe("閲覧の口（Issue #832）", () => {
     expect((yield* Effect.tryPromise(() => get(p.viewingPort, "/", undefined))).status).toBe(200);
     yield* Scope.close(p.viewingScope, Exit.void);
     yield* Effect.tryPromise(() => expect(get(p.viewingPort, "/", undefined)).rejects.toThrow());
-    // 操作の口の保持値は閲覧の口を閉じても消えない
     yield* p.send(snapshotFrame(snapshot));
     const operation = yield* connect(p.operationPort, "/ws", undefined);
     yield* Effect.tryPromise(() => vi.waitFor(() => expect(operation.frames).toEqual([snapshotFrame(snapshot)])));
@@ -212,11 +196,9 @@ describe("閲覧の口（Issue #832）", () => {
       const p = yield* ports(SHORT_MS);
       const client = yield* connect(p.viewingPort, "/ws", ALLOWED);
       yield* Effect.tryPromise(() => vi.waitFor(() => expect(client.pings()).toBeGreaterThanOrEqual(1)));
-      // 間隔が SHORT_MS の周期タイマーは、この接続のものだけ
       const pingTimers = setSpy.mock.calls.flatMap((call, i) => call[1] === SHORT_MS ? [setSpy.mock.results[i]?.value] : []);
       expect(pingTimers).toHaveLength(1);
       const timer = pingTimers[0];
-      // 接続中は解除されていない
       expect(clearSpy.mock.calls.filter(([t]) => t === timer)).toHaveLength(0);
       yield* Effect.sync(() => client.close());
       yield* Effect.tryPromise(() => client.closed);

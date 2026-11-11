@@ -2,14 +2,6 @@ import { assert, describe, it } from "@effect/vitest";
 import { Effect, Result, Schema } from "effect";
 import { decodeHelperEvent } from "../src/core/index.ts";
 
-// ヘルパーのイベントの形は helper/README.md「イベントの形」が正本。
-// 段 3（Issue #240）で remarkFromHelper・partialFromHelper・originFromHelper を decodeHelperEvent に
-// まとめた（order.md:34, 47, 61）。期待値は、置き換え前のこのファイルが固定していたものと同じにする
-// （order.md:61「期待値は同じ」）。戻り値の形だけが変わる: 知っているイベントは { kind: "known", event }、
-// 知らない type は失敗ではなく { kind: "unknown", type }、壊れた入力（不正な JSON を含む）はタグ付きの失敗になる。
-
-// decode の成功を主張し、decode した値を返す。失敗していれば SchemaError の message を示して落ちる
-// （fixtures/coreSchema.ts の expectDecodeSuccess と同じ idiom）
 function expectDecodeSuccess<A, R>(effect: Effect.Effect<A, Schema.SchemaError, R>) {
   return Effect.gen(function* () {
     const result = yield* Effect.result(effect);
@@ -18,7 +10,6 @@ function expectDecodeSuccess<A, R>(effect: Effect.Effect<A, Schema.SchemaError, 
   });
 }
 
-// decode の失敗（タグ付きの失敗）を主張する
 function expectDecodeFailure<A, R>(effect: Effect.Effect<A, Schema.SchemaError, R>) {
   return Effect.gen(function* () {
     const result = yield* Effect.result(effect);
@@ -84,8 +75,6 @@ describe("decodeHelperEvent（ヘルパーのイベント文字列 → 知って
       expectDecodeFailure(decodeHelperEvent(JSON.stringify(data))));
   });
 
-  // Issue #639: 語ごとの読み。remark / partial に words（surface・romaji・location・length。位置は UTF-16）が載る。
-  // words の無い旧形式のイベントも、これまでどおり受け付ける
   describe("words（発言の語ごとの読み）", () => {
     const words = [
       { surface: "今日", romaji: "kyō", location: 0, length: 2 },
@@ -130,8 +119,6 @@ describe("decodeHelperEvent（ヘルパーのイベント文字列 → 知って
       }));
   });
 
-  // Issue #1019: 語ごとの区間。remark / partial に wordTimes（location・length は本文の UTF-16 位置、start・end は秒）が載る。
-  // wordTimes の無い旧ヘルパーのイベントも、これまでどおり受け付ける
   describe("wordTimes（発言の語ごとの区間）", () => {
     const wordTimes = [
       { location: 0, length: 2, start: 1, end: 1.5 },
@@ -176,7 +163,6 @@ describe("decodeHelperEvent（ヘルパーのイベント文字列 → 知って
       }));
   });
 
-  // 原点（host time）の通知イベント。64 bit の値は JSON の number では桁が落ちるので、文字列のまま運ぶ（order.md:60、要件 #22）。
   describe("origin（ヘルパーが決めた時刻の原点）", () => {
     it.effect("渡された hostTime を文字列のまま保つ（2^53 を超える値でも桁が落ちない）", () =>
       Effect.gen(function* () {
@@ -192,7 +178,6 @@ describe("decodeHelperEvent（ヘルパーのイベント文字列 → 知って
       expectDecodeFailure(decodeHelperEvent(JSON.stringify(data))));
   });
 
-  // 共有画面の変化（Issue #278）。image は JPEG の base64。decode でバイト列にし、ウィンドウが無くなったら null。
   describe("screen（共有画面の変化）", () => {
     const jpeg = Uint8Array.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0xff, 0xd9]);
     const base64 = Buffer.from(jpeg).toString("base64");
@@ -225,7 +210,6 @@ describe("decodeHelperEvent（ヘルパーのイベント文字列 → 知って
         assert.deepStrictEqual(decoded, { kind: "known", event: { type: "screen", start: 3, image: null } });
       }));
 
-    // Issue #643: lines は省ける項目。古い helper（lines なし）も読める
     it.effect("lines つきの screen は lines を文字列の配列のまま保つ。空の配列も空のまま保つ", () =>
       Effect.gen(function* () {
         const withLines = yield* expectDecodeSuccess(decodeHelperEvent(JSON.stringify({ type: "screen", start: 1.5, image: base64, lines: ["港南店", "Zendesk"] })));

@@ -178,7 +178,6 @@ describe("ChatGPT Responses（C03）", () => {
     }), files, http);
   }));
 
-  // Issue #642: 英字の語のカタカナの読み（katakana）は、分類とは別の instructions・schema で 1 回きりの要求を送る
   it.effect("katakana は語を 1 回の要求にまとめ、読みの instructions・schema で送り、語ごとのカタカナを返す。分類の要求とは別の instructions と schema", () => Effect.gen(function* () {
     const files = fakeChatgptFiles(chatgptCredentials((yield* Clock.currentTimeMillis) + 3_600_000));
     const http = fakeChatgptHttp((_request, call) => response(completedSse(call === 1 ? probe
@@ -187,7 +186,7 @@ describe("ChatGPT Responses（C03）", () => {
       const updater = yield* open({});
       const answer = yield* updater.katakana!(["Notion", "Figma"]);
       expect(answer).toEqual([{ surface: "Notion", katakana: "ノーション" }, { surface: "Figma", katakana: "フィグマ" }]);
-      expect(http.requests).toHaveLength(2); // 開始時の接続確認 1 回 + 読みの要求 1 回
+      expect(http.requests).toHaveLength(2);
       const body = jsonRequestBody(http.requests[1]!);
       expect(body).toMatchObject({ model: CHATGPT_MODEL.model, store: false, stream: true, text: { format: { type: "json_schema", strict: true } } });
       expect(body.instructions).not.toBe(SYSTEM);

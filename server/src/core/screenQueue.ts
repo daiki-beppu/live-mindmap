@@ -12,7 +12,6 @@ export type ScreenQueue = {
   readonly images: boolean;
 };
 
-// 1回の差分更新に添える画面の費用を抑える。adapterの保持・未送画面の上限とは独立。
 const SCREENS_MAX = 3;
 const SCREEN_GAP_SECONDS = 10;
 

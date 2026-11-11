@@ -1,9 +1,6 @@
 import Testing
 @testable import stt_bench
 
-// 合成の時刻計算（純粋な関数）。`say` や音声認識は使わないので CI でも流す。
-// 式は gen.py と同じ: 先頭の無音のあと、各行は start = t、end = t + 長さ、次の t = t + 長さ + gap。
-
 @Suite("合成の時刻計算")
 struct SynthTimelineTests {
     @Test("先頭の無音 1.0 秒、各行の後に無音 0.5 秒: start / end は gen.py と同じ式になる")
@@ -64,7 +61,6 @@ struct MixTests {
         ])
         let peak = mixed.map { abs($0) }.max() ?? 0
         #expect(peak <= 1.0)
-        // 重ならない 0.8 と、重なった 1.6 の比（1:2）が保たれる = 切り詰めていない
         #expect(abs(mixed[1] / mixed[0] - 2.0) < 1e-5)
         #expect(abs(mixed[2] - mixed[0]) < 1e-5)
     }

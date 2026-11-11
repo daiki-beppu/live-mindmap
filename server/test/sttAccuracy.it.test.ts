@@ -45,7 +45,6 @@ describe("sttAccuracy の Command", () => {
     const timeline = join(dir, "timeline.tsv");
     const jsonl = join(dir, "results.jsonl");
     writeFileSync(timeline, "真壁\t0.00\t5.00\tあいうえお\n");
-    // 同じ start で全文を送り直す途中結果。end の間隔は 1 秒以上あり、それぞれが発言として出る
     writeFileSync(jsonl, [
       { track: "相手", arrival: 0, isFinal: false, start: 0, end: 2, text: "あい" },
       { track: "相手", arrival: 2, isFinal: false, start: 0, end: 4, text: "あいうえ" },
@@ -74,10 +73,8 @@ describe("sttAccuracy の Command", () => {
       return runCommand(command, [timeline, jsonl, "--settle"]);
     };
 
-    // 途中結果（end 2）の期限は 3 秒。確定結果の end が 2.5 なら期限の前で、途中結果は出ず確定結果が出る
     const before = yield* run("before", 2.5, 5);
     expect(before.stdout).toContain("| 3 | 0.0% | 0 | 0 | 0 |");
-    // 確定結果の end が 3 なら期限に届いていて、途中結果「あい」が先に出る
     const after = yield* run("after", 3, 5);
     expect(after.stdout).toContain("| 3 | 33.3% | 0 | 1 | 0 |");
   }).pipe(Effect.scoped));

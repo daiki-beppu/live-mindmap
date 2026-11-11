@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# CI と手元で同じ一覧を配り、list の各レコードをいずれか一つの runner に所属させる。
 set -euo pipefail
 
 if [ "$#" -lt 6 ]; then

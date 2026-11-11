@@ -3,9 +3,6 @@ import Foundation
 import Testing
 @testable import HelperCore
 
-// 本物の SpeechAnalyzer でファイルを文字にする。ja-JP のモデルがない環境・CI では流さない（SpeechAnalyzerTranscriberHeavyTests と同じ）。
-// 短い合成音声（say -v Kyoko。前に 2 秒の無音を置く）を WAV にして transcribeFile へ通す。
-
 private func synthesizedRecording(_ sentence: String, leadingSilence: Double, into dir: URL) throws -> URL {
     let aiff = dir.appendingPathComponent("speech.aiff")
     let say = Process()
@@ -84,7 +81,6 @@ struct FileTranscriptionHeavyTests {
 
         let finals = results.filter(\.isFinal)
         let first = try #require(finals.first, "確定結果が 1 件も出なかった")
-        // 読み始めからの時刻なら、発言は from を引いた 1 秒付近から始まる。ファイルの時刻なら、前に置いた無音（3 秒）の後
         #expect(first.start >= leadingSilence - 0.5, "最初の発言の時刻がファイルの時刻になっていない: \(first.start)")
         for item in results {
             #expect(item.start >= from - 0.5 && item.end <= duration + 0.5, "時刻がファイルの範囲の外: \(item.start)〜\(item.end) / \(duration)")

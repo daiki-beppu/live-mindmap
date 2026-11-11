@@ -11,14 +11,6 @@ import {
   type VocabularyPool,
 } from "../src/core/vocabularyPool.ts";
 
-// Issue #645: 全セッションをまたぐ語彙の溜まり（プール）の出入り。I/O を持たない純粋な関数を、Formal Spec の性質で確かめる。
-// - beginPoolSession: セッションの開始。始めたセッションの数を 1 つ進め、そのセッションの番号と、語彙に入れる溜まりの語を返す
-// - finishPoolSession: セッションの終了（Formal Spec の finish）。話された語と足した語を溜まりに入れ、古くなった語を落とす
-// - sessionVocabularyUsage: ログの行から、そのセッションの番号と、語ごとの「話された／足した」を導く（終了時とcli restoreが同じ関数を通す）
-// Issue #646: cli vocab list / forget の純粋な部分。
-// - forgetPoolWord: 表記の完全一致で語を溜まりから除く（無ければ undefined。入力は書き換えない）
-// - formatPoolTable: 溜まりを表記・出どころ・最後に話されてからのセッション数の Markdown 表にする
-
 const K = POOL_DROP_AFTER_SESSIONS;
 
 type Usage = Parameters<typeof finishPoolSession>[1];
@@ -32,7 +24,6 @@ const usageOf = (session: number, ...words: ReturnType<typeof word>[]): Usage =>
 const surfaces = (pool: VocabularyPool) => pool.words.map((w) => w.surface).sort();
 const entry = (pool: VocabularyPool, surface: string) => pool.words.find((w) => w.surface === surface);
 
-// セッションを 1 回開いて、usage を使って閉じる
 const runSession = (pool: VocabularyPool, words: ReturnType<typeof word>[]) => {
   const begun = beginPoolSession(pool);
   return finishPoolSession(begun.pool, usageOf(begun.session, ...words));
@@ -82,18 +73,18 @@ describe("finishPoolSession（終了）", () => {
 
   it("足した語は、話されなくても、何セッションたっても溜まりから落ちない", () => {
     let pool = runSession(emptyPool, [word("葛西", { user: true })]);
-    for (let n = 0; n < K * 3; n++) pool = runSession(pool, [word("葛西")]); // 開始時に carried で入るだけで、話されない
+    for (let n = 0; n < K * 3; n++) pool = runSession(pool, [word("葛西")]);
     expect(pool.sessions).toBe(K * 3 + 1);
     expect(entry(pool, "葛西")).toMatchObject({ source: "user" });
   });
 
   it("話された語は、続く K−1 セッション話されなくても残り、K セッション話されなかった終了時に落ちる", () => {
-    let pool = runSession(emptyPool, [word("港南店", { spoken: true })]); // セッション 1 で話された
+    let pool = runSession(emptyPool, [word("港南店", { spoken: true })]);
     for (let n = 2; n <= K; n++) {
-      pool = runSession(pool, [word("港南店")]); // 開始時に carried で入っても、話されない
-      expect(entry(pool, "港南店")).toBeDefined(); // セッション K（最後に話されてから K−1 セッション）までは残る
+      pool = runSession(pool, [word("港南店")]);
+      expect(entry(pool, "港南店")).toBeDefined();
     }
-    pool = runSession(pool, [word("港南店")]); // セッション K+1: 最後に話されてから K セッションたつ
+    pool = runSession(pool, [word("港南店")]);
     expect(entry(pool, "港南店")).toBeUndefined();
     expect(pool.sessions).toBe(K + 1);
   });
@@ -107,13 +98,13 @@ describe("finishPoolSession（終了）", () => {
   });
 
   it("途中でもう一度話された語は、最後に話されたセッションの番号が更新され、その分だけ長く残る", () => {
-    let pool = runSession(emptyPool, [word("港南店", { spoken: true })]); // セッション 1
+    let pool = runSession(emptyPool, [word("港南店", { spoken: true })]);
     for (let n = 2; n < K; n++) pool = runSession(pool, []);
-    pool = runSession(pool, [word("港南店", { spoken: true })]); // セッション K で話された
+    pool = runSession(pool, [word("港南店", { spoken: true })]);
     expect(entry(pool, "港南店")).toMatchObject({ lastSpoken: K });
-    for (let n = K + 1; n < 2 * K; n++) pool = runSession(pool, []); // セッション 2K−1 まで
+    for (let n = K + 1; n < 2 * K; n++) pool = runSession(pool, []);
     expect(entry(pool, "港南店")).toBeDefined();
-    pool = runSession(pool, []); // セッション 2K: 最後に話されてから K セッション
+    pool = runSession(pool, []);
     expect(entry(pool, "港南店")).toBeUndefined();
   });
 
@@ -187,7 +178,6 @@ describe("finishPoolSession（終了）", () => {
 });
 
 describe("溜まりの性質（Formal Spec: invPoolOnlySpokenOrUser・invAgedOutDropped・invUserMarkOnlyInPool・invBounded）", () => {
-  // 決まった乱数で、語・セッション数を変えながら多数のセッションを回す
   const lcg = (seed: number) => () => (seed = (seed * 1664525 + 1013904223) % 4294967296) / 4294967296;
 
   it.each([1, 2, 3, 4, 5, 6, 7, 8])("乱数の系列 %i: どのセッションの終了後でも 4 つの性質が成り立つ", (seed) => {
@@ -206,15 +196,11 @@ describe("溜まりの性質（Formal Spec: invPoolOnlySpokenOrUser・invAgedOut
         return [word(name, { user, spoken })];
       });
       pool = finishPoolSession(begun.pool, usageOf(begun.session, ...words));
-      // invBounded
       expect(pool.sessions).toBe(n);
       for (const w of pool.words) expect(w.lastSpoken).toBeGreaterThanOrEqual(0);
       for (const w of pool.words) expect(w.lastSpoken).toBeLessThanOrEqual(pool.sessions);
-      // invPoolOnlySpokenOrUser
       for (const w of pool.words) expect(w.source === "user" || w.lastSpoken > 0).toBe(true);
-      // invAgedOutDropped
       for (const w of pool.words) if (w.source !== "user") expect(pool.sessions - w.lastSpoken).toBeLessThan(K);
-      // 同じ表記は 1 語
       expect(new Set(pool.words.map((w) => w.surface)).size).toBe(pool.words.length);
     }
   });
@@ -237,7 +223,6 @@ describe("sessionVocabularyUsage（ログの行から、そのセッションの
         { surface: "葛西", romaji: "kasai", source: "user" },
         { surface: "渋谷", romaji: null, source: "carried" },
       ),
-      // 直して出た語（港南店）：直す前の本文は江南店
       remark("r1", "港南店に行きます", { raw: "江南店に行きます" }),
     ]);
     expect(usage?.session).toBe(3);
@@ -347,7 +332,7 @@ describe("forgetPoolWord（Issue #646: forget）", () => {
 
   it("消した語は、話されも足されもしなければ、終了時にも溜まりへ入らない", () => {
     const forgotten = forgetPoolWord(pool, "港南店")!;
-    const finished = runSession(forgotten, [word("港南店")]); // 映っただけ
+    const finished = runSession(forgotten, [word("港南店")]);
     expect(surfaces(finished)).toEqual(["Zendesk"]);
   });
 });

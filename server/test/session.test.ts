@@ -5,16 +5,12 @@ import { exportFiles, hasContent, makeSession, makeTranscriptSession, restoreSes
 import { playBatches } from "./fixtures/batches.ts";
 import { collectLog, logLayer, settleUntil, updaterLayer, type UpdateFailure } from "./fixtures/sessionLayers.ts";
 
-// セッションは Scope を要る Effect（makeSession）。差分更新・ログは偽物の Service を Layer で渡す。
-// 差分更新は、呼び出し中でなければ発言 1 件ですぐ呼ぶ。時間に依る呼び出しは無いので、「呼ばれない」ことは TestClock を進めて確かめる。
-
 let seq = 0;
 const remark = (text: string, extra: Partial<Remark> = {}): Remark => {
   seq++;
   return { id: `r${seq}`, track: "相手", start: seq * 10, end: seq * 10 + 9, text, ...extra };
 };
 
-// 台本どおりに差分操作を返す偽物の差分更新。呼ばれた入力を記録する。
 function scripted(...script: Op[][]) {
   const calls: DiffInput[] = [];
   const update = (input: DiffInput): Effect.Effect<DiffResult, UpdateFailure> =>
@@ -25,7 +21,6 @@ function scripted(...script: Op[][]) {
   return { calls, update };
 }
 
-// 応答をテストの側から返せる偽物の差分更新
 type ManualCall = { input: DiffInput; reply: () => void };
 function manual() {
   const calls: ManualCall[] = [];
@@ -36,7 +31,6 @@ function manual() {
   return { calls, update };
 }
 
-// 時間を進めた後に、起こるはずの呼び出しが走り切るまで譲る。「呼ばれない」ことの確認の前にも使う
 const settle = Effect.forEach(Array.from({ length: 20 }), () => Effect.yieldNow, { discard: true });
 
 const freshIds = (input: DiffInput) => input.fresh.map((u) => u.id);
@@ -51,7 +45,6 @@ const setup = Effect.fn("setup")(function* (...script: Op[][]) {
   return { session, calls, events };
 });
 
-// 台本の 1 手ごとに発言を 2 つ流し、差分更新を 1 回ずつ起こす（2 つは前の呼び出し中に届き、まとめて 1 回で渡る）。流した発言の ID を手ごとに返す。
 const play = Effect.fn("play")(function* (...script: (Op[] | ((ids: string[][]) => Op[]))[]) {
   const pairs = script.map(() => [remark("発言"), remark("発言")] as const);
   const ids = pairs.map((p) => p.map((u) => u.id));
@@ -60,7 +53,7 @@ const play = Effect.fn("play")(function* (...script: (Op[] | ((ids: string[][]) 
   const snap = yield* session.snapshot;
   const byText = (text: string) => snap.nodes.find((n) => n.text === text);
   const dropped = events.flatMap((e) => (e.type === "diff" ? e.dropped : []));
-  const ends = pairs.map(([a, b]) => Math.max(a.end, b.end)); // 手ごとの新しい発言の終了時刻の最大値
+  const ends = pairs.map(([a, b]) => Math.max(a.end, b.end));
   return { session, calls, events, snap, byText, dropped, ids, ends };
 });
 
@@ -313,11 +306,9 @@ describe("ログ", () => {
       expect(diffs[1]).not.toHaveProperty("error");
     }));
 
-  // 差分更新の呼び出しの開始・終了の時刻（Issue #862）。at と同じ実時刻の ISO 文字列
   const isIso = (s: string) => DateTime.formatIso(DateTime.makeUnsafe(s)) === s;
   const ms = (s: string) => DateTime.toEpochMillis(DateTime.makeUnsafe(s));
 
-  // 実時刻が直前の値より進むまで回ってから、その時刻を返す（sleep ではない。ISO はミリ秒まで持つので、段階の間を厳密な不等号で区別できる）
   const nowMs = () => DateTime.toEpochMillis(DateTime.nowUnsafe());
   const advanced = () => {
     const before = nowMs();
@@ -436,7 +427,7 @@ describe("差分更新の呼び出し", () => {
       ]);
 
       yield* session.push(a);
-      expect(calls).toHaveLength(1); // idle も TestClock も進めていない
+      expect(calls).toHaveLength(1);
       expect(calls[0]!.fresh.map((u) => u.id)).toEqual([a.id]);
       yield* session.idle;
 
@@ -530,7 +521,7 @@ describe("差分更新の呼び出し", () => {
       expect(calls).toHaveLength(1);
       calls[0]!.reply();
       yield* settleUntil(() => calls.length === 2);
-      yield* session.push(c); // 2 つ目の呼び出し中に届く
+      yield* session.push(c);
       yield* settle;
       expect(calls).toHaveLength(2);
       calls[1]!.reply();
@@ -599,7 +590,7 @@ describe("差分更新の呼び出し", () => {
       calls[0]!.reply();
       yield* settleUntil(() => calls.length === 2);
       yield* settle;
-      expect(flushed).toBe(false); // b の呼び出しの返事を待っている
+      expect(flushed).toBe(false);
       calls[1]!.reply();
       yield* Fiber.join(flushing);
       expect(flushed).toBe(true);
@@ -631,7 +622,7 @@ describe("hasContent（中身のある発言か）", () => {
     ["今日は採用の進め方を決めます"],
     ["2 回にしましょう"],
     ["賛成"],
-    ["あの件は来週決めます"], // 語として区切られていない「あの」はフィラーではない
+    ["あの件は来週決めます"],
     ["えー、予算は来週決めます"],
   ])("意味のある %j は中身あり", (text) => {
     expect(hasContent(text)).toBe(true);
@@ -650,7 +641,7 @@ describe("中身のない発言の扱い", () => {
       yield* session.idle;
       yield* session.push(filler);
       yield* session.idle;
-      expect(calls).toHaveLength(1); // フィラーでは呼ばない
+      expect(calls).toHaveLength(1);
 
       yield* session.push(b);
       yield* session.idle;
@@ -687,7 +678,7 @@ describe("中身のない発言の扱い", () => {
       calls[0]!.reply();
       yield* session.idle;
       yield* settle;
-      expect(calls).toHaveLength(1); // フィラーだけが届いていたので、終わっても次は呼ばない
+      expect(calls).toHaveLength(1);
 
       yield* session.push(remark("えー"));
       yield* session.push(b);
@@ -748,7 +739,7 @@ describe("差分更新の呼び出し: 時間では呼ばない", () => {
       yield* session.push(a);
       yield* session.push(b);
       calls[0]!.reply();
-      yield* settleUntil(() => calls.length === 2); // 時間は進めない
+      yield* settleUntil(() => calls.length === 2);
       expect(freshIds(calls[1]!.input)).toEqual([b.id]);
     }));
 
@@ -794,7 +785,7 @@ describe("セッションの Scope（Fiber の後始末）", () => {
         }),
       );
 
-      calls[0]!.reply(); // 閉じた後の返事は届かない
+      calls[0]!.reply();
       yield* settle;
       expect(events.some((e) => e.type === "diff")).toBe(false);
     }));
@@ -821,7 +812,6 @@ describe("セッションの Scope（Fiber の後始末）", () => {
 });
 
 describe("変わったこと（反映の履歴）", () => {
-  // 反映ごとの手を順に返す偽物。UpdateFailure なら失敗する。
   const failure = (message: string): UpdateFailure => ({ _tag: "UpdateFailed", message });
   function stepped(...script: (Op[] | UpdateFailure)[]) {
     let n = 0;
@@ -831,14 +821,12 @@ describe("変わったこと（反映の履歴）", () => {
     };
   }
 
-  // 2 つの発言を、1 回の呼び出しにまとめて渡す組にする。end は呼び出し側が決める。
   const group = (ends: [number, number]) => ends.map((end) => remark("発言", { end, start: end - 1 }));
 
   it.effect("同じセッションで 反映 → 反映 → 何もしない反映 → 失敗した反映 を続けると、round が進み、記録が積み上がる", () =>
     Effect.gen(function* () {
       const events: LogEvent[] = [];
       const [a, b] = [remark("一"), remark("二")];
-      // 反映 1。新しい発言の end の最大値が at になる（最後の発言の end ではない）
       const first = [{ ...a, start: 1, end: 50 }, { ...b, start: 2, end: 30 }];
       const snaps: Snapshot[] = [];
       yield* playBatches(
@@ -866,13 +854,10 @@ describe("変わったこと（反映の履歴）", () => {
         { round: 1, at: 50, change: "追加", node: "n1", kind: "議題", text: "採用" },
         { round: 2, at: 70, change: "更新", node: "n1", kind: "議題", text: "中途採用" },
       ]);
-      // 何もしない反映でも round は進む（前回の赤い枠を消すため）。記録は増えない
       expect(snaps[2]!.round).toBe(3);
       expect(snaps[2]!.changes).toHaveLength(2);
-      // 失敗した反映では round も記録も進まない
       expect(snaps[3]!.round).toBe(3);
       expect(snaps[3]!.changes).toHaveLength(2);
-      // 失敗の後の反映は、次の round として積み上がる
       expect(snaps[4]!.round).toBe(4);
       expect(snaps[4]!.changes.at(-1)).toEqual({ round: 4, at: 125, change: "追加", node: "n2", kind: "論点", text: "面接は何回か" });
       expect(snaps[4]!.changes).toHaveLength(3);
@@ -886,11 +871,11 @@ describe("変わったこと（反映の履歴）", () => {
         failure("timeout"),
       );
       const seen: { failed: boolean; round: number; changes: number }[] = [];
-      const holder: { session?: Session } = {}; // start の行を書く時点では、まだ Session が無い
+      const holder: { session?: Session } = {};
       const log = logLayer((e) =>
         Effect.gen(function* () {
           if (e.type !== "diff" || !holder.session) return;
-          const s = yield* holder.session.snapshot; // 書く側（SessionLog）の中から、いまの状態を読む
+          const s = yield* holder.session.snapshot;
           seen.push({ failed: e.error !== undefined, round: s.round, changes: s.changes.length });
         }),
       );
@@ -944,7 +929,7 @@ describe("根拠の発言（snapshot の remarks）", () => {
       const b = remark("二つ目");
       const c = remark("三つ目（反映待ち）");
       const { session } = yield* playBatches([[a, echo, b]], [[add("t1", "採用", [b.id, a.id])]]);
-      yield* session.push(c); // 呼び出し中（反映待ち）の発言は、根拠になっていないので含めない
+      yield* session.push(c);
 
       expect((yield* session.snapshot).remarks.map((r) => r.id)).toEqual([a.id, b.id]);
     }));
@@ -997,16 +982,16 @@ describe("unreflectedRemarks（反映前の発言）", () => {
       const [a, b, dup, c] = [remark("ア"), remark("イ"), remark("重複", { duplicate: true }), remark("ウ")];
       const ids = Effect.map(session.unreflectedRemarks, (rs) => rs.map((r) => r.id));
 
-      yield* session.push(a); // すぐ渡り、結果待ちになる
+      yield* session.push(a);
       expect(yield* ids).toEqual([a.id]);
       yield* session.push(dup);
       expect(yield* ids).toEqual([a.id]);
-      yield* session.push(b); // 呼び出し中なので、渡さずにためる
+      yield* session.push(b);
       yield* session.push(c);
       expect(yield* ids).toEqual([a.id, b.id, c.id]);
 
       calls[0]!.reply();
-      yield* settleUntil(() => calls.length === 2); // b・c が 1 回にまとまって渡り、結果待ちになる
+      yield* settleUntil(() => calls.length === 2);
       expect(freshIds(calls[1]!.input)).toEqual([b.id, c.id]);
       expect(yield* ids).toEqual([b.id, c.id]);
 
@@ -1022,10 +1007,10 @@ describe("unreflectedRemarks（反映前の発言）", () => {
       const [a, filler, b, filler2] = [remark("ア"), remark("あ", { track: "自分" }), remark("イ"), remark("えー")];
       const ids = Effect.map(session.unreflectedRemarks, (rs) => rs.map((r) => r.id));
 
-      yield* session.push(a); // 結果待ち
+      yield* session.push(a);
       yield* session.push(filler);
       expect(yield* ids).toEqual([a.id]);
-      yield* session.push(b); // 渡さずにためる
+      yield* session.push(b);
       yield* session.push(filler2);
       expect(yield* ids).toEqual([a.id, b.id]);
 
@@ -1042,7 +1027,7 @@ describe("unreflectedRemarks（反映前の発言）", () => {
       const { update } = manual();
       const session = yield* open(update);
       const a = remark("元の本文");
-      yield* session.push(a); // 結果待ち
+      yield* session.push(a);
 
       const first = yield* session.unreflectedRemarks;
       first[0]!.text = "書き換え";
@@ -1110,7 +1095,6 @@ describe("今の議題（currentTopic）と会議の今の時刻（now）", () =
         const { snap } = yield* play(first, (ids) => second(ids));
         expect(snap.currentTopic).toBe("n1");
         expect(snap.lastChanged).toBe("n1");
-        // 変わったことの記録の並びは作成順のまま
         expect(snap.changes.filter((c) => c.round === 2).map((c) => c.node)).toEqual(["n1", "n2"]);
       }));
 
@@ -1144,7 +1128,7 @@ describe("今の議題（currentTopic）と会議の今の時刻（now）", () =
           (ids) => [{ op: "add", ref: "t4", parent: "root", kind: "議題", text: "予算", evidence: [ids[2]![0]!] }],
           (ids) => [{ op: "update", node: "n3", planStatus: "検討中", evidence: [ids[0]![1]!] }],
         );
-        expect(snap.changes.filter((c) => c.round === 4)).toEqual([]); // 変更履歴には載らない
+        expect(snap.changes.filter((c) => c.round === 4)).toEqual([]);
         expect(snap.currentTopic).toBe("n1");
         expect(snap.lastChanged).toBe("n3");
         expect((yield* session.snapshot).lastChanged).toBe("n3");
@@ -1210,7 +1194,6 @@ describe("今の議題（currentTopic）と会議の今の時刻（now）", () =
     }));
 });
 
-// 触れたノードの touchedAt（その反映の新しい発言の end の最大値）と evidenceRound（根拠が足された反映の番号）
 describe("ノードの最後に触れた時刻（touchedAt）と最後に根拠が足された反映の番号（evidenceRound）", () => {
   const base = (ids: string[][]): Op[] => [
     { op: "add", ref: "t1", parent: "root", kind: "議題", text: "採用", evidence: [ids[0]![0]!] },
@@ -1218,7 +1201,6 @@ describe("ノードの最後に触れた時刻（touchedAt）と最後に根拠�
     { op: "add", ref: "t3", parent: "t2", kind: "案", text: "3 回", evidence: [ids[0]![1]!] },
     { op: "add", ref: "t4", parent: "root", kind: "議題", text: "予算", evidence: [ids[0]![1]!] },
   ];
-  // base の ID: n1 採用 / n2 面接は何回か / n3 3 回 / n4 予算
 
   it.effect("議題の下の論点に案を追加すると、案・論点・議題の touchedAt がその反映の最大値になり、兄弟の議題とルートは変わらない", () =>
     Effect.gen(function* () {
@@ -1230,7 +1212,6 @@ describe("ノードの最後に触れた時刻（touchedAt）と最後に根拠�
       expect(byText("2 回")!.touchedAt).toBe(second);
       expect(byText("面接は何回か")!.touchedAt).toBe(second);
       expect(byText("採用")!.touchedAt).toBe(second);
-      // 触れていないノードは前の反映の値のまま（先に値があることも確かめる）
       expect(byText("予算")!.touchedAt).toBe(first);
       expect(byText("3 回")!.touchedAt).toBe(first);
       const root = snap.nodes.find((n) => n.parent === null)!;
@@ -1301,7 +1282,6 @@ describe("ノードの最後に触れた時刻（touchedAt）と最後に根拠�
 
   it.effect("移動は、元の親側と新しい親側の祖先の touchedAt を進める。根拠は足されないので evidenceRound は変わらない", () =>
     Effect.gen(function* () {
-      // n1 採用 > n2 面接 > n3 案 を、別の議題 n4 予算 の下の論点 n5 へ移す。n6 は無関係の議題
       const { byText, ends } = yield* play(
         (ids) => [
           ...base(ids),
@@ -1318,7 +1298,6 @@ describe("ノードの最後に触れた時刻（touchedAt）と最後に根拠�
 
   it.effect("統合は、統合先と祖先・統合元の元の親側の祖先の touchedAt を進め、統合先の evidenceRound は統合元・統合先の大きい方を引き継ぐ（進めない）", () =>
     Effect.gen(function* () {
-      // n1 採用 > n2 論点（統合元）、n3 予算 > n4 論点（統合先）、n5 備品（無関係）
       const { byText, ends } = yield* play(
         (ids) => [
           { op: "add", ref: "t1", parent: "root", kind: "議題", text: "採用", evidence: [ids[0]![0]!] },
@@ -1339,7 +1318,6 @@ describe("ノードの最後に触れた時刻（touchedAt）と最後に根拠�
 
   it.effect("統合元のほうが新しい evidenceRound を持つとき、統合先は統合元の番号を引き継ぐ（統合した反映の番号にはしない）", () =>
     Effect.gen(function* () {
-      // 1 回目: n1 採用 > n2 論点（統合元）、n3 予算 > n4 論点（統合先）。2 回目: n2 に根拠を足す。3 回目: n2 を n4 へ統合
       const { byText } = yield* play(
         (ids) => [
           { op: "add", ref: "t1", parent: "root", kind: "議題", text: "採用", evidence: [ids[0]![0]!] },
@@ -1368,7 +1346,7 @@ describe("ノードの最後に触れた時刻（touchedAt）と最後に根拠�
     Effect.gen(function* () {
       const { byText, ends, dropped } = yield* play(base, [
         { op: "update", node: "n3", text: "変える", evidence: ["r-unknown"] },
-        { op: "delete", node: "n1" }, // 子を持つので捨てられる
+        { op: "delete", node: "n1" },
       ]);
       const [first] = ends as [number, number];
       expect(dropped).toHaveLength(2);
@@ -1411,10 +1389,7 @@ describe("ノードの最後に触れた時刻（touchedAt）と最後に根拠�
     }));
 });
 
-// 議題・論点の「済み」（talkStatus）。閉じる（close）は applyOps が判定し、適用・復元の両方で同じ結果になる。
-// 手の n 番目が round n。根拠が足された反映の番号（evidenceRound）と今の round を比べて、閉じるを通すか捨てるかを決める。
 describe("議題・論点の済みと閉じる（close）", () => {
-  // 手ごとに発言を 2 つ流して反映を起こし（2 つは前の呼び出し中に届き、まとめて 1 回で渡る）、手ごとのスナップショットを返す
   const replay = Effect.fn("replay")(function* (...script: (Op[] | ((ids: string[][]) => Op[]))[]) {
     const pairs = script.map(() => [remark("発言"), remark("発言")] as const);
     const ids = pairs.map((p) => p.map((u) => u.id));
@@ -1429,8 +1404,6 @@ describe("議題・論点の済みと閉じる（close）", () => {
     snap.nodes.filter((n) => n.talkStatus === "済み").map((n) => n.id).sort();
   const noopHand: Op[] = [{ op: "noop", reason: "雑談" }];
 
-  // n1 採用 / n2 選考 / n3 面接は何回か / n4 3 回 / n5 日程 / n6 予算 / n7 上限 / n8 2 回
-  // n1 ⊃ n2 ⊃ n3 ⊃ n4、n1 ⊃ n5、n6 ⊃ n7 ⊃ n8
   const tree = (ids: string[][]): Op[] => [
     { op: "add", ref: "t1", parent: "root", kind: "議題", text: "採用", evidence: [ids[0]![0]!] },
     { op: "add", ref: "t2", parent: "t1", kind: "議題", text: "選考", evidence: [ids[0]![0]!] },
@@ -1451,7 +1424,6 @@ describe("議題・論点の済みと閉じる（close）", () => {
         for (const n of snaps[0]!.nodes) expect(n).not.toHaveProperty("talkStatus");
         expect(snaps[1]!.nodes.filter((n) => "talkStatus" in n)).toEqual([]);
         expect(dropped).toEqual([]);
-        // 議題 n1 だけが済み。配下の議題 n2・論点 n3・n5 と兄弟の議題 n6 は話し中のまま
         expect(closedIds(snaps[2]!)).toEqual(["n1"]);
         for (const id of ["n2", "n3", "n5", "n6", "n7"]) expect(snaps[2]!.nodes.find((n) => n.id === id)).not.toHaveProperty("talkStatus");
       }));
@@ -1480,11 +1452,11 @@ describe("議題・論点の済みと閉じる（close）", () => {
     it.effect("存在しない・ルート・議題でも論点でもない・すでに済み、の閉じるを捨て、状態は変えない", () =>
       Effect.gen(function* () {
         const { snap, dropped } = yield* replay(tree, noopHand, [
-          { op: "close", node: "n1" }, // 有効（すでに済みの前提を作る）
-          { op: "close", node: "n99" }, // 存在しない
-          { op: "close", node: "root" }, // ルート
-          { op: "close", node: "n4" }, // 案
-          { op: "close", node: "n1" }, // すでに済み
+          { op: "close", node: "n1" },
+          { op: "close", node: "n99" },
+          { op: "close", node: "root" },
+          { op: "close", node: "n4" },
+          { op: "close", node: "n1" },
         ]);
         expect(closedIds(snap)).toEqual(["n1"]);
         expect(dropped.map((d) => [d.op.op, "node" in d.op ? d.op.node : undefined])).toEqual([
@@ -1526,9 +1498,9 @@ describe("議題・論点の済みと閉じる（close）", () => {
       Effect.gen(function* () {
         const { snaps, dropped } = yield* replay(
           tree,
-          (ids) => [{ op: "update", node: "n4", evidence: [ids[1]![0]!] }], // round 2 で根拠を足す
-          [{ op: "close", node: "n1" }], // round 3: 直前なので捨てる
-          [{ op: "close", node: "n1" }], // round 4: 2 つ前なので通る
+          (ids) => [{ op: "update", node: "n4", evidence: [ids[1]![0]!] }],
+          [{ op: "close", node: "n1" }],
+          [{ op: "close", node: "n1" }],
         );
         expect(dropped.map((d) => [d.op.op, "node" in d.op ? d.op.node : undefined])).toEqual([["close", "n1"]]);
         expect(closedIds(snaps[2]!)).toEqual([]);
@@ -1540,12 +1512,12 @@ describe("議題・論点の済みと閉じる（close）", () => {
         const { snap, dropped } = yield* replay(
           tree,
           (ids) => [
-            { op: "update", node: "n3", evidence: [ids[1]![0]!] }, // 対象自身
-            { op: "update", node: "n6", evidence: [ids[1]![0]!] }, // 子孫の祖先側
+            { op: "update", node: "n3", evidence: [ids[1]![0]!] },
+            { op: "update", node: "n6", evidence: [ids[1]![0]!] },
           ],
           [
-            { op: "close", node: "n3" }, // 自身に直前の根拠 → 捨てる
-            { op: "close", node: "n7" }, // 祖先 n6 にだけ直前の根拠 → 通る
+            { op: "close", node: "n3" },
+            { op: "close", node: "n7" },
           ],
         );
         expect(dropped.map((d) => [d.op.op, "node" in d.op ? d.op.node : undefined])).toEqual([["close", "n3"]]);
@@ -1565,7 +1537,6 @@ describe("議題・論点の済みと閉じる（close）", () => {
   });
 
   describe("統合だけでは根拠が足された扱いにならない", () => {
-    // n1 議題 A > n2 論点 a、n3 議題 B > n4 論点 b（根拠はどちらも 1 回目の発言）
     const two = (ids: string[][]): Op[] => [
       { op: "add", ref: "t1", parent: "root", kind: "議題", text: "A", evidence: [ids[0]![0]!] },
       { op: "add", ref: "t2", parent: "t1", kind: "論点", text: "a", evidence: [ids[0]![0]!] },
@@ -1588,8 +1559,8 @@ describe("議題・論点の済みと閉じる（close）", () => {
       Effect.gen(function* () {
         const { snaps, dropped } = yield* replay(
           two,
-          [{ op: "combine", from: "n2", into: "n4" }], // round 2: 統合
-          [{ op: "close", node: "n3" }, { op: "close", node: "n4" }], // round 3
+          [{ op: "combine", from: "n2", into: "n4" }],
+          [{ op: "close", node: "n3" }, { op: "close", node: "n4" }],
         );
         expect(dropped).toEqual([]);
         expect(closedIds(snaps[1]!)).toEqual([]);
@@ -1600,9 +1571,9 @@ describe("議題・論点の済みと閉じる（close）", () => {
       Effect.gen(function* () {
         const { snaps, dropped } = yield* replay(
           two,
-          (ids) => [{ op: "update", node: "n2", evidence: [ids[1]![0]!] }], // round 2: 統合元に根拠
-          [{ op: "combine", from: "n2", into: "n4" }, { op: "close", node: "n4" }, { op: "close", node: "n3" }], // round 3: 統合元の根拠が移っているので捨てる
-          [{ op: "close", node: "n3" }], // round 4: 通る
+          (ids) => [{ op: "update", node: "n2", evidence: [ids[1]![0]!] }],
+          [{ op: "combine", from: "n2", into: "n4" }, { op: "close", node: "n4" }, { op: "close", node: "n3" }],
+          [{ op: "close", node: "n3" }],
         );
         expect(dropped.map((d) => [d.op.op, "node" in d.op ? d.op.node : undefined])).toEqual([
           ["close", "n4"],
@@ -1619,9 +1590,9 @@ describe("議題・論点の済みと閉じる（close）", () => {
           (ids) => [
             { op: "update", node: "n2", evidence: [ids[1]![0]!] },
             { op: "combine", from: "n2", into: "n4" },
-          ], // round 2: 統合元に根拠を足して統合
-          [{ op: "close", node: "n4" }, { op: "close", node: "n3" }], // round 3: 捨てる
-          [{ op: "close", node: "n3" }], // round 4: 通る
+          ],
+          [{ op: "close", node: "n4" }, { op: "close", node: "n3" }],
+          [{ op: "close", node: "n3" }],
         );
         expect(dropped.map((d) => [d.op.op, "node" in d.op ? d.op.node : undefined])).toEqual([
           ["close", "n4"],
@@ -1633,10 +1604,9 @@ describe("議題・論点の済みと閉じる（close）", () => {
   });
 
   describe("自動の開き直し", () => {
-    // 3 手目までに全部を済みにし、4 手目の操作でどこが話し中に戻るかを見る
     const reopen = Effect.fn("reopen")(function* (hand: Op[] | ((ids: string[][]) => Op[])) {
       const r = yield* replay(tree, noopHand, closeAll, hand);
-      expect(closedIds(r.snaps[2]!)).toEqual(ALL); // 前提: 全部が済み
+      expect(closedIds(r.snaps[2]!)).toEqual(ALL);
       expect(r.dropped).toEqual([]);
       return r;
     });
@@ -1693,7 +1663,6 @@ describe("議題・論点の済みと閉じる（close）", () => {
 
     it.effect("開き直すのは起点と祖先だけ。済みの議題が話し中に戻っても、配下の済みの論点・子の議題は済みのまま", () =>
       Effect.gen(function* () {
-        // n5（n1 の下の済みの論点）は n1 の子孫だが、n5 の下に何かを足したとき n1 は戻り、n2・n3 は戻らない
         const { snap } = yield* reopen((ids) => [{ op: "add", ref: "x", parent: "n5", kind: "案", text: "来週", evidence: [ids[3]![0]!] }]);
         expect(closedIds(snap)).toEqual(["n2", "n3", "n6", "n7"]);
       }));
@@ -1708,9 +1677,9 @@ describe("議題・論点の済みと閉じる（close）", () => {
     it.effect("捨てられた操作は開き直さない", () =>
       Effect.gen(function* () {
         const r = yield* replay(tree, noopHand, closeAll, [
-          { op: "add", ref: "x", parent: "n3", kind: "案", text: "1 回", evidence: ["r-unknown"] }, // 知らない発言で捨てる
-          { op: "update", node: "n4", text: "x", evidence: ["r-unknown"] }, // 捨てる
-          { op: "move", node: "n1", parent: "n3" }, // 自分の子孫の下へは移せないので捨てる
+          { op: "add", ref: "x", parent: "n3", kind: "案", text: "1 回", evidence: ["r-unknown"] },
+          { op: "update", node: "n4", text: "x", evidence: ["r-unknown"] },
+          { op: "move", node: "n1", parent: "n3" },
         ]);
         expect(r.dropped).toHaveLength(3);
         expect(closedIds(r.snap)).toEqual(ALL);
@@ -1730,7 +1699,6 @@ describe("議題・論点の済みと閉じる（close）", () => {
         expect(closedIds(snaps[2]!)).toEqual(ALL);
         expect(snaps[2]!.changes).toEqual(snaps[1]!.changes);
         expect(snaps[2]!.changes.filter((c) => c.round === 3)).toEqual([]);
-        // 閉じても今の議題は動かない
         expect(snaps[2]!.currentTopic).toBe(snaps[1]!.currentTopic);
         const added = snaps[3]!.changes.filter((c) => c.round === 4);
         expect(added.map((c) => c.change)).toEqual(["追加"]);
@@ -1743,7 +1711,6 @@ describe("議題・論点の済みと閉じる（close）", () => {
         const open = yield* replay(tree, noopHand, noopHand);
         expect(closedIds(closed.snap)).toEqual(ALL);
         const json = yield* closed.session.exportJson;
-        // 発言の id と時刻は別々のセッションで違うので、本文と話者だけを残してそろえる
         const norm = <T extends { evidence: readonly { text: string; track: "自分" | "相手" }[]; children: T[] }>(n: T): T =>
           ({ ...n, evidence: n.evidence.map((e) => ({ id: "r", start: 0, end: 0, text: e.text, track: e.track })), children: n.children.map(norm) });
         const files = exportFiles({ root: norm(json.root) });
@@ -1829,7 +1796,6 @@ describe("話者の名前の確認", () => {
   const spoken = (text: string, speaker: string | undefined, track: "自分" | "相手" = "相手"): Remark => remark(text, { track, ...(speaker !== undefined ? { speaker } : {}) });
   const name = (label: string, evidence: string, who = "田中", basis: InferredSpeakerName["basis"] = "名乗り"): InferredSpeakerName => ({ label, name: who, evidence, basis });
 
-  // 台本の i 番目の応答（ops なしで names だけ）を返す偽の差分更新。processedRemarks も台本で決める
   const withNames = (...script: { names?: InferredSpeakerName[]; processedRemarks?: number }[]) => {
     const calls: DiffInput[] = [];
     const update = (input: DiffInput): Effect.Effect<DiffResult, UpdateFailure> =>
@@ -1840,7 +1806,6 @@ describe("話者の名前の確認", () => {
       });
     return { calls, update };
   };
-  // 応答をテストの側から返せる偽の差分更新。i 番目の呼び出しに answers[i] を返す
   const held = (answers: DiffResult[]) => {
     const calls: DiffInput[] = [];
     const replies: (() => void)[] = [];
@@ -1889,16 +1854,15 @@ describe("話者の名前の確認", () => {
       const bare = spoken("それは来週にしましょう", undefined);
       const events: LogEvent[] = [];
       const { calls, replies, update } = held([{ ops: [] }, { ops: [], names: [
-        name("相手 B", "r999"), // 根拠が無い
-        name("相手 B", a.id), // 話者が合わない
-        name("自分", mine.id), // 自分には付けない
-        name("相手 B", mine.id), // 自分の発言は根拠にならない
-        name("相手", bare.id), // ラベルが無い
-        name("相手 B", b.id), // 通る
+        name("相手 B", "r999"),
+        name("相手 B", a.id),
+        name("自分", mine.id),
+        name("相手 B", mine.id),
+        name("相手", bare.id),
+        name("相手 B", b.id),
       ] }]);
       const session = yield* open(update, events);
 
-      // 1 件目で呼び出しが始まり、残りは呼び出し中に届いて次の回にまとまる
       yield* session.push(warmup);
       for (const r of [a, b, mine, bare]) yield* session.push(r);
       replies[0]!();
@@ -1912,7 +1876,6 @@ describe("話者の名前の確認", () => {
 
   it.effect("まだ消費していない発言（processedRemarks を超えた分）を根拠にした名前は捨てる。話者が合っていても通らない", () =>
     Effect.gen(function* () {
-      // 1 件目は単独で呼び出しが始まり、2・3 件目は呼び出し中に届いて次の回にまとまる。次の回は 1 件目（r2）だけ反映する
       const first = spoken("よろしく", "相手 A");
       const second = spoken("佐藤です", "相手 A");
       const third = spoken("田中です", "相手 B");

@@ -2,7 +2,6 @@ import { existsSync, lstatSync, readFileSync, readlinkSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { describe, expect, it } from "vitest";
 
-// Issue #812: 公式の skill を写し、web の AGENTS.md に Foldkit の規約を書く。ファイルを読むので IT 層。
 const repoRoot = join(import.meta.dirname, "..", "..");
 const read = (...path: string[]) => readFileSync(join(repoRoot, ...path), "utf8");
 

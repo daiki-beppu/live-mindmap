@@ -6,7 +6,6 @@ import { plainArgs } from "./fixtures/fakeSpawner.ts";
 
 const encode = (s: string) => new TextEncoder().encode(s);
 
-// ChildProcessSpawner だけを偽物にして、本物の Readings.layer を通す
 const readingsWith = (spawn: (command: ChildProcess.StandardCommand) => Effect.Effect<ChildProcessSpawner.ChildProcessHandle, PlatformError.PlatformError, Scope.Scope>) => {
   const spawner = Layer.succeed(
     ChildProcessSpawner.ChildProcessSpawner,

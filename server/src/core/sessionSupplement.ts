@@ -53,7 +53,6 @@ export function validateSupplement(pending: Pending, state: SessionState) {
   return;
 }
 
-// 独立した1本のworkerと容量1の待機列で、diffのinFlightに触れず最新の引き金だけを扱う。
 export const makeSessionSupplement = Effect.fnUntraced(function* (
   read: Effect.Effect<SessionState>,
   carriedTerms: readonly string[],

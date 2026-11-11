@@ -1,11 +1,7 @@
 import Foundation
 
-/// 発言の本文の 1 語。`remark` / `partial` の `words` の要素（server/src/core/words.ts の `Word` と同じ項目名と単位）。
-/// `location` / `length` は本文の UTF-16 コード単位（NSString の範囲）。`start` / `end`（秒）とは別物。
 public struct Word: Sendable, Equatable, Encodable {
-    /// 本文中の表記。
     public var surface: String
-    /// `kCFStringTokenizerAttributeLatinTranscription` によるローマ字の読み。読みが無い語は空文字。
     public var romaji: String
     public var location: Int
     public var length: Int
@@ -18,8 +14,6 @@ public struct Word: Sendable, Equatable, Encodable {
     }
 }
 
-/// 発言の本文の 1 区間の時刻。`remark` / `partial` の `wordTimes` の要素（STT の run ごとの区間。`words` とは区切りの元が違う）。
-/// `location` / `length` は本文の UTF-16 コード単位、`start` / `end` は会議の原点（`origin`）からの秒（発言の `start` / `end` と同じ基準）。
 public struct WordTime: Sendable, Equatable, Encodable {
     public var location: Int
     public var length: Int
@@ -34,7 +28,6 @@ public struct WordTime: Sendable, Equatable, Encodable {
     }
 }
 
-/// 本文を CFStringTokenizer（`ja`、語の境界）で語に区切る。補正はしない。
 public func transcriptWords(_ text: String) -> [Word] {
     let cfText = text as CFString
     let length = CFStringGetLength(cfText)

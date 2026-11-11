@@ -10,18 +10,13 @@ import { layout } from "../src/layout.ts";
 import { INITIAL_VIEWING, ViewingState } from "../src/viewing.ts";
 import { foldingActions } from "./foldingActions.ts";
 
-// マップの表示面の「見る状態」（Issue #818）の update。選ぶ・畳む・開く・縁の点を押した事実が、Model.viewing を
-// 選択・開閉の結果と、foldView に渡したときの表示を確認する
-
 type MapSurfaceModel = typeof Model.Type;
 
 const node = (id: string, parent: string | null, kind: Exclude<SnapshotNode["kind"], "補足"> = "議題", extra: Partial<Exclude<SnapshotNode, { kind: "補足" }>> = {}): Exclude<SnapshotNode, { kind: "補足" }> => ({ id, parent, kind, text: id, evidence: parent ? ["r1"] : [], ...extra });
 const snap = (nodes: SnapshotNode[], extra: Partial<Snapshot> = {}): Snapshot => ({ nodes, round: 3, changes: [], remarks: [], ...extra });
 
-// 済みの議題 A（論点 A1 を持つ）と、話し中の今の議題 B。A は畳まれ、隠れた数の丸を持つ
 const single = (): Snapshot =>
   snap([node("root", null, "会議"), node("A", "root", "議題", { talkStatus: "済み" }), node("A1", "A", "論点", { pointStatus: "未決" }), node("B", "root", "議題")], { currentTopic: "B", now: 100 });
-// 済みの議題 A・A2 が続く。2 つは「議題 2 件」（run:A）にまとめられる
 const bundled = (): Snapshot =>
   snap([node("root", null, "会議"), node("A", "root", "議題", { talkStatus: "済み" }), node("A1", "A", "論点", { pointStatus: "未決" }), node("A2", "root", "議題", { talkStatus: "済み" }), node("B", "root", "議題")], {
     currentTopic: "B",
@@ -214,7 +209,6 @@ describe("mapSurface の update: 丸の click で開く・畳む（reduceViewing
         expect(Option.isSome(m.motion)).toBe(true);
         const motion = Option.getOrThrow(m.motion);
         expect(motion.elapsedMs).toBe(0);
-        // 開く前から見えていたノードは、始まりの位置が開く前の位置
         for (const id of Object.keys(from)) expect(Object.fromEntries(HashMap.toEntries(motion.start))[id]).toEqual(from[id]);
       }),
     );
@@ -249,7 +243,6 @@ describe("mapSurface の update: 丸の click で開く・畳む（reduceViewing
   });
 
   it("人の開閉は選択に使われる。選んだノードが畳むノードの子孫なら、選択は畳むノードへ移る", () => {
-    // A を開いて A1 を選び、A を畳む → 隠れる選択が A へ移る（reduceViewing の foldDot の規則）
     story(
       update,
       given(measuredModel(single())),
@@ -280,7 +273,6 @@ describe("mapSurface の update: 丸の click で開く・畳む（reduceViewing
       model((m) => {
         expect(m.viewing.selection).toEqual(Option.some({ id: "A", byKey: false }));
         expect(shownView(m).openness).toMatchObject({ A: { state: "folded" }, A2: { state: "folded" } });
-        // 解いた後の位置は、解いた集合で foldView が返す木の layout
         const shown = shownView(m).nodes;
         expect(shown.map((n) => n.id)).not.toContain("run:A");
         expect(shown.map((n) => n.id)).toContain("A2");

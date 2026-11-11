@@ -9,7 +9,6 @@ const remarks: Remark[] = [
   { id: "r3", track: "相手", start: 19.2, end: 28.0, text: "c" },
 ];
 
-// 発言のログと差分更新の呼び出しを、起きた順に order へ書く
 const setup = Effect.fn("setup")(function* (order: string[]) {
   const update = (input: DiffInput): Effect.Effect<DiffOutput, UpdateFailure> =>
     Effect.sync(() => {
@@ -35,7 +34,6 @@ describe("再生", () => {
       yield* playback(yield* setup(order), remarks, { sleep });
       const sleeps = order.filter((s) => s.startsWith("sleep:"));
       expect(sleeps).toEqual(["sleep:9800", "sleep:9400", "sleep:8800"]);
-      // 待ってから流す順
       expect(order.filter((s) => !s.startsWith("diff:"))).toEqual([
         "sleep:9800", "push:r1", "sleep:9400", "push:r2", "sleep:8800", "push:r3",
       ]);
@@ -65,11 +63,10 @@ describe("再生", () => {
         sleep: () =>
           Effect.gen(function* () {
             sleepCount++;
-            if (sleepCount === 3) yield* Deferred.succeed(gate, undefined); // 3 つ目の待ちに入った時点で、最初の呼び出しはまだ終わっていない
+            if (sleepCount === 3) yield* Deferred.succeed(gate, undefined);
           }),
       });
       expect(sleepCount).toBe(3);
-      // 最初の呼び出しは発言 1 件。終わらないうちに届いた r2 以降は、終わってからまとめて渡る（順序は保たれる）
       expect(calls[0]).toEqual(["r1"]);
       expect(calls.flat()).toEqual(["r1", "r2", "r3"]);
     }));
@@ -87,7 +84,6 @@ describe("再生", () => {
       image: { id: `s${start}`, load: Effect.sync(() => { onLoad(); return new Uint8Array([start]); }) },
     });
 
-    // 変化の受け取り（log の screen）・発言の受け取り・差分更新の呼び出しを、起きた順に order へ書く
     const setupWithScreens = Effect.fn("setupWithScreens")(function* (order: string[]) {
       const update = (input: DiffInput): Effect.Effect<DiffOutput, UpdateFailure> =>
         Effect.sync(() => {
@@ -100,7 +96,7 @@ describe("再生", () => {
           if (e.type === "screen") order.push(`screen:${e.start}`);
         }),
         () => Effect.void,
-        () => Effect.succeed(new Uint8Array()), // 差分更新に添える画像の読み戻し（中身はこのテストの対象ではない）
+        () => Effect.succeed(new Uint8Array()),
       );
       return yield* makeSession({ title: "定例" }).pipe(Effect.provide(Layer.merge(updaterLayer(update), log)));
     });
@@ -108,12 +104,11 @@ describe("再生", () => {
     it.effect("待ち時間なし: 発言を入れる前に、その発言の start までに映り始めた変化をすべて入れる（start ちょうども含む）。残りは最後の発言の後に入る（もう渡す発言が無いので、差分更新には添わない）", () =>
       Effect.gen(function* () {
         const order: string[] = [];
-        // 発言の start は 0.5・9.8・19.2。end の最大は 9.8・19.2・28.0
         yield* playback(yield* setupWithScreens(order), remarks, { screens: [shot(0), shot(9.8), shot(10), shot(25)] });
         expect(order).toEqual([
           "screen:0", "push:r1", "diff:r1[0]",
-          "screen:9.8", "push:r2", "diff:r2", // 0 から 10 秒未満なので添えず持ち越す
-          "screen:10", "push:r3", "diff:r3[9.8]", // 持ち越しは cutoff 28.0 が 0 + 10 を過ぎたので添える。10 は 9.8 から 10 秒未満なので持ち越す
+          "screen:9.8", "push:r2", "diff:r2",
+          "screen:10", "push:r3", "diff:r3[9.8]",
           "screen:25",
         ]);
       }));
@@ -148,17 +143,14 @@ describe("再生", () => {
             yield* Deferred.await(gate);
             return { ops: [] };
           });
-        // 3 つ目の発言をログに書く（push する）時点で、最初の呼び出しの門を開く。r3 の前に変化 9.9 を入れるときに
-        // 呼び出しの終わりを待つと、r3 まで進めず門が開かないので、ここで止まる
         const log = logLayer(
           (e) => (e.type === "remark" && e.remark.id === "r3" ? Deferred.succeed(gate, undefined).pipe(Effect.asVoid) : Effect.void),
           () => Effect.void,
-          () => Effect.succeed(new Uint8Array()), // 後続の差分更新に添える画像の読み戻し
+          () => Effect.succeed(new Uint8Array()),
         );
         const session = yield* makeSession({ title: "定例" }).pipe(Effect.provide(Layer.merge(updaterLayer(update), log)));
         yield* playback(session, remarks, { sleep: () => Effect.void, screens: [shot(9.9)] });
         expect(calls[0]).toEqual(["r1"]);
-        // 門が開くまでに届いた r2・r3 は、画像の読み戻しで止まらずに updater へ届く（順序は保たれる）
         expect(calls.flat()).toEqual(["r1", "r2", "r3"]);
       }), 3000);
 
@@ -170,7 +162,6 @@ describe("再生", () => {
       }));
   });
 
-  // 共有画面を見ていない印（screen-off）と、等速での変化の待ち
   describe("screen-off と等速の変化", () => {
     const shot = (start: number): PlaybackScreen<never> => ({
       start,
@@ -178,7 +169,6 @@ describe("再生", () => {
     });
     const off = (start: number, reason: "指定" | "許可なし"): PlaybackScreen<never> => ({ start, reason });
 
-    // 変化の受け取り（screen・screen-off の行）・発言の受け取り・差分更新の呼び出しを、起きた順に order へ書く
     const setupWithOff = Effect.fn("setupWithOff")(function* (order: string[]) {
       const update = (input: DiffInput): Effect.Effect<DiffOutput, UpdateFailure> =>
         Effect.sync(() => {
@@ -201,7 +191,6 @@ describe("再生", () => {
     it.effect("待ち時間なし: screen-off は渡した start・reason のまま、screen と同じ並びで発言の前に入り、差分更新に添える画面には載らない", () =>
       Effect.gen(function* () {
         const order: string[] = [];
-        // 発言の start は 0.5・9.8・19.2
         yield* playback(yield* setupWithOff(order), remarks, {
           screens: [shot(0), off(9.8, "指定"), off(10, "許可なし"), shot(25)],
         });
@@ -231,7 +220,6 @@ describe("再生", () => {
         expect(order).toEqual(["push:r1", "diff:r1", "push:r2", "diff:r2", "push:r3", "diff:r3", "off:100:許可なし"]);
       }));
 
-    // 発言の間に隙間がある再生。r1 は 0〜2 秒、r2 は 10〜12 秒
     const gapped: Remark[] = [
       { id: "r1", track: "相手", start: 0, end: 2, text: "a" },
       { id: "r2", track: "相手", start: 10, end: 12, text: "b" },
@@ -257,7 +245,6 @@ describe("再生", () => {
     it.effect("等速: すでに過ぎた時刻の変化は待たず、時計も戻さない", () =>
       Effect.gen(function* () {
         const order: string[] = [];
-        // 変化 1 は、r1 を流した後（時計は 2）に入る。待たず、後ろの発言の待ちは 12 - 2 のまま
         yield* playback(yield* setupWithOff(order), gapped, { sleep: sleeper(order), screens: [shot(1)] });
         expect(withoutDiff(order)).toEqual(["sleep:2000", "push:r1", "screen:1", "sleep:10000", "push:r2"]);
       }));
@@ -284,7 +271,6 @@ describe("再生", () => {
       Effect.gen(function* () {
         const order: string[] = [];
         yield* playback(yield* setupWithOff(order), gapped, { sleep: sleeper(order), screens: [shot(15), off(20, "許可なし")] });
-        // 差分更新の呼び出しの位置は中核（セッション）が決める。ここでは待ちと変化の順番を見る。渡す発言が無い変化は、差分更新を増やさない
         expect(withoutDiff(order)).toEqual([
           "sleep:2000", "push:r1",
           "sleep:10000", "push:r2",

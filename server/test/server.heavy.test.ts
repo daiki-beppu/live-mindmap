@@ -20,12 +20,6 @@ import { fakeScreenJpeg } from "./fixtures/screenJpeg.ts";
 import { startedServer } from "./fixtures/startedServer.ts";
 import { updaterLayer } from "./fixtures/sessionLayers.ts";
 
-// Issue #240 段 3（ADR 0008）: 本物の子プロセスを使うテストは、Helpers の実物 Layer の契約に絞る
-// （order.md:40-46、CT-TEST-SPLIT）。偽の Layer・TestClock で確かめられる振る舞い（起動し直しの回数・
-// resume・argv・stop/close の重なり・updater の開閉・captions・状態のフレーム・cli status 等）は
-// server/test/sessions.test.ts・sessionSinks.it.test.ts・http.it.test.ts に移した。このファイルに残るのは、
-// 実物の子プロセス・実物の HTTP・実物の WebSocket を通さないと確かめられない契約だけ。
-
 const fakeHelper = join(import.meta.dirname, "fixtures/fake-helper.ts");
 const APPS = [{ bundleID: "us.zoom.xos", name: "zoom.us" }];
 const remark = (track: "自分" | "相手", start: number, end: number, text: string) => ({ type: "remark", track, start, end, text, duplicate: false });
@@ -58,16 +52,12 @@ const setup = (initial: Partial<Script> = {}, stopTimeoutMs?: number) =>
     readFileSync(recordPath, "utf8").split("\n").filter((l) => l !== "").map((l) => JSON.parse(l));
 
   const calls: DiffInput[] = [];
-  // 1 回目の呼び出しだけ、受け取った発言を根拠にノードを 1 つ足す（反映がマップへ届くことを観測できるようにする）。
-  // 2 回目以降は noop（このファイルの契約は反映の内容そのものではなく、反映が届く・録音が書かれる・
-  // ヘルパーの終わり方が読み取れることを確かめるためのもの）
   const updater = (input: DiffInput) =>
     Effect.sync(() => {
       calls.push(input);
       const ops: Op[] = calls.length === 1 ? [{ op: "add", ref: "t1", parent: "root", kind: "議題", text: "採用", evidence: input.fresh.map((u) => u.id) }] : [];
       return { ops };
     });
-  // 通常のテストでは、テストごとに Chromium を起動しないよう、撮影・見返し用の HTML のビルド・mix は偽物の Layer にする
   const options = {
     port: 0,
     depsDir: join(dir, "deps"),
@@ -75,14 +65,11 @@ const setup = (initial: Partial<Script> = {}, stopTimeoutMs?: number) =>
     prepareUpdater: () => Effect.succeed({ layer: updaterLayer(updater) }),
     helper: { command: process.execPath, args: [fakeHelper, scriptPath, recordPath] },
   };
-  // サーバーの標準エラー（Console.error）は、差し替えた Console に集める。ヘルパーを読むループは、start を受ける HTTP の fiber の
-  // context を受け継ぐので、サーバーを起こす Effect に渡す
   const stderr: string[] = [];
   const stderrConsole: Console.Console = { ...console, error: (...args: unknown[]) => { stderr.push(args.map(String).join(" ") + "\n"); } };
   const layers = realLayers(options, fakeExportServices());
   const server = yield* startedServer(options, { ...layers, managedDeps: withFakeClaude(layers.managedDeps) }).pipe(
     Effect.provideService(Console.Console, stderrConsole),
-    // 停止の上限を短く与えるのは、時間切れを確かめるテストだけ。与えなければ製品と同じ既定値
     (e) => (stopTimeoutMs === undefined ? e : Effect.provideService(e, HELPER_STOP_TIMEOUT_MS, stopTimeoutMs)),
   );
 
@@ -91,7 +78,6 @@ const setup = (initial: Partial<Script> = {}, stopTimeoutMs?: number) =>
     ...console,
     log: (...args: unknown[]) => { out.push(args.map(String).join(" ") + "\n"); },
   };
-  // 接続先ポートと保存先は ConfigProvider、標準出力は Console で渡す
   const cliLayer = Layer.mergeAll(readyManagedDeps,
     NodeServices.layer, unusedApple,
     NodeHttpClient.layerUndici,
@@ -104,14 +90,12 @@ const setup = (initial: Partial<Script> = {}, stopTimeoutMs?: number) =>
     fakeAudioMix().layer,
     fakeScreenJpeg().layer,
   );
-  // CLI を実行して、その標準出力を返す。中身の失敗は、入口の表を通す前のタグ付きの失敗のまま失敗にする
   const runOnce = (argv: string[]) =>
     Effect.suspend(() => {
       out.length = 0;
       return runCli(argv).pipe(Effect.provide(cliLayer), Effect.map(() => out.join("")));
     });
   const cli = (...argv: string[]) => runOnce(argv).pipe(Effect.orDie);
-  // 失敗するはずのコマンド。成功したらテストが失敗し、失敗したらそのエラーメッセージを返す
   const cliFailure = (...argv: string[]) =>
     runOnce(argv).pipe(
       Effect.flip,
@@ -217,7 +201,6 @@ describe("Helpers の実物 Layer の契約（本物の子プロセス・HTTP・
       const stdout = yield* cli("stop");
 
       const [dir] = yield* sessionDirs();
-      // 偽のヘルパーが stop で録音（相手.m4a・自分.m4a）を書くので、map.html の後に map-audio.html も出る
       const paths = [join(dir!, "map.md"), join(dir!, "map.json"), join(dir!, "map.drawnix"), join(dir!, "map.png"), join(dir!, "map.html"), join(dir!, "map-audio.html")];
       expect(stdout.split("\n").filter((l) => l !== "")).toEqual(paths);
       for (const path of paths) expect(existsSync(path)).toBe(true);
@@ -247,13 +230,10 @@ describe("Helpers の実物 Layer の契約（本物の子プロセス・HTTP・
         expect(stopElapsed).toBeGreaterThanOrEqual(STOP_LIMIT_MS);
         expect(stopElapsed).toBeLessThan(STOP_LIMIT_MS + 2_000);
         expect(stdout.split("\n").filter((l) => l !== "")).toHaveLength(5);
-        expect(() => process.kill(run.pid, 0)).toThrow(); // SIGKILL で止まっている
-        // 標準エラーの文面が示す上限は、実際に使われた上限と同じ
+        expect(() => process.kill(run.pid, 0)).toThrow();
         expect(stderr.some((line) => line.includes("SIGKILL") && line.includes(`${STOP_LIMIT_MS}ms`))).toBe(true);
-        // 録音していたので、録音の書き終わりを確認できなかったことも標準エラーに残す
         expect(stderr.some((line) => line.includes("録音の書き終わりを確認できない"))).toBe(true);
 
-        // close の経路も同じ上限で戻り、子プロセスを残さない
         const { server: server2, cli: cli2, records: records2 } = yield* setup({ ignoreSigterm: true }, STOP_LIMIT_MS);
         yield* cli2("start", "--app", "us.zoom.xos");
         yield* waitFor(() => expect(records2().filter((r) => r.type === "connection")).toHaveLength(1));
@@ -277,7 +257,7 @@ describe("Helpers の実物 Layer の契約（本物の子プロセス・HTTP・
       yield* cli("start", "--app", "us.zoom.xos");
       const run = records().find((r) => r.type === "run");
       if (run?.type !== "run") throw new Error("ヘルパーが起動していない");
-      expect(() => process.kill(run.pid, 0)).not.toThrow(); // 生きている
+      expect(() => process.kill(run.pid, 0)).not.toThrow();
 
       yield* server.close;
 
@@ -292,12 +272,12 @@ describe("Helpers の実物 Layer の契約（本物の子プロセス・HTTP・
       const { cliFailure } = yield* setup({ failRun: { stderr: "マイクが許可されていません", code: 1 } });
 
       expect(yield* cliFailure("start", "--app", "us.zoom.xos")).toContain("マイクが許可されていません");
-      yield* cliFailure("stop"); // 進行中のセッションはない
+      yield* cliFailure("stop");
     }));
 
   it.live("予期せぬ終了の 2 つの終わり方（code で終わる・signal で落ちる）を、code・signal・stderrTail の値として読み取れる", () =>
     Effect.gen(function* () {
-      const codeLines = Array.from({ length: HELPER_RUN_STDERR_TAIL_LINES + 1 }, (_, i) => `l${i + 1}`); // HELPER_RUN_STDERR_TAIL_LINES を 1 行超える行数で、末尾だけが残ることも確かめる
+      const codeLines = Array.from({ length: HELPER_RUN_STDERR_TAIL_LINES + 1 }, (_, i) => `l${i + 1}`);
       const signalLines = ["s1", "s2", "s3"];
       const { cli, sessionDirs } = yield* setup({
         events: [],
@@ -313,7 +293,6 @@ describe("Helpers の実物 Layer の契約（本物の子プロセス・HTTP・
 
       yield* cli("stop");
 
-      // 同じ 2 つの終わり方を、起動し直し後の signal 側でも確かめる
       const { cli: cli2, sessionDirs: sessionDirs2 } = yield* setup({
         events: [],
         unexpectedExit: { afterMs: 300, signal: "SIGKILL" },
@@ -334,7 +313,6 @@ describe("Helpers の実物 Layer の契約（本物の子プロセス・HTTP・
 
       yield* cli("stop");
 
-      // 強制終了していないので、録音の警告は出ない
       expect(stderr.some((line) => line.includes("録音の書き終わり"))).toBe(false);
       const [dir] = yield* sessionDirs();
       for (const name of ["相手.m4a", "自分.m4a"]) {

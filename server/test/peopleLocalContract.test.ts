@@ -4,10 +4,6 @@ import { type DiffInput, DiffUpdater, emptyMap } from "../src/core/index.ts";
 import { localUpdaterLayer } from "../src/localDiffUpdater.ts";
 import { classificationRequest, type Classification } from "../src/localPrompt.ts";
 
-// Issue #1023: TODO の担当の話者の、ローカルの分類の契約。
-// Claude 側（peopleContract.test.ts）と分けて置く。1 つのファイルが claudePrompt と localPrompt の両方を読むと、
-// fallow が両方の SYSTEM を重複した export として数える。
-
 describe("ローカルの分類の契約", () => {
   const request = (sentences = ["やります。"]) => classificationRequest(emptyMap("定例"), [], sentences.map((text) => ({ remark: { id: "r1", track: "相手" as const, start: 0, end: 1, text }, text })));
 

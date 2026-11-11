@@ -3,8 +3,6 @@ import Foundation
 import Testing
 @testable import HelperCore
 
-// マイクの流れとタップの流れから、エコーを除いたマイクの流れを作る処理（差し替えの canceller）。
-
 private struct StubFailure: Error, Equatable {}
 
 private let base: UInt64 = 2_000_000_000
@@ -15,7 +13,6 @@ private func makeStream() -> (AsyncThrowingStream<CapturedAudio, Error>, AsyncTh
 
 private func mean(_ frame: [Float]) -> Float { frame.reduce(0, +) / Float(frame.count) }
 
-/// 左右で値が違う 48 kHz・2ch・interleaved のバッファ（平均は (left + right) / 2）。
 private func stereoAudio(left: Float, right: Float, frames: Int, hostTime: UInt64) -> CapturedAudio {
     let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 48_000, channels: 2, interleaved: true)!
     let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(frames))!
@@ -25,7 +22,6 @@ private func stereoAudio(left: Float, right: Float, frames: Int, hostTime: UInt6
     return CapturedAudio(buffer: buffer, hostTime: hostTime)
 }
 
-/// 最初の reverse で止まり、`release()` されるまで処理を進めない差し替え（AEC が追いつかない状態を作る）。
 private final class BlockingEchoCanceller: EchoCanceller, @unchecked Sendable {
     private let gate = DispatchSemaphore(value: 0)
     private let lock = NSLock()
@@ -58,7 +54,6 @@ struct EchoCancellationStreamTests {
         let (microphone, micInput) = makeStream()
         let (reference, referenceInput) = makeStream()
         let micStart = base + hostTicks(milliseconds: 90)
-        // タップは 0.6 秒、マイクは 0.5 秒。タップはマイクより 90 ms 早く始まる
         referenceInput.yield(stereoAudio(left: 0.2, right: 0.4, frames: 28_800, hostTime: base))
         micInput.yield(constantAudio(value: 0.4, frames: 8_000, sampleRate: 16_000, channels: 1, interleaved: false, hostTime: micStart))
         referenceInput.finish()
@@ -67,15 +62,12 @@ struct EchoCancellationStreamTests {
         let output = try await collect(echoCancelledStream(microphone: microphone, reference: reference, canceller: canceller))
 
         let events = canceller.events
-        // マイクは 0.5 秒 = 50 区切り（変換器の端の差を許す）
         let captures = captureFrames(events)
         #expect((48...52).contains(captures.count))
         for frame in captures.dropFirst(5).dropLast(5) { #expect(abs(mean(frame) - 0.4) < 0.02) }
-        // タップは 0.6 秒 = 60 区切り。2ch をそのまま 1ch として読むと 2 倍になる
         let realReverses = reverseFrames(events).filter { $0.contains { $0 != 0 } }
         #expect((55...61).contains(realReverses.count))
         for frame in realReverses { #expect(abs(mean(frame) - 0.3) < 0.02) }
-        // 最初の capture（90 ms の時点）の前に、その時刻までの参照が 9 区切り以上渡っている
         #expect(try #require(reverseCountsBeforeEachCapture(events).first) >= 9)
         #expect(try #require(output.first).hostTime == micStart)
         #expect(abs(totalSeconds(output) - 0.5) < 0.05)
@@ -117,7 +109,6 @@ struct EchoCancellationStreamTests {
         let output = echoCancelledStream(microphone: microphone, reference: reference, canceller: canceller)
         let collected = Task { try await collect(output) }
 
-        // 処理 Task を最初の reverse で止める
         referenceInput.yield(constantAudio(value: 0.3, frames: 480, sampleRate: 48_000, channels: 1, interleaved: false, hostTime: base))
         micInput.yield(constantAudio(value: 0.4, frames: 480, sampleRate: 48_000, channels: 1, interleaved: false, hostTime: base))
         for _ in 0..<500 where !canceller.isBlocked { try await Task.sleep(for: .milliseconds(10)) }
@@ -126,7 +117,6 @@ struct EchoCancellationStreamTests {
         for i in 0..<5_000 {
             micInput.yield(constantAudio(value: 0.4, frames: 1, sampleRate: 48_000, channels: 1, interleaved: false, hostTime: base + UInt64(i + 1)))
         }
-        // 上限が働かないと出力は終わらない。待ちに期限を付け、超えたら失敗として取り消す（ブロックは defer で解除される）。
         let watchdog = Task {
             try await Task.sleep(for: .seconds(10))
             collected.cancel()

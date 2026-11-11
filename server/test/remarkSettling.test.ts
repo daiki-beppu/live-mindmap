@@ -4,18 +4,11 @@ import { TestClock } from "effect/testing";
 import { SETTLE_QUIET_MS, SPEAKER_WAIT_MS, type HelperPartial, type SettledRemark, type SpeakerLogEvent, type WordTime } from "../src/core/index.ts";
 import { createRemarkSettling } from "../src/remarkSettling.ts";
 
-// 途中結果が T 秒変わらなければ発言として出す規則に、停止の門をつなぐ層（中核は実行環境のタイマーを使わない。ADR 0003）。
-// Issue #1083: 発言を締める時計は、届いた結果の end の最大値（音声の時刻）だけ。壁時計（TestClock）では進まない。
-// 結果が届かない間は発言を出さない。出すのは、結果の到着・確定結果・drain のとき。
-
 const T = SETTLE_QUIET_MS;
 const partial = (track: HelperPartial["track"], start: number, end: number, text: string): HelperPartial => ({ track, start, end, text, duplicate: false });
 const final = (track: SettledRemark["track"], start: number, end: number, text: string): SettledRemark => ({ track, start, end, text });
 const texts = (emitted: SettledRemark[]) => emitted.map((r) => r.text);
 
-// Issue #1021: 相手の発言は話者の確定区間が揃うまで（最大 SPEAKER_WAIT_MS）出ない。
-// 下の既存の観測は発言を締める規則（settle.ts）が対象なので、始めに speaker-off を渡して、相手の発言を待たずに話者なしで出す。
-// 話者を決める規則と待ちは、speakerOff: false で組み立てた別の describe が対象にする
 const speakers = (emitted: SettledRemark[]) => emitted.map((r) => [r.speaker, r.text]);
 const settledTo = (to: number): SpeakerLogEvent => ({ type: "speaker-settled", track: "相手", to });
 const SPEAKER_OFF: SpeakerLogEvent = { type: "speaker-off", start: 0, reason: "モデルなし" };
@@ -33,7 +26,7 @@ describe("途中結果から発言を出す", () => {
       const { settling, emitted } = yield* setup();
 
       yield* settling.partial(partial("相手", 10, 11, "あ"));
-      yield* settling.partial(partial("相手", 10, 11.5, "あい")); // 更新で、出す時刻が後ろにずれる
+      yield* settling.partial(partial("相手", 10, 11.5, "あい"));
       yield* settling.partial(partial("自分", 0, 11.5 + (T - 1) / 1000, "x"));
       expect(emitted).toEqual([]);
 
@@ -62,7 +55,7 @@ describe("途中結果から発言を出す", () => {
       const { settling, emitted } = yield* setup();
 
       yield* settling.partial(partial("相手", 10, 12, "あい"));
-      yield* settling.final(final("相手", 10.5, 12.5, "あいう。")); // end 12.5 は途中結果の期限（13 秒）の前
+      yield* settling.final(final("相手", 10.5, 12.5, "あいう。"));
 
       expect(emitted).toEqual([{ track: "相手", start: 10.5, end: 12.5, text: "あいう。" }]);
       yield* settling.partial(partial("自分", 0, 30, "x"));
@@ -75,7 +68,7 @@ describe("途中結果から発言を出す", () => {
 
       yield* settling.partial(partial("相手", 10, 12, "あしたの"));
       yield* settling.partial(partial("自分", 0, 13, "x"));
-      expect(texts(emitted)).toEqual(["あしたの"]); // 先に出ている
+      expect(texts(emitted)).toEqual(["あしたの"]);
       yield* settling.final(final("相手", 10.5, 12.5, "明日の会議。"));
 
       yield* settling.partial(partial("自分", 0, 20, "x"));
@@ -88,10 +81,10 @@ describe("途中結果から発言を出す", () => {
 
       yield* settling.partial(partial("相手", 10, 11, "ひとつめ"));
       yield* settling.partial(partial("相手", 11, 11.75, "ふたつめ"));
-      yield* settling.partial(partial("自分", 0, 12, "x")); // ひとつめだけ出る
+      yield* settling.partial(partial("自分", 0, 12, "x"));
       expect(texts(emitted)).toEqual(["ひとつめ"]);
 
-      yield* settling.final(final("相手", 10, 12.5, "ひとつめ、ふたつめ。")); // end 12.5 はふたつめの期限（12.75 秒）の前
+      yield* settling.final(final("相手", 10, 12.5, "ひとつめ、ふたつめ。"));
       expect(texts(emitted)).toEqual(["ひとつめ", "ふたつめ"]);
 
       yield* settling.partial(partial("自分", 0, 30, "x"));
@@ -107,20 +100,18 @@ describe("途中結果から発言を出す", () => {
       yield* settling.final({ track: "自分", start: 0, end: 2, text: "自分の確定。", duplicate: true });
       expect(emitted).toEqual([{ track: "自分", start: 0, end: 2, text: "自分の確定。", duplicate: true, speaker: "自分" }]);
 
-      // 守っている状態に到達したことを先に確かめる: 同じ時間で、相手の途中結果は出る
       yield* settling.partial(partial("自分", 10, 20, "自分の途中"));
       expect(texts(emitted)).toEqual(["自分の確定。", "相手の途中"]);
     }));
 });
 
-// Issue #1083: 発言を締める時計は結果の end。壁時計（TestClock）は発言に影響しない
 describe("音声の時刻で締める（Issue #1083）", () => {
   it.effect("結果の end が期限を越えると、壁時計を進めなくても出る（先に期限の来た発話、後に届いた結果の順）", () =>
     Effect.gen(function* () {
       const { settling, emitted } = yield* setup();
 
       yield* settling.partial(partial("相手", 10, 11, "あ"));
-      yield* settling.final({ track: "自分", start: 0, end: 12, text: "自分の確定。" }); // 壁時計は 0 のまま
+      yield* settling.final({ track: "自分", start: 0, end: 12, text: "自分の確定。" });
 
       expect(texts(emitted)).toEqual(["あ", "自分の確定。"]);
     }));
@@ -130,7 +121,7 @@ describe("音声の時刻で締める（Issue #1083）", () => {
       const { settling, emitted } = yield* setup();
 
       yield* settling.partial(partial("相手", 10, 11, "あ"));
-      yield* settling.partial(partial("相手", 12, 13, "い")); // 別の発話で T を超えた差: 先の本文が先に出てから、当てはまる
+      yield* settling.partial(partial("相手", 12, 13, "い"));
 
       expect(emitted).toEqual([{ track: "相手", start: 10, end: 11, text: "あ" }]);
     }));
@@ -152,7 +143,7 @@ describe("音声の時刻で締める（Issue #1083）", () => {
       const { settling, emitted } = yield* setup();
 
       yield* settling.partial(partial("相手", 10, 11, "あ"));
-      yield* settling.final({ track: "自分", start: 0, end: 2, text: "古い" }); // 時計は進まない
+      yield* settling.final({ track: "自分", start: 0, end: 2, text: "古い" });
       expect(texts(emitted)).toEqual(["古い"]);
 
       yield* settling.partial(partial("自分", 0, 11 + (T - 1) / 1000, "x"));
@@ -199,7 +190,6 @@ describe("音声の時刻で締める（Issue #1083）", () => {
       expect(yield* run(0, true)).toEqual(expected);
     }));
 
-  // 結果の列は、届く間隔によらず同じ発言の列になる（TestClock を進めない間隔 0 と、音声の時刻と同じだけ進める間隔）
   describe("同じ結果の列を、間隔 0 で流しても音声の時刻と同じ間隔で流しても、同じ発言の列ができる", () => {
     type Step = { kind: "partial"; p: HelperPartial } | { kind: "final"; r: SettledRemark };
     const steps: Step[] = [
@@ -217,9 +207,9 @@ describe("音声の時刻で締める（Issue #1083）", () => {
       { kind: "final", r: final("相手", 69.5, 71.5, "覆われる。") },
       { kind: "final", r: final("自分", 0, 5, "古い end") },
       { kind: "partial", p: partial("相手", 90, 91, "あ") },
-      { kind: "partial", p: partial("相手", 90, 95, "あいうえお") }, // 同じ発話の更新で end が T 以上進む
+      { kind: "partial", p: partial("相手", 90, 95, "あいうえお") },
       { kind: "partial", p: partial("相手", 100, 102, "あい") },
-      { kind: "final", r: final("相手", 100, 102.5, "あいう") }, // 途中結果の後の確定結果
+      { kind: "final", r: final("相手", 100, 102.5, "あいう") },
       { kind: "partial", p: partial("相手", 110, 111, "最後") },
     ];
     const endOf = (step: Step) => (step.kind === "partial" ? step.p.end : step.r.end);
@@ -227,7 +217,7 @@ describe("音声の時刻で締める（Issue #1083）", () => {
     const run = (stretch: boolean) =>
       Effect.gen(function* () {
         const { settling, emitted } = yield* setup();
-        let audio = 0; // 最後に流した結果までの end の最大値（ミリ秒）
+        let audio = 0;
         for (const step of steps) {
           if (stretch && audio > 0) yield* TestClock.adjust(Math.max(0, endOf(step) * 1000 - audio));
           audio = Math.max(audio, endOf(step) * 1000);
@@ -291,14 +281,11 @@ describe("停止", () => {
     }));
 });
 
-// Issue #1021: 発言を締める 4 つの出口（due の 1 秒 / due の文の終わり / final の既出分岐 / final の passCarried 分岐 / drain）の
-// どれから出た発言にも、同じ規則で話者が付く。同じ確定区間（slot 3 → slot 1 → slot 4）を先に届けておき、各出口の出力を比べる。
 describe("どの出口から出た発言にも同じ規則で話者が付く（Issue #1021）", () => {
   const segment = (slot: number, start: number, end: number): SpeakerLogEvent => ({ type: "speaker", track: "相手", start, end, slot, final: true });
   const span = (location: number, length: number, start: number, end: number): WordTime => ({ location, length, start, end });
   const heardPartial = (start: number, end: number, text: string, wordTimes: WordTime[]): HelperPartial => ({ ...partial("相手", start, end, text), wordTimes });
 
-  // 確定区間と確定済みの位置は、発言より先に届いている（揃っているので、締まった発言はすぐ出る）
   const withSegments = Effect.fn("withSegments")(function* () {
     const made = yield* setup({ speakerOff: false });
     for (const s of [segment(3, 10, 11), segment(1, 11, 14), segment(4, 14, 16), settledTo(16)]) yield* made.settling.speaker(s);
@@ -321,7 +308,7 @@ describe("どの出口から出た発言にも同じ規則で話者が付く（I
       const { settling, emitted } = yield* withSegments();
 
       yield* settling.partial(heardPartial(10, 14, "はい、ありがとう。", [span(0, 3, 10, 11), span(3, 6, 11, 14)]));
-      yield* settling.partial(partial("自分", 0, 14.05, "x")); // 文の終わりから SETTLE_SENTENCE_MS（50ms）経った。1 秒は経っていない
+      yield* settling.partial(partial("自分", 0, 14.05, "x"));
 
       expect(speakers(emitted)).toEqual([["相手 A", "はい、"], ["相手 B", "ありがとう。"]]);
     }));
@@ -332,7 +319,7 @@ describe("どの出口から出た発言にも同じ規則で話者が付く（I
 
       yield* settling.partial(heardPartial(10, 11, "はい、", [span(0, 3, 10, 11)]));
       yield* settling.partial(heardPartial(11, 16, "ありがとう、お願いします", [span(0, 6, 11, 14), span(6, 6, 14, 16)]));
-      yield* settling.partial(partial("自分", 0, 12, "x")); // 先頭の発話だけ 1 秒経って出る
+      yield* settling.partial(partial("自分", 0, 12, "x"));
       expect(speakers(emitted)).toEqual([["相手 A", "はい、"]]);
 
       yield* settling.final({ ...final("相手", 10, 16.5, "はい、ありがとう、お願いします") });
@@ -379,12 +366,12 @@ describe("どの出口から出た発言にも同じ規則で話者が付く（I
       const { settling, emitted } = yield* setup({ speakerOff: false });
       for (const s of [segment(3, 0, 2), segment(1, 2, 4), segment(3, 4, 6), segment(9, 6, 8), settledTo(8)]) yield* settling.speaker(s);
 
-      yield* settling.partial(heardPartial(0, 2, "ひとつめ", [span(0, 4, 0, 2)])); // 1 秒の出口
+      yield* settling.partial(heardPartial(0, 2, "ひとつめ", [span(0, 4, 0, 2)]));
       yield* settling.partial(partial("自分", 0, 3, "x"));
-      yield* settling.final({ ...final("相手", 2, 4, "ふたつめ"), wordTimes: [span(0, 4, 2, 4)] }); // 確定結果の出口
+      yield* settling.final({ ...final("相手", 2, 4, "ふたつめ"), wordTimes: [span(0, 4, 2, 4)] });
       yield* settling.partial(heardPartial(4, 6, "みっつめ", [span(0, 4, 4, 6)]));
       yield* settling.partial(heardPartial(6, 8, "よっつめ", [span(0, 4, 6, 8)]));
-      yield* settling.drain; // drain の出口
+      yield* settling.drain;
 
       expect(speakers(emitted)).toEqual([["相手 A", "ひとつめ"], ["相手 B", "ふたつめ"], ["相手 A", "みっつめ"], ["相手 C", "よっつめ"]]);
     }));

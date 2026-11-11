@@ -1,6 +1,5 @@
 import Foundation
 
-/// Core Audio が返す音声プロセス 1 件。
 public struct AudioProcess: Sendable, Equatable {
     public var objectID: UInt32
     public var bundleID: String
@@ -13,7 +12,6 @@ public struct AudioProcess: Sendable, Equatable {
     }
 }
 
-/// 起動中のアプリ 1 件（NSWorkspace の値）。
 public struct RunningApp: Sendable, Equatable {
     public var bundleID: String
     public var name: String
@@ -24,7 +22,6 @@ public struct RunningApp: Sendable, Equatable {
     }
 }
 
-/// 会議アプリの一覧に出す 1 件。
 public struct MeetingApp: Sendable, Equatable, Encodable {
     public var bundleID: String
     public var name: String
@@ -46,14 +43,10 @@ public enum MeetingAppError: Error, Equatable, CustomStringConvertible {
     }
 }
 
-/// `processBundleID` が `appBundleID` のアプリ本体、またはその helper か。`.` の境界で判定する
-/// （`com.google.ChromeCanary` は `com.google.Chrome` にならない）。
 func belongs(_ processBundleID: String, toApp appBundleID: String) -> Bool {
     processBundleID == appBundleID || processBundleID.hasPrefix(appBundleID + ".")
 }
 
-/// いま音を出している音声プロセスを、起動中のアプリ単位にまとめる。
-/// 複数のアプリに一致するときは、最も長い bundle id のアプリを選ぶ。
 public func meetingApps(audioProcesses: [AudioProcess], runningApps: [RunningApp]) -> [MeetingApp] {
     var result: [MeetingApp] = []
     for process in audioProcesses where process.isRunningOutput {
@@ -66,8 +59,6 @@ public func meetingApps(audioProcesses: [AudioProcess], runningApps: [RunningApp
     return result
 }
 
-/// 選んだアプリのタップ対象。アプリ本体と helper のプロセスすべて（音を出していないものも含む）。
-/// 合うプロセスが 0 件なら、全体へ広げずに失敗する。
 public func tapTargets(forApp bundleID: String, in audioProcesses: [AudioProcess]) throws -> [AudioProcess] {
     let targets = audioProcesses.filter { belongs($0.bundleID, toApp: bundleID) }
     guard !targets.isEmpty else { throw MeetingAppError.noMatchingProcess(bundleID: bundleID) }

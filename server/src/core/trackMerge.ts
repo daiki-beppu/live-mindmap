@@ -1,9 +1,7 @@
 type Queued<T> = { item: T; arrival: number };
 
 export type TrackMerge<T> = {
-  /** 要素を 1 つ受け取り、出せるようになった要素を end の順に返す。 */
   offer(item: T): T[];
-  /** 溜まっている要素を、すべて end の順に返す。以後は空。 */
   drain(): T[];
 };
 

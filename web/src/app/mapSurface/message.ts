@@ -25,7 +25,6 @@ export const Message = defineMessageUnion({
   },
   ClickedMapSurfaceWithModifier: { x: Schema.Finite, y: Schema.Finite, ctrlKey: Schema.Boolean, metaKey: Schema.Boolean, altKey: Schema.Boolean },
   StartedMapSurfaceGesture: {},
-  // Safari の gesture が変わった。scale は始まりからの累積の倍率（前回との比は update が求める）。x・y は位置（表示面の左上が原点）
   ChangedMapSurfaceGesture: { scale: Schema.Finite, x: Schema.Finite, y: Schema.Finite },
   ClickedChangeItem: { nodeId: Schema.String },
   ClickedEvidenceClose: {},

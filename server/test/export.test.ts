@@ -48,7 +48,6 @@ const node = (id: string, kind: Exclude<ExportNode["kind"], "補足">, text: str
   ...init,
 });
 
-// 全部の状態を含むスナップショット（00:00 / 00:09 / 00:19 / 00:12 / 00:14 / 30:30 / 00:28 / 61:40）
 const sample = (): JsonExport => ({
   root: node("root", "会議", "定例", {
     children: [
@@ -310,7 +309,6 @@ describe("exportFiles と map.json", () => {
     Effect.gen(function* () {
       const r1 = remark("r1", 3, "採用の話をします");
       const r2 = remark("r2", 7, "面接は何回にしますか");
-      // 1 回目の呼び出しで議題、その呼び出し中に届いた 2 件目を渡す 2 回目の呼び出しでその下（確定した id n1）の論点を足す
       const { session } = yield* playBatches(
         [[r1], [r2]],
         [
@@ -368,7 +366,6 @@ describe("種別「要点」の書き出し", () => {
   });
 });
 
-// Issue #1028: 書き出しに話者を載せる。名前の表は speakerNames（ラベル → 名前）として JsonExport に載り、書き出し時点の名前で出る
 describe("話者の書き出し: map.md", () => {
   const withNames = (children: ExportNode[], speakerNames?: Record<string, string>): JsonExport => ({
     root: node("root", "会議", "定例", { children }),
@@ -470,7 +467,6 @@ describe("話者の書き出し: map.drawnix", () => {
     return find(toDrawnix(exp).elements[0] as unknown as El)!.data.topic.children;
   };
   const spoken = (children: ExportNode[], speakerNames?: Record<string, string>): JsonExport => ({
-    // 話者を持つ根拠の発言が 1 件ある = 話者を持つセッション
     root: node("root", "会議", "定例", {
       evidence: [{ ...remark("r0", 0), speaker: "相手 A" }],
       children,

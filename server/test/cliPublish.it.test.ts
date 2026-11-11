@@ -22,9 +22,6 @@ import { fakeScreenJpeg } from "./fixtures/screenJpeg.ts";
 import { embeddedText } from "./fixtures/review.ts";
 import { supplementLog } from "./fixtures/supplement.ts";
 
-// cli publish（Issue #1250 の --anyone と、Issue #1251 の既定の合言葉）。runCli を、偽の Cloudflare API・一時フォルダの HOME・偽の ReviewBuild・止めた時計で呼ぶ。
-// 偽の API が受け取った Worker のスクリプトは、実際に import して Request を渡す
-
 const ACCOUNT = "acct-1234567890";
 const TOKEN = "cf-token-synthetic";
 const SUBDOMAIN = "acme-team";
@@ -46,16 +43,12 @@ const temporaryDirectory = Effect.acquireRelease(
 type Call = { method: string; path: string; search: string; headers: Record<string, string>; form: FormData | null; json: unknown; text: string };
 
 type ApiBehavior = {
-  // 要求ごとの上書き。null を返すと既定の成功応答にする
   respond?: (call: Call) => { status: number; body: unknown } | null;
-  // true を返した要求は、応答を得られない通信の失敗（TransportError）にする
   transportFailure?: (call: Call) => boolean;
 };
 
 const ok = (result: unknown) => ({ status: 200, body: { success: true, errors: [], messages: [], result } });
 
-// 受け取った要求を記録する偽の Cloudflare API。Direct Upload の 3 段（assets-upload-session → assets/upload → script PUT）と、
-// サブドメインの取得・Worker 単位の workers.dev の有効化・Worker の削除に成功の応答を返す
 function fakeCloudflare(behavior: ApiBehavior = {}) {
   const calls: Call[] = [];
   const client = HttpClient.make((request) => Effect.promise(async () => {
@@ -97,7 +90,6 @@ function defaultResponse(call: Call): { status: number; body: unknown } {
 
 const isScriptPut = (c: Call) => c.method === "PUT" && /\/workers\/scripts\/[^/]+$/.test(c.path);
 const isScriptDelete = (c: Call) => c.method === "DELETE" && /\/workers\/scripts\/[^/]+$/.test(c.path);
-// Worker 単位の workers.dev の有効化（script の下の subdomain）
 const isEnableSubdomain = (c: Call) => /\/workers\/scripts\/[^/]+\/subdomain$/.test(c.path);
 const scriptName = (c: Call) => decodeURIComponent(c.path.split("/").at(-1)!);
 
@@ -110,9 +102,7 @@ type Setup = {
   env?: Record<string, string>;
   template?: string;
   buildFailure?: ReviewPageFailed;
-  // 偽の音声 mix（呼び出しの記録と失敗の設定を取り出すとき）。省くと呼び出しを見ない偽物
   mix?: FakeMix;
-  // 見返しのビルドの呼び出し回数
   builds?: { count: number };
 };
 
@@ -176,7 +166,6 @@ const publish = (s: Setup, argv: string[]) =>
 const failureText = (result: Result.Result<unknown, unknown>) => (Result.isFailure(result) ? String(result.failure) : "");
 const output = (s: Setup, result?: Result.Result<unknown, unknown>) => [s.stdout.join(""), s.stderr.join(""), result ? failureText(result) : ""].join("\n");
 
-// 記録: ~/.live-mindmap/ の下の通常ファイルを再帰的にすべて数える
 function filesUnder(dir: string): string[] {
   if (!existsSync(dir)) return [];
   return readdirSync(dir, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? filesUnder(join(dir, e.name)) : [join(dir, e.name)]));
@@ -186,8 +175,6 @@ const recordRows = (s: Setup): Record<string, unknown>[] =>
   recordFiles(s).flatMap((f) => readFileSync(f, "utf8").split("\n").filter((l) => l.trim() !== "").map((l) => JSON.parse(l) as Record<string, unknown>));
 const asMs = (value: unknown): number => (typeof value === "number" ? value : Date.parse(String(value)));
 
-// 偽の API が受け取った HTML（assets/upload の base64 を戻したもの）
-// パートの Content-Type は Worker が配信するときの Content-Type になるので、text/html であることも確かめる
 async function uploadedHtml(s: Setup): Promise<string> {
   const upload = s.api.calls.find((c) => c.path.endsWith("/workers/assets/upload"));
   expect(upload, "assets/upload が呼ばれていない").toBeDefined();
@@ -201,7 +188,6 @@ async function uploadedHtml(s: Setup): Promise<string> {
   return Buffer.from(await (part as Blob).text(), "base64").toString("utf8");
 }
 
-// 偽の API が受け取った Worker のスクリプト（script PUT の JavaScript の module）
 async function uploadedWorker(s: Setup) {
   const put = s.api.calls.find(isScriptPut);
   expect(put, "script PUT が呼ばれていない").toBeDefined();
@@ -285,25 +271,22 @@ describe("cli publish（Issue #1250: --anyone / Issue #1251: 既定は合言葉�
       const s = setup(root);
       writeSession(s.sessions, "2026-09-01T00-00-00.000Z", "古い会議");
       const latest = writeSession(s.sessions, "2026-10-01T00-00-00.000Z");
-      mkdirSync(join(s.sessions, "9999-12-31T00-00-00.000Z")); // log.jsonl の無い、より新しいフォルダ
+      mkdirSync(join(s.sessions, "9999-12-31T00-00-00.000Z"));
 
       const result = yield* publish(s, ["--anyone"]);
 
       expect(Result.isSuccess(result), failureText(result)).toBe(true);
-      // 3 段 + 有効化
       const put = s.api.calls.find(isScriptPut)!;
       const name = scriptName(put);
       expect(name).toMatch(/^lmm-[0-9a-f]{32}$/);
       expect(put.headers["authorization"]).toBe(`Bearer ${TOKEN}`);
       expect(put.path).toBe(`/client/v4/accounts/${ACCOUNT}/workers/scripts/${name}`);
-      // 出力: URL・期限・サブドメインが URL に出る旨
       const out = s.stdout.join("");
       const url = `https://${name}.${SUBDOMAIN}.workers.dev`;
       expect(out).toContain(url);
       expect(out).toContain("期限: 2026-10-24T00:00:00.000Z（7 日後。");
       expect(out).toContain(SUBDOMAIN);
       expect(out).not.toContain(MEETING);
-      // 記録
       const files = recordFiles(s);
       expect(files).toHaveLength(1);
       expect(statSync(files[0]!).mode & 0o777).toBe(0o600);
@@ -315,7 +298,6 @@ describe("cli publish（Issue #1250: --anyone / Issue #1251: 既定は合言葉�
       expect(rows[0]!.publishedAt).toBe("2026-10-17T00:00:00.000Z");
       expect(rows[0]!.expiresAt).toBe("2026-10-24T00:00:00.000Z");
       expect(JSON.stringify(rows[0])).not.toContain(TOKEN);
-      // 元のログの「古い方」は使わない
       expect(JSON.stringify(rows[0])).not.toContain("2026-09-01");
     }));
 
@@ -406,7 +388,6 @@ describe("cli publish（Issue #1250: --anyone / Issue #1251: 既定は合言葉�
       expect(worker.metadata.assets?.jwt).toBe("completion-jwt");
       expect(worker.metadata.assets?.config?.run_worker_first).toBe(true);
       expect(worker.metadata.bindings).toContainEqual({ type: "assets", name: "ASSETS" });
-      // 同じ Worker の workers.dev を有効にする要求が、enabled: true で送られる
       const put = s.api.calls.find(isScriptPut)!;
       const enable = s.api.calls.filter(isEnableSubdomain);
       expect(enable).toHaveLength(1);
@@ -436,7 +417,6 @@ describe("cli publish（Issue #1250: --anyone / Issue #1251: 既定は合言葉�
 
     it.effect("head の title は決まった文に差し替わり、og・description のメタにも会議名が出ない。会議名はログの埋め込みの中にだけ残る", () => Effect.gen(function* () {
       const root = yield* temporaryDirectory;
-      // 会議名入りの title・メタを持つテンプレート（差し替えが無ければ会議名が残る）
       const named = `<!doctype html><html><head><title>${MEETING}</title><meta property="og:title" content="${MEETING}"><meta name="description" content="${MEETING}の議事"><meta property="og:description" content="${MEETING}"></head><body></body></html>`;
       const s = setup(root, undefined, { template: named });
       writeSession(s.sessions, "2026-10-01T00-00-00.000Z");
@@ -584,7 +564,6 @@ describe("cli publish（Issue #1250: --anyone / Issue #1251: 既定は合言葉�
         const result = yield* publish(s, argv);
 
         expect(Result.isFailure(result)).toBe(true);
-        // publish が使い方の表示（未知のサブコマンド）で止まっただけの失敗は、拒否の証拠にしない
         expect(output(s, result)).not.toMatch(/Help requested|DESCRIPTION/);
         expect(output(s, result)).toMatch(expected);
         expect(s.api.calls).toEqual([]);
@@ -599,7 +578,6 @@ describe("cli publish（Issue #1250: --anyone / Issue #1251: 既定は合言葉�
     refused("--anyone が無いときの 25 MiB は暗号化した後の HTML で数える（平文は 25 MiB 未満でも、暗号文で超えれば止まる）", [], normal, /25|MiB|大き/, {
       template: `<!doctype html><html><head><title>t</title></head><body><!--${"a".repeat(20 * MIB)}--></body></html>`,
     });
-    // 未知のフラグは CLI の解析が使い方つきで拒む（refused の「使い方だけの失敗は証拠にしない」の対象外）
     it.effect("--passphrase は持たない（合言葉は引数で受けず、製品が作る）", () => Effect.gen(function* () {
       const root = yield* temporaryDirectory;
       const s = setup(root);
@@ -631,7 +609,6 @@ describe("cli publish（Issue #1250: --anyone / Issue #1251: 既定は合言葉�
     }));
     refused("見返しのビルドが失敗した", ["--anyone"], normal, /ビルドに失敗/, { buildFailure: new ReviewPageFailed({ message: "ビルドに失敗" }) });
     refused("HTML が 25 MiB を 1 バイト超える（文字数でなくバイト数で数える）", ["--anyone"], normal, /25|MiB|大き/, {
-      // 「あ」は UTF-8 で 3 バイト。文字数では 25 MiB 未満、バイト数では超える
       template: `<!doctype html><html><head><title>t</title></head><body><!--${"あ".repeat(Math.floor((25 * MIB) / 3))}--></body></html>`,
     });
     for (const [name, env] of [
@@ -689,7 +666,6 @@ describe("cli publish（Issue #1250: --anyone / Issue #1251: 既定は合言葉�
       expect(texts[1]).not.toMatch(/上限/);
       expect(texts[2]).not.toMatch(/権限/);
       expect(texts[0]).not.toContain(TOKEN);
-      // どれも URL を成功として出さない・記録を残さない
       for (const r of [permission, noSubdomain, limit]) {
         expect(r.s.stdout.join("")).not.toContain("workers.dev");
         expect(recordRows(r.s)).toEqual([]);
@@ -781,7 +757,6 @@ describe("cli publish（Issue #1250: --anyone / Issue #1251: 既定は合言葉�
     const interruptBeforeRecord = (s: Setup) => Effect.gen(function* () {
       const reached = yield* Deferred.make<void>();
       const inner = s.api.client;
-      // workers.dev の有効化の要求だけ、到達を知らせて止める（PUT は済み、記録はまだ）
       const client = HttpClient.make((request) => {
         if (request.method === "POST" && /\/workers\/scripts\/[^/]+\/subdomain$/.test(new URL(request.url).pathname)) {
           return Deferred.succeed(reached, undefined).pipe(Effect.andThen(Effect.never));
@@ -883,9 +858,7 @@ describe("cli publish の既定は合言葉で暗号化して置く（Issue #125
     expect(events.some((e) => e.type === "diff")).toBe(true);
     expect(events.filter((e) => e.type === "remark").every((e) => e.remark!.text === "")).toBe(true);
     expect(events.filter((e) => e.type === "screen").every((e) => e.lines === undefined)).toBe(true);
-    // 違う合言葉では開けない
     yield* Effect.promise(() => expect(openSealed(sealedOf(outer), `${passphrase}x`)).rejects.toThrow());
-    // manifest は外側のページのバイト数
     const session = s.api.calls.find((c) => c.path.endsWith("/assets-upload-session"))!;
     const manifest = (session.json as { manifest: Record<string, { size: number }> }).manifest;
     expect(Object.keys(manifest)).toEqual(["/index.html"]);
@@ -908,7 +881,6 @@ describe("cli publish の既定は合言葉で暗号化して置く（Issue #125
     expect(metas.length).toBeGreaterThanOrEqual(2);
     for (const content of metas) expect(content.trim()).not.toBe("");
     expect(outer.match(/<input\b/g)).toHaveLength(1);
-    // 復号した内側の title も決まった文
     const inner = yield* Effect.promise(() => openSealed(sealedOf(outer), passphraseOf(s)));
     expect(inner.match(/<title>/g)).toHaveLength(1);
     expect(inner).toContain(`<title>${PUBLISH_TITLE}</title>`);
@@ -999,7 +971,6 @@ describe("cli publish list / withdraw（Issue #1253）", () => {
   const statusOf = (s: Setup, name: string) => recordRows(s).find((r) => r.name === name)?.status;
   const revoked = { status: 403, body: { success: false, errors: [{ code: 10000, message: "Authentication error" }], messages: [], result: null } };
   const notFound = { status: 404, body: { success: false, errors: [{ code: 10007, message: "workers.api.error.script_not_found" }], messages: [], result: null } };
-  // 時計を指定の時刻にして実行する（publish は NOW 固定）
   const publishAt = (s: Setup, at: number, argv: string[]) =>
     Effect.gen(function* () {
       yield* TestClock.setTime(at);
@@ -1316,7 +1287,7 @@ describe("cli publish list / withdraw（Issue #1253）", () => {
   describe("期限切れの後片付け（Issue #1254）: 公開・一覧・取り下げの最初に、期限切れで公開中の物の Worker を消して expired にする", () => {
     const X = "lmm-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx";
     const Y = "lmm-yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy";
-    const AFTER = NOW + 25 * 60 * 60 * 1000; // X(24h) の期限の後、Y(72h) の期限の前
+    const AFTER = NOW + 25 * 60 * 60 * 1000;
     const expiredX = () => rowOf(X, { accountId: OTHER_ACCOUNT, expiresAt: hour(24) });
     const noCredentials = { CLOUDFLARE_ACCOUNT_ID: "", CLOUDFLARE_API_TOKEN: "" };
     const urlOf = (name: string) => rowOf(name).url;
@@ -1520,8 +1491,6 @@ describe("cli publish list / withdraw（Issue #1253）", () => {
   });
 
   describe("記録ファイルの更新はプロセス間で排他する", () => {
-    // 別のプロセスが records.jsonl.lock を持っている状態で操作を始める。操作がロックを待つことを確かめてから、
-    // 持ち主として記録を書き換えて解放する。排他が無いと、待たずに先に終わる
     const whileLockHeld = (s: Setup, argv: string[], holderUpdate: () => void) => Effect.gen(function* () {
       const lock = `${recordPath(s)}.lock`;
       mkdirSync(lock, { recursive: true });

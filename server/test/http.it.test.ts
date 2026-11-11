@@ -41,18 +41,13 @@ import { fakeReadings } from "./fixtures/readings.ts";
 
 const apps = [{ bundleID: "us.zoom.xos", name: "zoom.us" }];
 
-// 偽の Helpers・SessionSinks の Layer を受け取れる新しい入口（server.ts、CT-ENTRY-LAYERS）を通すテスト用の資源。
-// resume が諦める／resume の起動中に stop する、といった起動し直しの失敗経路は、fake-helper.ts から
-// attempts・listenDelayMs を削った後（CT-FAKE-TRIM）は実物の子プロセスで再現できないため、ここで偽の
-// Helpers を使う（要件92）。Origin の拒否・body.audio の 400 は、実物の子プロセスを起動せずに確認できる
-// ため、同じ入口を使う（要件97, 98）。
 type AttemptScript = {
-  connect?: boolean; // 既定 true。false なら接続失敗（HelperLaunchFailure）
-  hold?: boolean; // true なら接続を保留する（stop の印が立つまで接続も失敗もしない。実物の「接続待ち」）
+  connect?: boolean;
+  hold?: boolean;
   stderrTail?: string[];
-  unexpectedExit?: { afterMs: number; exit: HelperExitInfo }; // 自発的な予期せぬ終了
-  exitAfterStop?: HelperExitInfo; // stop が呼ばれたときの終わり方（既定 SIGTERM）
-  events?: unknown[]; // 接続した直後にヘルパーが流すイベント（JSON にして events の Stream に載せる）
+  unexpectedExit?: { afterMs: number; exit: HelperExitInfo };
+  exitAfterStop?: HelperExitInfo;
+  events?: unknown[];
   stopEvents?: unknown[];
 };
 
@@ -61,7 +56,7 @@ const makeFakeHelpers = (attempts: AttemptScript[], permission: { microphone: "a
   const queues: Queue.Queue<unknown, Cause.Done>[] = [];
   const stopped: number[] = [];
   const consumed: string[] = [];
-  const sent: boolean[] = []; // server から helper へ送られた休止の指示（paused の値を届いた順に）
+  const sent: boolean[] = [];
   const check = ({ screen }: { readonly screen: boolean }) => Effect.sync(() => {
     return { microphone: permission.microphone, ...(screen ? { screenCapture: permission.screenCapture } : {}), speechJa: { status: "installed" as const, installedLocales: ["ja-JP"] } };
   });
@@ -72,7 +67,7 @@ const makeFakeHelpers = (attempts: AttemptScript[], permission: { microphone: "a
       const script = attempts[Math.min(index, attempts.length - 1)] ?? {};
       if (script.connect === false) return yield* new HelperLaunchFailure({ stderrTail: script.stderrTail ?? [] });
       if (script.hold) {
-        yield* Deferred.await(stopRequested); // 止めて、の印で、ヘルパーが止まって接続待ちが失敗する
+        yield* Deferred.await(stopRequested);
         return yield* new HelperLaunchFailure({ stderrTail: [], exit: { code: null, signal: "SIGTERM" } });
       }
       const queue = yield* Queue.make<unknown, Cause.Done>();
@@ -432,8 +427,6 @@ describe("HTTP 本文の検証（要件8・12）", () => {
     { name: "app空文字列", body: { app: "" } },
     { name: "appが数値", body: { app: 1 } },
     { name: "titleが真偽値", body: { app: "us.zoom.xos", title: false, audio: false } },
-    // audio が boolean 以外（"no"・0・"false" を含む）のケースは、新しい入口（偽の Helpers）を使う
-    // 「新しい入口（...）」describe の方で、より網羅的に確かめる（要件98。重複させない）
     { name: "titleがnull", body: { app: "us.zoom.xos", title: null, audio: false } },
     { name: "audioがnull", body: { app: "us.zoom.xos", audio: null } },
     { name: "screenがnull", body: { app: "us.zoom.xos", audio: false, screen: null } },
@@ -541,7 +534,6 @@ describe("HTTP と /ws upgradeの共通Origin制限（要件2・13・24）", () 
         expect(yield* Effect.tryPromise(() => response.json())).toEqual(apps);
         expect((yield* Effect.tryPromise(() => r.request("POST", "/session/start", '{"app":"us.zoom.xos","title":"週次","audio":false}', origin))).status).toBe(200);
         const c = yield* connect(r.server.port, "/ws", origin);
-        // マップのほかに、差分更新の状態（type: "diff-update"）も接続時に届く。ここで確かめるのはマップだけ
         const map = { nodes: [{ id: "root", parent: null, kind: "会議", text: "週次", evidence: [] }], round: 0, changes: [], remarks: [] };
         yield* Effect.tryPromise(() => vi.waitFor(() => expect(c.frames).toContainEqual({ type: "snapshot", snapshot: map }), { timeout: 10_000 }));
         expect(c.frames.filter((frame) => typeof frame === "object" && frame !== null && "type" in frame && frame.type === "snapshot")).toEqual([{ type: "snapshot", snapshot: map }]);
@@ -581,10 +573,6 @@ describe("HTTP と /ws upgradeの共通Origin制限（要件2・13・24）", () 
       yield* Effect.tryPromise(() => expect(fetch(`http://127.0.0.1:${r.server.port}/session/status`)).rejects.toThrow());
       expect(c.frames).toEqual([]);
     }));
-  // close フレームに応答しない接続が 1 本残っていても、close() の所要時間はその接続の応答に依存しない有界な
-  // 値になる（coding-001）。上限（WS_CLOSE_TIMEOUT_MS。既定 3 秒）はテストだけ短い値を与え、経過時間を
-  // 「上限以上」（応答を待たずに切る誤りを落とす）と「上限 + 2 秒未満」（与えた上限が効かず既定の 3 秒や
-  // ws の既定 30 秒まで待つ誤りを落とす）で挟む
   const WS_CLOSE_LIMIT_MS = 500;
   it.live("close フレームに応答しない接続があっても、closeは与えた上限で解決する（ISSUE-2）", () =>
     Effect.gen(function* () {
@@ -599,10 +587,6 @@ describe("HTTP と /ws upgradeの共通Origin制限（要件2・13・24）", () 
 });
 
 describe("セッションの開始・終了の処理中の保護（要件8・testing-001）", () => {
-  // 開始・終了の処理中（starting/stopping）に別の操作が来ると、SessionTransition として 409 になる
-  // （http.ts の STATUS・sessionFailure.ts の文面）。この経路は、stop の処理中に capture（MapCapture の Service。
-  // 終了時の書き出しが文脈から受け取る）へ到達するまで待ち、確実に stopping のままの状態で start を送ることで再現する。
-  // SessionBusy（live 中の start、既存テストで検証済み）と同じ 409 でも文面が異なるため、文面まで確認する
   it.live("stopの処理中にstartすると409と専用の文面を返す（SessionTransition）", () => {
     let releaseCapture: (() => void) | undefined;
     const released = new Promise<void>((resolve) => {
@@ -616,20 +600,20 @@ describe("セッションの開始・終了の処理中の保護（要件8・tes
       const r = yield* resourceWithFakeHelpers([{}], {
         capture: (_snapshot, path) =>
           Effect.promise(async () => {
-            notifyReachedCapture!(); // ここに来た時点で state は確実に "stopping"（stop() が同期的に遷移させた後）
-            await released; // テストが 409 を確認するまで、stop の応答をここで止めておく
+            notifyReachedCapture!();
+            await released;
             await writeFile(path, "");
           }),
       });
       expect((yield* Effect.tryPromise(() => r.request("POST", "/session/start", '{"app":"us.zoom.xos","audio":false}', undefined))).status).toBe(200);
-      const stopping = r.request("POST", "/session/stop", undefined, undefined); // await しない。処理中に start を送る
+      const stopping = r.request("POST", "/session/stop", undefined, undefined);
       yield* Effect.tryPromise(() => reachedCapture).pipe(Effect.timeout("5 seconds"));
       const response = yield* Effect.tryPromise(() => r.request("POST", "/session/start", '{"app":"us.zoom.xos","audio":false}', undefined));
       expect(response.status).toBe(409);
       expect(yield* Effect.tryPromise(() => response.json())).toEqual({ error: "セッションの開始・終了の処理中です" });
       releaseCapture!();
       expect((yield* Effect.tryPromise(() => stopping)).status).toBe(200);
-    }).pipe(Effect.ensuring(Effect.sync(() => releaseCapture!()))); // assert が失敗しても stop を解放する
+    }).pipe(Effect.ensuring(Effect.sync(() => releaseCapture!())));
   });
 });
 
@@ -661,14 +645,13 @@ describe("HTTP の失敗応答（要件8〜11）", () => {
     expect((yield* Effect.tryPromise(() => r.request("POST", "/session/start", '{"app":"us.zoom.xos","audio":false}', undefined))).status).toBe(200);
     expect.soft(yield* cliStatus(r)).toMatch(/差分更新[^\n]*動いている/);
     for (const event of [
-      { type: "speaker-off", start: 0, reason: "モデルなし" }, // 相手の発言は話者の確定を待つので、話者分離を使えない helper にして待たせない（Issue #1021）
+      { type: "speaker-off", start: 0, reason: "モデルなし" },
       { type: "remark", track: "相手", start: 0, end: 1, text: "最初の発言" },
       { type: "remark", track: "相手", start: 1, end: 2, text: "次の発言" },
     ]) yield* r.emit(event);
     const paused = { status: "paused", reason: "ChatGPT の利用上限" } as const;
     yield* wait(first.frames, paused);
     expect(frames(first.frames).map((f) => f.state)).toEqual([{ status: "running" }, paused]);
-    // paused の通知だけでは後続の push 完了を保証しない。push 後に送られる確定字幕を待つ。
     yield* Effect.tryPromise(() => vi.waitFor(() => expect(first.frames).toContainEqual({
       type: "captions",
       bubbles: expect.arrayContaining([expect.objectContaining({ text: "次の発言", settledLength: "次の発言".length })]),
@@ -782,9 +765,6 @@ describe("HTTP の失敗応答（要件8〜11）", () => {
       expect(calls).toBe(source === "更新呼び出し" ? 1 : 0);
     }));
   }
-  // 偽の Helpers の Layer（新しい入口、CT-ENTRY-LAYERS）を使う。fake-helper.ts から attempts・listenDelayMs を
-  // 削った後（CT-FAKE-TRIM）は、この 2 本を実物の子プロセスで再現できない（要件92）。期待値は変えない。
-  // 1 回目（start の初回起動）は接続してから予期せず終わる（続けて失敗した回に数える）。2・3 回目の失敗で諦める
   const firstAttemptExits: AttemptScript = { unexpectedExit: { afterMs: 50, exit: { code: 1, signal: null } } };
   const giveUpAttempts: AttemptScript[] = [
     { connect: false, stderrTail: ["初回の再起動失敗"] },
@@ -794,7 +774,7 @@ describe("HTTP の失敗応答（要件8〜11）", () => {
     Effect.gen(function* () {
       const r = yield* resourceWithFakeHelpers([
         firstAttemptExits,
-        ...giveUpAttempts, // 2・3 回目の失敗で諦める
+        ...giveUpAttempts,
         { connect: false, stderrTail: ["途中の失敗"] },
         { connect: false, stderrTail: ["途中の失敗"] },
         { connect: false, stderrTail: ["最後の失敗"] },
@@ -810,7 +790,7 @@ describe("HTTP の失敗応答（要件8〜11）", () => {
     }));
   it.live("resumeの起動中にstopすると503で中断を返す", () =>
     Effect.gen(function* () {
-      const r = yield* resourceWithFakeHelpers([firstAttemptExits, ...giveUpAttempts, { hold: true }]); // resume の起動し直しは接続待ちのまま止める
+      const r = yield* resourceWithFakeHelpers([firstAttemptExits, ...giveUpAttempts, { hold: true }]);
       expect((yield* Effect.tryPromise(() => r.request("POST", "/session/start", '{"app":"us.zoom.xos","audio":false}', undefined))).status).toBe(200);
       yield* Effect.tryPromise(() => vi.waitFor(async () => {
         const response = await r.request("GET", "/session/status", undefined, undefined);
@@ -857,12 +837,11 @@ describe("新しい入口（偽の Helpers・SessionSinks を受け取れるサ�
     expect(yield* Effect.tryPromise(() => status.json())).toMatchObject({ status: "running", dir, restarts: 1 });
   }));
 
-  // Issue #645: 語彙の溜まりは、始めたセッションの数を持つ。数えるのは開始（start）で、resume は同じセッションを続けるので増やさない
   it.live("resume で続けたセッションは 1 セッションと数え、溜まりの始めたセッションの数が増えない。新しく start すると増える", () => Effect.gen(function* () {
     const r = yield* resourceWithFakeHelpers([
       { unexpectedExit: { afterMs: 50, exit: { code: 1, signal: null } } },
-      { connect: false }, { connect: false }, {}, // start の初回起動が落ち、2・3 回目の失敗で諦めて止まる。resume の起動し直しは成功する
-      {}, // 新しい start
+      { connect: false }, { connect: false }, {},
+      {},
     ]);
     const poolSessions = () => Effect.tryPromise(async () => JSON.parse(await readFile(vocabularyPoolPath(r.sessionsDir), "utf8")).sessions as number);
     const post = (path: string, body?: string) => Effect.tryPromise(() => r.request("POST", path, body, undefined));
@@ -873,7 +852,7 @@ describe("新しい入口（偽の Helpers・SessionSinks を受け取れるサ�
     expect((yield* post("/session/start", '{"app":"us.zoom.xos","audio":false}')).status).toBe(200);
     expect(yield* poolSessions()).toBe(1);
     yield* statusIs("stopped");
-    expect(yield* poolSessions()).toBe(1); // resume の前に、すでに 1（このテストが数えた後の状態に届いている）
+    expect(yield* poolSessions()).toBe(1);
 
     expect((yield* post("/session/resume")).status).toBe(200);
     yield* statusIs("running");
@@ -896,12 +875,6 @@ describe("新しい入口（偽の Helpers・SessionSinks を受け取れるサ�
       expect(yield* Effect.tryPromise(() => status.json())).toMatchObject({ status: "none" });
     }));
 
-  // base の server.heavy.test.ts「開始に失敗しても、接続中のクライアントにも新しく接続したクライアントにも、空のマップは届かず…」の移動先。
-  // 実物の SessionSinks・Viewers・/ws を通す。sessions.ts が sinks.open を helpers.launch より前に動かす、
-  // または失敗時に viewers.publish を呼ぶと、before/after が「失敗」のマップを受け取りこのテストは落ちる。
-  // base の値（4 ノード・子の文面）は実物 fake-helper の台本と updater から決まっていた。偽 Helpers はイベントを
-  // 送らず updater は ops: [] なので root だけになる（[[1,"前"],[1,"次"]]）。守る不変条件（失敗の前後で
-  // スナップショットが増えない・新しいクライアントには前のセッションの最後のマップが届く）は同じ
   it.live("開始に失敗しても、接続中のクライアントにも新しく接続したクライアントにも、空のマップは届かず、前のセッションの最後のマップが残る", () =>
     Effect.gen(function* () {
       const r = yield* resourceWithFakeHelpers([{}, { connect: false, stderrTail: ["マイクが許可されていません"] }, {}]);
@@ -930,11 +903,9 @@ describe("新しい入口（偽の Helpers・SessionSinks を受け取れるサ�
       expect(snapshots(after.frames).map((s) => s.nodes[0]!.text)).toEqual(["前", "次"]);
     }));
 
-  // base の server.heavy.test.ts「cli status が…」の配線部分（cli.ts の status → GET /session/status → formatIntakeStatus → 標準出力）の移動先
   it.live("cli status が、会議タブの題名をHTTP経由で出し、既存の状態とstop後の出力を保つ", () =>
     Effect.gen(function* () {
       const r = yield* resourceWithFakeHelpers([{}]);
-      // 接続先ポートと保存先は ConfigProvider、標準出力は Console で渡す（cli.ts の入口と同じ Service）
       const status = () => Effect.suspend(() => {
         const out: string[] = [];
         const consoleService: Console.Console = {
@@ -955,7 +926,7 @@ describe("新しい入口（偽の Helpers・SessionSinks を受け取れるサ�
       });
       expect(yield* status()).toBe("セッションなし\n閲覧の共有: 無し\n");
       expect((yield* Effect.tryPromise(() => r.request("POST", "/session/start", '{"app":"com.google.Chrome","title":"週次","audio":false}', undefined))).status).toBe(200);
-      const [dir] = (yield* Effect.tryPromise(() => readdir(r.sessionsDir, { withFileTypes: true }))).filter((entry) => entry.isDirectory()).map((entry) => entry.name); // 語彙の溜まりのファイルは除く
+      const [dir] = (yield* Effect.tryPromise(() => readdir(r.sessionsDir, { withFileTypes: true }))).filter((entry) => entry.isDirectory()).map((entry) => entry.name);
       const running = yield* status();
       expect(running).toContain("動いている");
       expect(running).toContain(dir!);
@@ -974,7 +945,6 @@ describe("新しい入口（偽の Helpers・SessionSinks を受け取れるサ�
       expect(withTab).toContain("起動し直した回数: 0");
       expect(withTab).toContain("閲覧の共有: 無し");
       expect((yield* Effect.tryPromise(() => r.request("POST", "/session/stop", undefined, undefined))).status).toBe(200);
-      // 通常の stop の後は none に戻る。「止まった」（諦めた状態）の文面は intake.test.ts、状態の値は sessions.test.ts が観測する
       expect(yield* status()).toBe("セッションなし\n閲覧の共有: 無し\n");
     }));
 
@@ -1012,19 +982,16 @@ describe("新しい入口（偽の Helpers・SessionSinks を受け取れるサ�
       }));
   });
 
-  // Issue #1026: 話者の名前（POST /session/speaker-name）。ラベルは、ヘルパーの speaker と発言で振られたものだけ
   describe("話者の名前（POST /session/speaker-name）", () => {
     type Requester = { request: (m: string, p: string, b: string | undefined, o: string | undefined) => Promise<Response> };
     const START = '{"app":"us.zoom.xos","audio":false}';
     const speakerName = (r: Requester, body: string | undefined) => Effect.tryPromise(() => r.request("POST", "/session/speaker-name", body, undefined));
     const nameBody = (label: string, name: string) => JSON.stringify({ label, name });
-    // 相手の 2 人が 1 発言ずつ話す台本（相手 A・相手 B が振られる）。start で一度に流れる
     const twoSpeakers = (start: number): unknown[] => [0, 1].flatMap((slot) => [
       { type: "speaker", track: "相手", start: start + slot * 2, end: start + slot * 2 + 2, slot, final: true },
       { type: "speaker-settled", track: "相手", to: start + slot * 2 + 2 },
       { type: "remark", track: "相手", start: start + slot * 2, end: start + slot * 2 + 2, text: `発言${slot + 1}です` },
     ]);
-    // 振られるまで待って名前を付ける（振る前は 4xx で断られるので、204 になるまで繰り返す）
     const nameWhenLabeled = (r: Requester, label: string, name: string) => Effect.tryPromise(() => vi.waitFor(async () => {
       expect((await r.request("POST", "/session/speaker-name", nameBody(label, name), undefined)).status).toBe(204);
     }, { timeout: 10_000 }));
@@ -1064,7 +1031,7 @@ describe("新しい入口（偽の Helpers・SessionSinks を受け取れるサ�
         const started = yield* Effect.tryPromise(() => r.request("POST", "/session/start", START, undefined));
         const { dir } = (yield* Effect.tryPromise(() => started.json())) as { dir: string };
         const viewer = yield* connect(r.server.port, "/ws", undefined);
-        yield* nameWhenLabeled(r, "相手 A", "鈴木"); // 振られた後の状態で、断られることを示す
+        yield* nameWhenLabeled(r, "相手 A", "鈴木");
         yield* Effect.tryPromise(() => vi.waitFor(() => expect(names(viewer.frames).at(-1)).toEqual([{ label: "相手 A", name: "鈴木" }])));
         const before = names(viewer.frames).length;
 
@@ -1073,10 +1040,10 @@ describe("新しい入口（偽の Helpers・SessionSinks を受け取れるサ�
           expect([label, name, response.status >= 400 && response.status < 500]).toEqual([label, name, true]);
         }
 
-        expect((yield* logLines(dir)).filter((l) => l.type === "speaker-name").map((l) => [l.label, l.name])).toEqual([["相手 A", "鈴木"]]); // 最初に付けた 1 件だけ
+        expect((yield* logLines(dir)).filter((l) => l.type === "speaker-name").map((l) => [l.label, l.name])).toEqual([["相手 A", "鈴木"]]);
         yield* Effect.tryPromise(() => new Promise<void>((resolve) => setTimeout(resolve, 100)));
         expect(names(viewer.frames)).toHaveLength(before);
-        expect(names(viewer.frames).at(-1)).toEqual([{ label: "相手 A", name: "鈴木" }]); // 空の名前で外れていない
+        expect(names(viewer.frames).at(-1)).toEqual([{ label: "相手 A", name: "鈴木" }]);
       }));
 
     for (const body of ['{}', '{"label":"相手 A"}', '{"name":"田中"}', '{"label":1,"name":"田中"}', '{"label":"相手 A","name":2}', '{"label":"相手 A","name":"田中","extra":1}', "not json", undefined]) {
@@ -1085,7 +1052,7 @@ describe("新しい入口（偽の Helpers・SessionSinks を受け取れるサ�
           const r = yield* resourceWithFakeHelpers([{ events: twoSpeakers(0) }]);
           const started = yield* Effect.tryPromise(() => r.request("POST", "/session/start", START, undefined));
           const { dir } = (yield* Effect.tryPromise(() => started.json())) as { dir: string };
-          yield* nameWhenLabeled(r, "相手 B", "先に付けた名前"); // 振られた後でも、本文が違えば 400（振られていないことによる 4xx と区別する）
+          yield* nameWhenLabeled(r, "相手 B", "先に付けた名前");
 
           expect((yield* speakerName(r, body)).status).toBe(400);
 
@@ -1099,13 +1066,12 @@ describe("新しい入口（偽の Helpers・SessionSinks を受け取れるサ�
         expect((yield* speakerName(r, nameBody("相手 A", "田中"))).status).toBe(409);
       }));
 
-    // cli resume は同じセッションのヘルパーを起動し直すだけ。名前はサーバーのメモリに残り、起動し直した後の差分更新にも使われる
     it.live("取り込みが止まって resume しても名前が残る。resume の後の差分更新の直前の発言の行は 相手 B（田中）、新しくつないだ画面にも名前が届く", () =>
       Effect.gen(function* () {
         const prompts: string[][] = [];
         const r = yield* resourceWithFakeHelpers([
           { events: twoSpeakers(0), unexpectedExit: { afterMs: 1500, exit: { code: 1, signal: null } } },
-          { connect: false }, { connect: false }, // 2・3 回目の失敗で諦めて止まる
+          { connect: false }, { connect: false },
           { events: [{ type: "speaker-off", start: 0, reason: "モデルなし" }, { type: "remark", track: "相手", start: 10, end: 12, text: "再開後の発言です" }] },
         ], { updaterLayer: () => updaterLayer((input) => Effect.sync(() => {
           prompts.push(buildPrompt(input).split("\n").filter((line) => /^r\d+ /.test(line)));
@@ -1126,11 +1092,9 @@ describe("新しい入口（偽の Helpers・SessionSinks を受け取れるサ�
         expect(afterResume.filter((line) => line.includes("発言2です"))).toEqual(["r2 [00:02] 相手 B（田中）: 発言2です"]);
         const reconnected = yield* connect(r.server.port, "/ws", undefined);
         yield* Effect.tryPromise(() => vi.waitFor(() => expect(names(reconnected.frames).at(-1)).toEqual([{ label: "相手 B", name: "田中" }])));
-        // resume の後も、振ったラベルには名前を付けられる（ラベルの状態も残っている）
         expect((yield* speakerName(r, nameBody("相手 A", "鈴木"))).status).toBe(204);
       }));
 
-    // Issue #1028 AC4: 偽のヘルパー＋偽の AI で、HTTP の start → 名前付け → stop を通し、書き出した map.md / map.json に人と名前が載る
     it.live("start → 名前付け → stop の後、map.md は名前を付けたラベルを名前で・付けないラベルをラベルのまま出し、map.json のノードはラベルのまま、ルートに対応表が載る", () =>
       Effect.gen(function* () {
         const r = yield* resourceWithFakeHelpers([{ events: twoSpeakers(0) }], { updaterLayer: () => updaterLayer((input) => Effect.sync(() => ({
@@ -1146,7 +1110,7 @@ describe("新しい入口（偽の Helpers・SessionSinks を受け取れるサ�
         const started = yield* Effect.tryPromise(() => r.request("POST", "/session/start", START, undefined));
         expect(started.status).toBe(200);
         const { dir } = (yield* Effect.tryPromise(() => started.json())) as { dir: string };
-        yield* nameWhenLabeled(r, "相手 B", "田中"); // 相手 A には名前を付けない
+        yield* nameWhenLabeled(r, "相手 B", "田中");
 
         expect((yield* Effect.tryPromise(() => r.request("POST", "/session/stop", undefined, undefined))).status).toBe(200);
 
@@ -1154,7 +1118,7 @@ describe("新しい入口（偽の Helpers・SessionSinks を受け取れるサ�
         const lines = md.split("\n");
         expect(lines).toContain("- 週 1 — 相手 A（00:00）");
         expect(lines).toContain("- 隔週 — 田中（00:02）");
-        expect(lines.filter((l) => l === "- 資料を送る（担当：田中）（00:02）")).toHaveLength(2); // 冒頭の TODO 一覧とアウトライン
+        expect(lines.filter((l) => l === "- 資料を送る（担当：田中）（00:02）")).toHaveLength(2);
         expect(md).not.toContain("相手 B");
         const out = JSON.parse(yield* Effect.tryPromise(() => readFile(join(dir, "map.json"), "utf8"))) as { speakerNames?: unknown; root: { children: Array<{ text: string }> } };
         expect(out.speakerNames).toEqual({ "相手 B": "田中" });
@@ -1207,8 +1171,6 @@ describe("新しい入口（偽の Helpers・SessionSinks を受け取れるサ�
   }
 });
 
-// 共有画面（Issue #278）。偽のヘルパーが流した screen が、ログ・screens/・Claude へのメッセージまで届く。
-// 差分更新は本物の layerClaude を残し、AgentSdk の query だけを偽物にする（server/test/playScreen.it.test.ts と同じ）
 type SentBlock = { type: string; text?: string; source?: { type: string; media_type: string; data: string } };
 type SentMessage = { type: string; message: { role: string; content: string | SentBlock[] } };
 
@@ -1244,7 +1206,6 @@ describe("ライブのセッションの共有画面（偽のヘルパー + 偽�
       const { dir } = (yield* Effect.tryPromise(() => started.json())) as { dir: string };
       expect((yield* Effect.tryPromise(() => r.request("POST", "/session/stop", undefined, undefined))).status).toBe(200);
 
-      // ログ: screen の行（画像は screens/ のファイル名）
       const lines = (yield* Effect.tryPromise(() => readFile(join(dir, "log.jsonl"), "utf8")))
         .trim().split("\n").map((line) => JSON.parse(line) as { type: string; start?: number; image?: string | null });
       expect(lines.filter((l) => l.type === "screen").map(({ type, start, image }) => ({ type, start, image }))).toEqual([
@@ -1259,12 +1220,10 @@ describe("ライブのセッションの共有画面（偽のヘルパー + 偽�
         expect(exported).not.toContain("meetingTabTitle");
       }
 
-      // screens/: ヘルパーが流したバイト列のまま
       expect(yield* Effect.tryPromise(() => readdir(join(dir, "screens")))).toEqual(["0001.0.jpg"]);
       const saved = yield* Effect.tryPromise(() => readFile(join(dir, "screens", "0001.0.jpg")));
       expect([...saved]).toEqual([...jpeg]);
 
-      // Claude へのメッセージ: 見出し（text）と画像（base64 を戻すと同じバイト列）が、マップと発言の本文より前に載る
       const withScreen = sent.map((m) => m.message.content).filter((c): c is SentBlock[] => Array.isArray(c));
       expect(withScreen).toHaveLength(1);
       const blocks = withScreen[0]!;
@@ -1277,13 +1236,10 @@ describe("ライブのセッションの共有画面（偽のヘルパー + 偽�
 });
 
 
-// 閲覧の共有（Issue #834）。Tunnel は偽の Layer（cloudflared を起動しない。公開の tunnel は開かない）。
-// 常駐サーバーと同じセッションの上で 開く → 状態 → 閉じる → 開き直す を続けて観測する。
 describe("閲覧の共有（Issue #834）", () => {
   const ORIGIN = `https://${FAKE_TUNNEL_HOST}`;
   const START = '{"app":"us.zoom.xos","title":"週次","audio":false}';
 
-  // env は cli の環境変数（既定の許可 LIVE_MINDMAP_SHARE_ALLOW など）
   const shareResource = Effect.fnUntraced(function* (tunnelOptions?: { readonly holdFirstOpen?: boolean; readonly holdFirstCleanup?: boolean; readonly missing?: boolean; readonly distinctHosts?: boolean }, env: Readonly<Record<string, string>> = {}) {
     const tunnel = fakeTunnel(tunnelOptions);
     const r = yield* resourceWithFakeHelpers([{}], { viewing: tunnel.viewing });
@@ -1292,10 +1248,7 @@ describe("閲覧の共有（Issue #834）", () => {
     const json = (response: Response) => Effect.tryPromise(() => response.json());
     const open = () => call("POST", "/share/open", '{"anyone":true}');
     const startSession = call("POST", "/session/start", START).pipe(Effect.tap((res) => Effect.sync(() => expect(res.status).toBe(200))));
-    // ローカルモード（Apple Intelligence）のセッションを開始する
     const startLocalSession = call("POST", "/session/start", '{"app":"us.zoom.xos","title":"週次","audio":false,"model":{"name":"apple","route":"apple","local":true}}').pipe(Effect.tap((res) => Effect.sync(() => expect(res.status).toBe(200))));
-    // cli を、このサーバーに向けて実行する。標準出力・標準エラーの行と、終了が失敗かを返す
-    // onRequest は、cli が送る HTTP 要求を送る直前に観測する（決まった順序の再現に使う）
     const cli = (args: ReadonlyArray<string>, onRequest?: (request: HttpClientRequest.HttpClientRequest) => Effect.Effect<void>) => Effect.suspend(() => {
       const out: string[] = [];
       const err: string[] = [];
@@ -1317,7 +1270,6 @@ describe("閲覧の共有（Issue #834）", () => {
         fakeAudioMix().layer,
         fakeScreenJpeg().layer,
       );
-      // 失敗の表示は入口の reportFailure が持つので、実際の入口と同じく失敗の原因をそこへ渡す
       return runCli([...args]).pipe(Effect.tapCause(reportFailure), Effect.provide(cliLayer), Effect.exit, Effect.map((exit) => ({ out: out.join(""), err: err.join(""), failed: Exit.isFailure(exit) })));
     });
     return { r, tunnel, call, json, open, startSession, startLocalSession, cli };
@@ -1338,7 +1290,6 @@ describe("閲覧の共有（Issue #834）", () => {
     const port = viewingPortOf(s.tunnel);
     expect(port).not.toBe(s.r.server.port);
     expect(yield* s.json(yield* s.call("GET", "/share/status"))).toEqual({ status: "open", url: ORIGIN, allow: "anyone" });
-    // 閲覧の口は、与えられたホスト名の Origin の /ws だけを通し、操作の口のルートは断る
     expect((yield* Effect.tryPromise(() => fetch(`http://127.0.0.1:${port}/`))).status).toBe(200);
     expect((yield* connect(port, "/ws", ORIGIN)).isOpen()).toBe(true);
     expect((yield* Effect.tryPromise(() => fetch(`http://127.0.0.1:${port}/session/status`))).status).toBe(404);
@@ -1356,9 +1307,7 @@ describe("閲覧の共有（Issue #834）", () => {
     expect(s.tunnel.closed()).toBe(1);
     yield* refused(firstPort);
     expect(yield* s.json(yield* s.call("GET", "/share/status"))).toEqual({ status: "off" });
-    // セッションは続いている
     expect((yield* s.json(yield* s.call("GET", "/session/status")))).toMatchObject({ status: "running" });
-    // 開き直す
     expect((yield* s.open()).status).toBe(200);
     expect(s.tunnel.opened).toHaveLength(2);
     expect((yield* Effect.tryPromise(() => fetch(`http://127.0.0.1:${viewingPortOf(s.tunnel)}/`))).status).toBe(200);
@@ -1394,7 +1343,6 @@ describe("閲覧の共有（Issue #834）", () => {
     expect(s.tunnel.closed()).toBe(1);
     yield* refused(port);
     expect(yield* s.json(yield* s.call("GET", "/share/status"))).toEqual({ status: "off" });
-    // 次のセッションは、閲覧の共有を引き継がず、改めて開ける
     yield* s.startSession;
     expect(yield* s.json(yield* s.call("GET", "/share/status"))).toEqual({ status: "off" });
     expect((yield* s.open()).status).toBe(200);
@@ -1422,7 +1370,6 @@ describe("閲覧の共有（Issue #834）", () => {
       expect([body, response.status]).toEqual([body, 400]);
     }
     expect(s.tunnel.opened).toEqual([]);
-    // 守っている状態に到達していることを、正しい本文なら開くことで示す
     expect((yield* s.open()).status).toBe(200);
     expect(s.tunnel.opened).toHaveLength(1);
   }));
@@ -1435,7 +1382,6 @@ describe("閲覧の共有（Issue #834）", () => {
     expect(yield* s.json(response)).toEqual({ status: "open", url: ORIGIN, allow: { mails: ["a@example.com", "*@example.co.jp"] } });
     expect(yield* s.json(yield* s.call("GET", "/share/status"))).toEqual({ status: "open", url: ORIGIN, allow: { mails: ["a@example.com", "*@example.co.jp"] } });
     expect(allowedMails(s.tunnel.args.at(-1)!)).toEqual(["*@example.co.jp", "a@example.com"]);
-    // --anyone で開き直すと、--allowed-mail は付かない
     yield* s.call("POST", "/share/close");
     expect((yield* s.open()).status).toBe(200);
     expect(s.tunnel.args.at(-1)).not.toContain("--allowed-mail");
@@ -1495,7 +1441,6 @@ describe("閲覧の共有（Issue #834）", () => {
     expect(s.tunnel.opened).toHaveLength(2);
   }));
 
-  // 開けないときに理由を示して止まる 4 つの場合（Issue #835）。拒む判定は、閲覧の口・画面のビルド・Tunnel の起動より前に走る
   const NO_SESSION = "進行中のセッションがありません";
   const LOCAL_REASON = "ローカルモード";
   const INSTALL_HOW = "pnpm cli install cloudflared";
@@ -1521,7 +1466,6 @@ describe("閲覧の共有（Issue #834）", () => {
     expect(s.tunnel.opened).toEqual([]);
     expect(s.tunnel.closed()).toBe(0);
     expect(yield* s.json(yield* s.call("GET", "/share/status"))).toEqual({ status: "off" });
-    // 何度打っても開かない
     expect((yield* s.open()).status).toBe(409);
     expect(s.tunnel.opened).toEqual([]);
   }));
@@ -1585,7 +1529,6 @@ describe("閲覧の共有（Issue #834）", () => {
       expect(err).not.toContain(INSTALL_HOW);
       expect(out).not.toContain("https://");
       expect(s.tunnel.opened).toEqual([]);
-      // 守っている状態に到達していることを、--anyone を付ければ開くことで示す
       expect((yield* s.cli(["share", "--anyone"])).failed).toBe(false);
       expect(s.tunnel.opened).toHaveLength(1);
     }));
@@ -1700,7 +1643,6 @@ describe("閲覧の共有（Issue #834）", () => {
       yield* s.startSession;
       const first = yield* Effect.forkChild(s.open());
       yield* s.tunnel.reached;
-      // 事前の確認が済んだ後（POST を送る直前）まで、開始の途中を止めておく
       const posting = yield* Deferred.make<void>();
       const second = yield* Effect.forkChild(s.cli(["share", "--anyone"], (request) =>
         request.method === "POST" && request.url.endsWith("/share/open") ? Deferred.succeed(posting, undefined).pipe(Effect.asVoid) : Effect.void));
@@ -1810,7 +1752,6 @@ describe("閲覧の共有（Issue #834）", () => {
       expect(out).not.toContain("https://");
       expect(s.tunnel.opened).toEqual([]);
       expect(yield* s.json(yield* s.call("GET", "/share/status"))).toEqual({ status: "off" });
-      // 守っている状態に到達していることを、片方だけなら開くことで示す
       expect((yield* s.cli(["share", "a@x.com"])).failed).toBe(false);
       expect(s.tunnel.opened).toHaveLength(1);
     }));
@@ -1840,8 +1781,6 @@ describe("閲覧の共有（Issue #834）", () => {
     }));
   });
 
-  // 閲覧の共有が切れた（Issue #837）。偽の Tunnel の drop() で cloudflared が切れたことを再現する。
-  // 切れたことを反映するのは別の Fiber なので、状態が変わるまで回数の上限つきで取り直す（固定時間の sleep では待たない）
   describe("切れたとき（Issue #837）", () => {
     const BROKEN_ANYONE = { status: "broken", allow: "anyone" };
     const awaitStatus = (s: { call: (method: string, path: string) => Effect.Effect<Response, unknown>; json: (response: Response) => Effect.Effect<unknown, unknown> }, expected: string) =>
@@ -1867,7 +1806,6 @@ describe("閲覧の共有（Issue #834）", () => {
       expect(yield* awaitStatus(s, "broken")).toEqual(BROKEN_ANYONE);
       yield* refused(port);
       expect(s.tunnel.closed()).toBe(1);
-      // 立て直さない: 新しい Tunnel は開かれず、状態に URL は出ない
       expect(s.tunnel.opened).toHaveLength(1);
       expect(yield* shareStatus(s)).toEqual(BROKEN_ANYONE);
       expect((yield* s.json(yield* s.call("GET", "/session/status")))).toMatchObject({ status: "running" });
@@ -1899,7 +1837,6 @@ describe("閲覧の共有（Issue #834）", () => {
       const firstPort = viewingPortOf(s.tunnel);
       yield* s.tunnel.drop;
       yield* awaitStatus(s, "broken");
-      // 切れたら閲覧の口は待受けをやめる。新しい待受けができる前に確かめる
       yield* refused(firstPort);
       const again = yield* s.open();
       expect(again.status).toBe(200);
@@ -1913,7 +1850,6 @@ describe("閲覧の共有（Issue #834）", () => {
       expect((yield* Effect.tryPromise(() => fetch(`http://127.0.0.1:${port}/`))).status).toBe(200);
       expect((yield* connect(port, "/ws", second.url)).isOpen()).toBe(true);
       expect(yield* shareStatus(s)).toEqual(second);
-      // 前の共有の後始末は、切れたときの 1 回だけ。打ち直しで二重に走らない
       expect(s.tunnel.closed()).toBe(1);
     }));
 

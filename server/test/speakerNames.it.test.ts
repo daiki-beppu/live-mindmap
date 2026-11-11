@@ -12,8 +12,6 @@ import { SessionSinks } from "../src/sessionSinks.ts";
 import { fakeExportServices } from "./fixtures/exportServices.ts";
 import { trackedFileSystem } from "./fixtures/trackedFileSystem.ts";
 
-// SessionSinks の受付、名前ログの保存、frame と書き出しへの接続を確かめる。
-
 const fileIo = trackedFileSystem();
 const { settle, settleUntil } = fileIo;
 const sinksLayer = (updaterLayer: Layer.Layer<DiffUpdater>) =>
@@ -40,7 +38,6 @@ const namingAi = (...script: (InferredSpeakerName[] | undefined)[]) => {
 };
 const claim = (label: string, name: string, evidence: string, basis: InferredSpeakerName["basis"] = "名乗り"): InferredSpeakerName => ({ label, name, evidence, basis });
 
-// 名前を付けられなかった（型付きの失敗。defect や中断ではない）
 const rejected = <A, E>(effect: Effect.Effect<A, E>) => Effect.exit(effect).pipe(Effect.map((exit) => Exit.isFailure(exit) && Cause.hasFails(exit.cause) && !Cause.hasDies(exit.cause)));
 
 const openSession = Effect.fnUntraced(function* (updaterLayer: Layer.Layer<DiffUpdater>, options: { speakerOff?: boolean } = {}) {
@@ -51,14 +48,12 @@ const openSession = Effect.fnUntraced(function* (updaterLayer: Layer.Layer<DiffU
     send: (frame) => Effect.sync(() => { if ("type" in frame && frame.type === "speaker-names") frames.push(frame); }) });
   if (options.speakerOff) yield* sink.speaker(SPEAKER_OFF);
   const diffs = () => logEvents(dir).filter((e) => e.type === "diff").length;
-  // slot の相手が start から 2 秒話し、n 番目の発言（発言 n です）になる。差分更新が n 回目まで済むのを待つ
   const say = (n: number, slot: number, start: number) => Effect.gen(function* () {
     yield* sink.speaker(segment(slot, start, start + 2));
     yield* sink.speaker(settledAt(start + 2));
     yield* sink.final({ track: "相手", start, end: start + 2, text: `発言${n}です` });
     yield* settleUntil(() => diffs() === n);
   });
-  // 話者の判定を終えた（speaker-off）後の、話者なしの発言
   const sayUnlabeled = (n: number, start: number) => Effect.gen(function* () {
     yield* sink.final({ track: "相手", start, end: start + 2, text: `発言${n}です` });
     yield* settleUntil(() => diffs() === n);
@@ -95,23 +90,20 @@ describe("話者の名前（実物の SessionSinks + 偽の AI）", () => {
     const { updaterLayer } = recordingAi();
     return Effect.scoped(Effect.gen(function* () {
       const { sink, dir, frames, say } = yield* openSession(updaterLayer);
-      yield* say(1, 5, 10); // 相手 A
-      yield* say(2, 6, 20); // 相手 B
+      yield* say(1, 5, 10);
+      yield* say(2, 6, 20);
 
       yield* sink.nameSpeaker({ label: "相手 B", name: "田中" });
-      yield* say(3, 6, 30); // 名前を付けた後の、相手 B の発言
+      yield* say(3, 6, 30);
       yield* settle;
 
-      // log.jsonl: 名前・付いた時刻（at）・出どころ。ラベルを残したまま 1 行だけ
       const lines = nameLines(dir);
       expect(lines).toHaveLength(1);
       const { at, ...rest } = lines[0];
       expect(Number.isNaN(Date.parse(at))).toBe(false);
       expect(rest).toEqual({ type: "speaker-name", label: "相手 B", name: "田中", source: "手入力" });
-      // 発言は変わらない: ログの発言の話者はラベルのまま
       expect(logEvents(dir).filter((e) => e.type === "remark").map((e) => e.remark.speaker)).toEqual(["相手 A", "相手 B", "相手 B"]);
 
-      // 画面へ: 開いた直後の空の表と、付いた後の表
       expect(frames).toEqual([
         { type: "speaker-names", names: [] },
         { type: "speaker-names", names: [{ label: "相手 B", name: "田中" }] },
@@ -126,7 +118,7 @@ describe("話者の名前（実物の SessionSinks + 偽の AI）", () => {
     const { updaterLayer } = recordingAi();
     return Effect.scoped(Effect.gen(function* () {
       const { sink, dir, frames, say } = yield* openSession(updaterLayer);
-      yield* say(1, 5, 10); // 相手 A だけを振った
+      yield* say(1, 5, 10);
 
       for (const label of ["自分", "相手 B", "相手", "仮", ""]) {
         expect([label, yield* rejected(sink.nameSpeaker({ label, name: "田中" }))]).toEqual([label, true]);
@@ -138,7 +130,7 @@ describe("話者の名前（実物の SessionSinks + 偽の AI）", () => {
       expect(frames).toEqual([{ type: "speaker-names", names: [] }]);
 
       yield* sink.nameSpeaker({ label: "相手 A", name: "田中" });
-      yield* say(2, 6, 20); // 相手 B が振られる
+      yield* say(2, 6, 20);
       yield* sink.nameSpeaker({ label: "相手 B", name: "鈴木" });
       yield* say(3, 6, 30);
       yield* settle;
@@ -150,12 +142,12 @@ describe("話者の名前（実物の SessionSinks + 偽の AI）", () => {
     const { updaterLayer } = recordingAi();
     return Effect.scoped(Effect.gen(function* () {
       const { sink, frames, say, sayUnlabeled } = yield* openSession(updaterLayer);
-      yield* say(1, 5, 10); // 相手 A
-      yield* say(2, 6, 20); // 相手 B
+      yield* say(1, 5, 10);
+      yield* say(2, 6, 20);
       yield* sink.nameSpeaker({ label: "相手 B", name: "田中" });
 
-      yield* sink.speaker(mixed(6, 25)); // 相手 B の枠に別の人が混ざった。ラベルを戻す
-      yield* sink.speakersRenumbered; // ヘルパーを起動し直した
+      yield* sink.speaker(mixed(6, 25));
+      yield* sink.speakersRenumbered;
       yield* sink.speaker(SPEAKER_OFF);
       yield* sayUnlabeled(3, 30);
       yield* settle;
@@ -199,9 +191,7 @@ describe("話者の名前の推定（実物の SessionSinks + 偽の AI が name
   });
 });
 
-// Issue #1027: 分類経路（ChatGPT・OpenAI互換・Apple が通る localUpdaterLayer）も、分類結果の名前を DiffOutput.names として core へ渡す
 describe("話者の名前の推定（実物の SessionSinks + localUpdaterLayer + 偽の classify）", () => {
-  // n 回目の分類に、台本の n 番目の名前を返す偽の classify
   const classifyingAi = (...script: InferredSpeakerName[][]) => {
     let n = 0;
     const classify: LocalModel["classify"] = () => Effect.sync(() => ({ 議題: { id: "新しい議題", 題: "" }, 文: [{ 種類: "なし" as const }], 済み: "なし", 名前: script[n++] ?? [] }));
@@ -212,8 +202,8 @@ describe("話者の名前の推定（実物の SessionSinks + localUpdaterLayer 
     const updaterLayer = classifyingAi([], [claim("相手 B", "田中", "r2")]);
     return Effect.scoped(Effect.gen(function* () {
       const { dir, frames, say } = yield* openSession(updaterLayer);
-      yield* say(1, 5, 10); // 相手 A
-      yield* say(2, 6, 20); // 相手 B の名乗り
+      yield* say(1, 5, 10);
+      yield* say(2, 6, 20);
       yield* settleUntil(() => frames.length === 2);
 
       expect(nameLines(dir).map(({ at: _at, ...rest }) => rest)).toEqual([{ type: "speaker-name", label: "相手 B", name: "田中", source: "推定" }]);

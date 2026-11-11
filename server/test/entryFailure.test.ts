@@ -1,4 +1,3 @@
-// 入口（cli.ts・bench/entry.ts）が共有する、失敗の表示と終了コード。個別の失敗の文面は呼び出し側が持つ。
 import { describe, expect, it } from "@effect/vitest";
 import { Cause, Effect, Exit, Schema } from "effect";
 import { CliError } from "effect/cli";

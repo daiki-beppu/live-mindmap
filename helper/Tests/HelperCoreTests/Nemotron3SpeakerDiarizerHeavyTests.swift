@@ -5,9 +5,6 @@ import Foundation
 import Testing
 @testable import HelperCore
 
-// 本物の Nemotron 3（CoreML、fast32）を使う。モデルは helper/scripts/fetch-speaker-models.sh が前もって取得する。
-// モデルが無い環境では prepare() が modelMissing で失敗し、テストも失敗する（環境の問題として報告する）。
-// 2 人の声は `say` の Kyoko と Rocko（どちらも macOS 同梱の日本語の声。Reed は同じ人の 2 行目に別の枠が付いたので使わない）。
 // Rocko は言語ごとに同じ名前の声があり、名前だけだとシステムの言語の声が選ばれる。英語の CI では英語の Rocko が日本語の文をほぼ無音で読むので、日本語の声を ID で指す。
 
 private let sampleRate = 16_000.0
@@ -57,7 +54,6 @@ private func synthesize(_ text: String, voice: String, in directory: URL, index:
     return Array(UnsafeBufferPointer(start: output.floatChannelData![0], count: Int(output.frameLength)))
 }
 
-/// 2 人が交互に話す音声（先頭 1 秒の無音、行の間 0.7 秒の無音）と、各行の秒数（音声の先頭を 0 とする）。
 private func conversation(in directory: URL) throws -> (samples: [Float], lines: [PlacedLine]) {
     let script = [
         SpokenLine(speaker: "A", voice: "Kyoko", text: "こんにちは、今日の会議を始めます。まず先週の進み具合から確認しましょう。"),
@@ -78,7 +74,6 @@ private func conversation(in directory: URL) throws -> (samples: [Float], lines:
     return (samples, placed)
 }
 
-/// 100 ms ごとのバッファに切る。先頭のバッファの取得時刻は `origin` の `captureStart` 秒後で、以降は連続する。
 private func chunks(_ samples: [Float], origin: UInt64, captureStart: Double) throws -> [CapturedAudio] {
     let format = try #require(AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: sampleRate, channels: 1, interleaved: false))
     let frames = Int(sampleRate / 10)
@@ -99,7 +94,6 @@ private func chunks(_ samples: [Float], origin: UInt64, captureStart: Double) th
     return result
 }
 
-/// 確定した区間のうち、`line` の秒数と重なる長さを枠ごとに足して、いちばん長い枠を返す。
 private func dominantSlot(of line: PlacedLine, in segments: [SpeakerSegment], shift: Double) -> Int? {
     var overlap: [Int: Double] = [:]
     for segment in segments where segment.isFinal {
@@ -134,7 +128,7 @@ struct Nemotron3SpeakerDiarizerHeavyTests {
         try await diarizer.prepare()
 
         let origin = AudioGetCurrentHostTime()
-        let captureStart = 2.0  // origin より 2 秒後に取得が始まった（TrackTimeline と同じく、最初のバッファの時刻を 1 回だけ足す）
+        let captureStart = 2.0
         let buffers = try chunks(samples, origin: origin, captureStart: captureStart)
         let audio = AsyncThrowingStream<CapturedAudio, Error> { continuation in
             buffers.forEach { continuation.yield($0) }
@@ -164,7 +158,6 @@ struct Nemotron3SpeakerDiarizerHeavyTests {
             #expect(segment.start.isFinite && segment.end.isFinite && segment.end >= segment.start)
             #expect((0..<8).contains(segment.slot))
         }
-        // 最初のバッファより前の時刻の区間は無い（時刻が origin 基準にそろっていれば、音声の取得開始 2 秒より前にはならない）
         let earliest = try #require(confirmed.map(\.start).min())
         #expect(earliest >= captureStart - 0.1, "区間の時刻が origin 基準になっていない: 最初の確定区間の開始 \(earliest)")
 
@@ -173,7 +166,6 @@ struct Nemotron3SpeakerDiarizerHeavyTests {
         let firstSlot = try #require(firstSpeaker.first, "1 人目の発話に重なる確定区間が無い")
         let secondSlot = try #require(secondSpeaker.first, "2 人目の発話に重なる確定区間が無い")
         #expect(firstSlot != secondSlot, "別の人に同じ枠 \(firstSlot) が付いた")
-        // 同じ人は（多数決で）同じ枠のまま
         #expect(Set(firstSpeaker).count == 1, "1 人目の枠が行ごとに変わった: \(firstSpeaker)")
         #expect(Set(secondSpeaker).count == 1, "2 人目の枠が行ごとに変わった: \(secondSpeaker)")
         if withoutWeSpeaker {

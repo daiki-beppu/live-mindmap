@@ -7,10 +7,6 @@ import { init, update } from "../src/app/liveFeed/main.ts";
 import { captionDeadlineStream, liveFeedStream, RECONNECT_MS } from "../src/app/liveFeed/subscription.ts";
 import { spokenBubble, spokenFrame } from "./fixtures/captions.ts";
 
-// ライブの受信（Issue #828）の Subscription の stream。WebSocket と location は最小の代役、時計は TestClock。
-// Subscription は「つながった」「frame を受けた」「切れた」の事実を Message にするだけで、1 秒後のつなぎ直しはこの stream の中にある。
-// 状態の更新の規則（applyFrame / applyOpen / applyClose）は update 側（liveFeed.story.test.ts）で確かめる。
-
 class FakeWebSocket {
   static instances: FakeWebSocket[] = [];
   onopen: ((e?: unknown) => void) | null = null;
@@ -51,7 +47,6 @@ const snapshot: Snapshot = { nodes: [node("root", null), node("A", "root")], rou
 const sockets = () => FakeWebSocket.instances;
 const settle = Effect.forEach(Array.from({ length: 20 }), () => Effect.yieldNow, { discard: true });
 
-// stream を走らせて届いた Message を集める。body は走らせている間の操作
 const run = <A>(body: (collected: Array<typeof Message.Type>, fiber: Fiber.Fiber<void, unknown>) => Effect.Effect<A>) =>
   Effect.runPromise(
     Effect.gen(function* () {
@@ -169,12 +164,12 @@ describe("事実を Message にする", () => {
         ws.receive(JSON.stringify({ type: "intake", status: "unknown-status" }));
         ws.receive(JSON.stringify({ type: "self-pause", paused: "yes" }));
         ws.receive(JSON.stringify({ type: "self-pause" }));
-        ws.receive(JSON.stringify({ type: "self-pause", paused: true })); // 休止中は理由が要る
-        ws.receive(JSON.stringify({ type: "self-pause", paused: true, reason: "判定できない" })); // 休止中の理由は手動・自動だけ
+        ws.receive(JSON.stringify({ type: "self-pause", paused: true }));
+        ws.receive(JSON.stringify({ type: "self-pause", paused: true, reason: "判定できない" }));
         ws.receive(JSON.stringify({ type: "intake", status: "stopped" }));
         yield* settle;
         expect(collected).toEqual([Message.ConnectedLiveFeed(), Message.ReceivedLiveFrame({ frame: { type: "intake", status: "stopped" }, receivedAt: 0 })]);
-        expect(sockets()).toHaveLength(1); // 無視しただけで、つなぎ直さない
+        expect(sockets()).toHaveLength(1);
       }),
     );
   });
@@ -368,7 +363,7 @@ describe("1 秒後のつなぎ直し", () => {
 
         yield* TestClock.adjust(RECONNECT_MS - 1);
         yield* settle;
-        expect(sockets()).toHaveLength(1); // 999 ms ではまだ
+        expect(sockets()).toHaveLength(1);
 
         yield* TestClock.adjust(1);
         yield* settle;
@@ -434,7 +429,7 @@ describe("止めたとき", () => {
         yield* TestClock.adjust(RECONNECT_MS * 5);
         yield* settle;
         expect(sockets()).toHaveLength(1);
-        expect(collected).toEqual([Message.ConnectedLiveFeed()]); // 止めた後の close は Message にしない
+        expect(collected).toEqual([Message.ConnectedLiveFeed()]);
       }),
     );
   });

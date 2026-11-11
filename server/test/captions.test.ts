@@ -1,10 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { continuesAfter, createCaptionBoard, createRemarkSettler, SETTLE_QUIET_MS, type CaptionBubble, type HelperPartial, type Replacement, type SettledRemark, type Track, type WordTime } from "../src/core/index.ts";
 
-// Issue #1022: 字幕のフレーム（CaptionsFrame）の吹き出しを作る盤。
-// 盤は純粋（時計もタイマーも持たない。ADR 0003）。盤への入力は「いまの状態」の全体で、盤は送った吹き出しの境目と id を覚える。
-// 語の話者は、区間（確定区間か仮の区間）と最も長く重なる枠の、覗いたラベル（previewLabel）から決める。
-
 type Part = readonly [text: string, start: number, end: number];
 const build = (parts: readonly Part[]) => {
   let location = 0;
@@ -255,7 +251,7 @@ describe("ラベルが仮から替わっても、出た文字を別の吹き出�
     const split = frameOf(board, { partials: [partialOf(parts)], intervals: [{ slot: 0, start: 10, end: 12 }, { slot: 1, start: 12, end: 14 }] });
     expect(split).toHaveLength(2);
 
-    const next = frameOf(board, { partials: [partialOf(parts)], intervals: [{ slot: 0, start: 10, end: 12 }, { slot: 3, start: 12, end: 14 }] }); // slot 3 も「相手 A」
+    const next = frameOf(board, { partials: [partialOf(parts)], intervals: [{ slot: 0, start: 10, end: 12 }, { slot: 3, start: 12, end: 14 }] });
 
     expect(next.map((b) => [b.id, b.text, b.speaker])).toEqual([[split[0]!.id, "あ", "相手 A"], [split[1]!.id, "い", "相手 A"]]);
   });
@@ -491,15 +487,11 @@ describe("補正つきの未反映の発言（replacements）の字幕用の本�
   });
 });
 
-// Issue #1222: 発言にした後に、STT が同じ区切りを延ばした途中結果。字幕へ渡す途中結果は、settler が出した分を除いた後ろだけにする（settler.unemittedTail）。
-// 盤は変えない。発言と、その後ろの途中結果は、別の吹き出しになってよい（並べると 1 回ずつ）
 describe("発言になった分を除いた途中結果（settler.unemittedTail）を盤へ渡す", () => {
-  // 相手の途中結果を settler へ入れ、自分の途中結果で音声の時計を 1 秒進めて、発言にする
   const settle = (settler: ReturnType<typeof createRemarkSettler>, p: HelperPartial): SettledRemark[] => [
     ...settler.partial(p),
     ...settler.partial({ track: "自分", start: 0, end: p.end + SETTLE_QUIET_MS / 1000, text: "時計", duplicate: false }),
   ];
-  // 相手の吹き出しの本文（話し始めの順）
   const texts = (bubbles: readonly CaptionBubble[]) => bubbles.filter((b) => b.track === "相手").map((b) => b.text);
 
   it("発言「来週のリリースは」の後に、同じ区切りが「来週のリリースは金曜に」へ延びても、字幕は「来週のリリースは」「金曜に」で、同じ文字が二重に出ない", () => {
@@ -561,7 +553,6 @@ describe("発言になった分を除いた途中結果（settler.unemittedTail�
   });
 });
 
-// Issue #1221: 吹き出しの「本文の先頭から何文字までが確定（発言になった語）か」。途中結果の語だけが途中
 describe("吹き出しの確定の文字数（settledLength）", () => {
   const slot0 = [{ slot: 0, start: 10, end: 14 }];
 
@@ -585,7 +576,6 @@ describe("吹き出しの確定の文字数（settledLength）", () => {
     expect(bubbles[0]).toMatchObject({ text: "了解です", settledLength: 4 });
   });
 
-  // 発言と途中結果は語の出どころが別なので、同じ吹き出しになるのは、先に途中結果として送った吹き出しの中で一部が発言になったとき
   it("前半が発言・末尾が途中結果の吹き出しは、発言の分の文字数が確定になる", () => {
     const board = createCaptionBoard();
     const first = frameOf(board, { partials: [partialOf([["こんにちは", 10, 12], ["元気", 12.1, 13]])], intervals: slot0 });

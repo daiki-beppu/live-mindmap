@@ -11,9 +11,6 @@ import { DEFAULT_HELPER_PATH } from "../src/helperPath.ts";
 import { serverPidPath } from "../src/serverProcess.ts";
 
 const main = join(import.meta.dirname, "../src/server.ts");
-// main を実物の子プロセスとして起動するので、1 件ごとに Node の起動と TypeScript の変換が入る。
-// vitest は test ファイルを並列に走らせる（CI の server (rest) は他の 18 ファイルと同時）ため、
-// 既定の 20 秒では混み合ったときに足りない。capture.heavy.test.ts が実物の Vite・Chromium に 90 秒を取るのと同じ理由
 const TIMEOUT = 60_000;
 const processResource = Effect.fnUntraced(function* (
   port: number | string,
@@ -25,7 +22,6 @@ const processResource = Effect.fnUntraced(function* (
   );
   const child = yield* Effect.acquireRelease(
     Effect.sync(() => spawn(process.execPath, [...(options.execArgv ?? []), main], {
-      // セッションを始めないのでヘルパーは起動しない。既定の release の実行ファイルの有無で落ちないよう、使われない値を渡す
       env: { ...process.env, LIVE_MINDMAP_PORT: String(port), LIVE_MINDMAP_SESSIONS: sessionsDir, LIVE_MINDMAP_HELPER: "/nonexistent/live-mindmap-helper", ...options.env },
       stdio: ["ignore", "pipe", "pipe"],
     })),
@@ -39,7 +35,6 @@ const processResource = Effect.fnUntraced(function* (
     child.once("close", (code, signal) => resolve({ code, signal }));
     child.once("error", reject);
   });
-  // 出力先を観測するため、標準出力と標準エラーを最後まで溜める（exited は close で解決するので、解決後は全部読み終わっている）
   const output = { stdout: "", stderr: "" };
   child.stdout.on("data", (chunk: Buffer) => {
     output.stdout += chunk.toString();
@@ -55,7 +50,6 @@ const processResource = Effect.fnUntraced(function* (
     child.once("close", () => reject(new Error(`待受け前に終了: ${stderr}`)));
     child.once("error", reject);
   });
-  // 起動失敗のケースでは exited を観測する。listening の拒否を未処理にしない。
   const started = listening.then((value) => ({ port: value }), (error: unknown) => ({ error }));
   return { child, exited, started, output, sessionsDir };
 });
@@ -88,7 +82,6 @@ describe("server main の終了（要件6・7）", () => {
       }), TIMEOUT);
   }
 
-  // 実物の CLI の server stop が、起動した本物のサーバーを PID の記録と自己申告の PID で止める（pkill を使わない止め方）
   it.live("cli server stop で止まり、終了コード 0 で終わり、PID の記録を消す", () =>
     Effect.gen(function* () {
       const p = yield* processResource(0);
@@ -120,7 +113,6 @@ describe("server main の終了（要件6・7）", () => {
       const exit = yield* Effect.tryPromise(() => second.exited);
       expect(exit.signal).toBeNull();
       expect(exit.code).not.toBe(0);
-      // 待受けの失敗の理由は、Effect の既定のロガー（標準出力）に出る。標準エラーへ切り替えない（文言は固定しない）
       expect(second.output.stdout.trim()).not.toBe("");
       expect(second.output.stderr.trim()).toBe("");
       const response = yield* Effect.tryPromise(() => fetch(`http://127.0.0.1:${started.port}/session/status`));
@@ -128,7 +120,6 @@ describe("server main の終了（要件6・7）", () => {
       expect(yield* Effect.tryPromise(() => response.json())).toEqual({ status: "none" });
     }), TIMEOUT);
 
-  // ヘルパーが見つからないときの終了。helper のビルドの有無に左右されないよう、preload で既定の場所の existsSync だけを false にする
   it.live("ヘルパーが見つからないと、理由を標準エラーに出し、待ち受けずに終了コード 1 で自分で終わる", () =>
     Effect.gen(function* () {
       const preloadDir = yield* Effect.acquireRelease(
@@ -158,7 +149,6 @@ describe("server main の終了（要件6・7）", () => {
       expect(p.output.stderr).not.toContain("live-mindmap サーバーを起動しました");
     }), TIMEOUT);
 
-  // 空文字は「未設定」ではなく整数でない値として拒否する（未設定なら既定のポートを使う）
   it.live('LIVE_MINDMAP_PORT が整数でない（""）と、待ち受けずに 0 以外で終わり、理由を標準エラーに出す', () =>
     Effect.gen(function* () {
       const p = yield* processResource("");
@@ -166,7 +156,6 @@ describe("server main の終了（要件6・7）", () => {
       const started = yield* Effect.tryPromise(() => p.started);
       expect(exit.signal).toBeNull();
       expect(exit.code).not.toBe(0);
-      // 起動の 1 行が出ていない（error 側）。error の文言は「待受け前に終了: <標準エラー>」なので、理由が空でないことを見る
       expect("error" in started).toBe(true);
       const message = "error" in started ? String((started.error as { message?: unknown }).message ?? started.error) : "";
       expect(message.replace("待受け前に終了:", "").trim()).not.toBe("");

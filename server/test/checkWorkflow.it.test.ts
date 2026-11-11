@@ -37,7 +37,6 @@ describe("heavy の管理依存導入", () => {
   });
 });
 
-// Issue #568: ts の変更がある PR で test:e2e の全件を 1 ジョブで回す。replay cache は --strict-cache で再生だけ、リトライ 0、資格情報なし
 describe("e2e ジョブ", () => {
   it("server の Playwright 導入を呼ばず、E2E 自身の入口を実行する", () => {
     const calls = runInlineSteps("e2e");
@@ -47,8 +46,6 @@ describe("e2e ジョブ", () => {
 
 });
 
-// Issue #563: helper ジョブは 1 回の `swift build --build-tests` の後、`swift test --skip-build` を unit・軽い IT・重い IT の 3 ステップで回す。
-// 層の選び方は helper/package.json の test・test:it・test:it:heavy と同じテストを選ぶこと（代表的なテスト ID で確かめる）
 describe("helper ジョブ", () => {
   const helperRuns = (): string[] =>
     jobLines("helper")
@@ -91,9 +88,6 @@ describe("helper ジョブ", () => {
   });
 
 });
-// Issue #599: server のテスト（helperScripts.it.test.ts）は helper/package.json を読む。
-// helper/ の下だけの変更で ts のジョブを飛ばす振り分けでは、その変更でテストが落ちても CI が気付かない。
-// changes ジョブの run を取り出し、`gh api` を変更ファイルの一覧を返す偽物に差し替えて、ts と swift の出力を確かめる
 const filterOutputs = (files: string[], event = "pull_request"): Record<string, string> => {
   const dir = mkdtempSync(join(tmpdir(), "changes-filter-"));
   try {

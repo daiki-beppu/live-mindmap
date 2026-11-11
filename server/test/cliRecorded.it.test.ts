@@ -28,8 +28,6 @@ import { startedServer } from "./fixtures/startedServer.ts";
 import { eventually, runToEnd, trackingClock } from "./fixtures/virtualTime.ts";
 import { FAKE_TUNNEL_HOST, fakeTunnel } from "./fixtures/tunnel.ts";
 
-// CLI の HTTP 要求と出力を観測する。話者分離の既存テストは #1323 の移管対象外。
-
 const temporaryDirectory = Effect.acquireRelease(
   Effect.tryPromise(() => mkdtemp(join(tmpdir(), "live-mindmap-cli-recorded-"))),
   (path) => Effect.promise(() => rm(path, { recursive: true, force: true })),
@@ -46,7 +44,6 @@ function fakeUpdater(before: UpdateScript = () => Effect.void) {
   return { layer };
 }
 
-// /session/recorded の応答の本文を読み始めた（stream にアクセスした）ことを知らせ、本文は永遠に来ないものにする HttpClient
 function stalledRecordedBody() {
   const bodyRequested = Effect.runSync(Deferred.make<void>());
   const layer = Layer.effect(
@@ -106,7 +103,6 @@ const resource = Effect.fnUntraced(function* (script: Script, updater: ReturnTyp
   const sessionsDir = join(root, "sessions");
   const file = join(root, options.fileName ?? "meeting.m4a");
   writeFileSync(file, "audio");
-  // --self に渡す、自分用の録音
   const selfFile = join(root, "me.m4a");
   writeFileSync(selfFile, "self audio");
   const helpers = fakeHelpers(script, options.attempts);
@@ -146,7 +142,6 @@ const onlySession = (sessionsDir: string) => {
 };
 const remarksOf = (lines: Line[]) => lines.filter((l) => l.type === "remark").map((l) => l.remark as { id: string; track: string; start: number; end: number; text: string });
 
-// 10:00・11:00・12:30 の 3 発言。録画の全体の長さは 58:04
 const THREE: Script = {
   duration: 3484,
   remarks: [
@@ -173,7 +168,6 @@ const waitForRemarks = (sessionsDir: string, count: number) =>
     expect(remarksOf(logLines(join(sessionsDir, dirs[0]!)))).toHaveLength(count);
   }, { timeout: 10_000 }));
 
-// 偽の時計をサーバーにも CLI にも渡す（resource の中のサーバーの起動も、この Clock の下で行う）
 const withVirtualClock = <A, E, R>(body: (pending: number[]) => Effect.Effect<A, E, R>) =>
   Effect.gen(function* () {
     const pending: number[] = [];
@@ -329,12 +323,10 @@ describe("cli recorded <file>", () => {
 
   it.live("ファイルを渡すと、進み具合の行と、フォルダとmap.*のパスが出る", () => Effect.gen(function* () {
     const r = yield* resource(THREE);
-    // 相対パスで渡しても、サーバー（作業フォルダが違う）には絶対パスで渡る
     yield* r.cli(["recorded", relative(process.cwd(), r.file)]);
 
     const dir = onlySession(r.sessionsDir);
 
-    // 標準出力は、フォルダと map.* のパス（音声つきの見返しは map-audio.html）だけ
     const out = r.deps.stdout.join("").trim().split("\n");
     expect(out[0]).toBe(dir);
     expect(out.slice(1).map((path) => basename(path))).toEqual(expect.arrayContaining(["map.md", "map.json", "map.drawnix"]));
@@ -342,7 +334,6 @@ describe("cli recorded <file>", () => {
       expect(path.startsWith(dir)).toBe(true);
       expect(basename(path)).toMatch(/^map[.-]/);
     }
-    // 進み具合は標準エラーに 1 行ずつ。最後の行は、入れた位置・全体の長さ・マップの更新回数
     const progress = r.deps.stderr.join("").replaceAll("\r", "\n").split("\n").filter((l) => l.trim() !== "");
     expect(progress.length).toBeGreaterThan(0);
     expect(progress.at(-1)).toBe("12:30 / 58:04  マップの更新 3 回");
@@ -357,7 +348,6 @@ describe("cli recorded <file>", () => {
       yield* r.cli(["recorded", r.file]);
 
       const notice = formatAudioTracksNotice(2);
-      // 文面は本番の formatter とは別に確かめる（最初のトラックだけを使ったことと、--self を使えること）
       expect(notice).toContain("最初のトラックだけを使いました");
       expect(notice).toContain("--self");
       expect(stderrLines(r).filter((l) => l === "音声のトラックが 2 本あります。最初のトラックだけを使いました（分けたいときは --self を使えます）")).toHaveLength(1);
@@ -376,13 +366,11 @@ describe("cli recorded <file>", () => {
 
   describe("--self（自分用の録音を足して、ライブと同じ 2 トラックで組む）", () => {
     type SpokenRemark = { start: number; end: number; text: string };
-    // ヘルパーは、録画の文字起こしでは partial → remark の順に出す。duplicate は 自分 の重複の印
     const spoken = (track: "相手" | "自分", r: SpokenRemark, duplicate = false): unknown[] => [
       { type: "partial", track, ...r, duplicate },
       { type: "remark", track, ...r, duplicate },
     ];
 
-    // 音声の時刻の順に交互に流す 2 本の台本。最後の 自分 は、相手の二つ目とほぼ同じ文のスピーカーの回り込み（ヘルパーが重複の印を付けた確定結果）
     const INTERLEAVED: Script = {
       duration: 10,
       remarks: [],
@@ -462,12 +450,10 @@ describe("cli recorded <file>", () => {
         requests.push(request.url);
         if (request.url.endsWith("/session/stop")) yield* Deferred.succeed(stopRequested, undefined);
       })))).pipe(Layer.provide(NodeHttpClient.layerUndici));
-    // 2 回目の差分更新は、stop の印が立つまで終わらない。3 発言目は溜まったまま
     const updater = fakeUpdater((_input, call) => call === 2 ? Effect.suspend(() => Deferred.await(stopRequested)) : Effect.void);
     const r = yield* resource(THREE, updater, { cli: { httpClient: client } });
     const running = yield* Effect.forkChild(r.cli(["recorded", r.file]));
     yield* waitForRemarks(r.sessionsDir, 2);
-    // 実行中のセッションは status に出る（フォルダつき）
     const dir = onlySession(r.sessionsDir);
     const during = cliDependencies(r.sessionsDir, r.server.port);
     yield* runCli(["status"]).pipe(Effect.provide(during.layer));
@@ -496,7 +482,6 @@ describe("cli recorded <file>", () => {
 
   it.live("録画からのセッションの最中は、ライブの start も別の recorded も断る。resume も断る", () => Effect.gen(function* () {
     const stopSeen = { current: undefined as Deferred.Deferred<void> | undefined };
-    // 最初の差分更新が終わらず、セッションが続いている間に別の入口を試す
     const updater = fakeUpdater(() => Effect.suspend(() => Deferred.await(stopSeen.current!)));
     const r = yield* resource({ ...THREE, hold: true }, updater);
     stopSeen.current = r.helpers.stopSeen;
@@ -530,8 +515,6 @@ describe("cli recorded <file>", () => {
     const running = yield* Effect.forkChild(r.cli(["recorded", r.file]));
     yield* waitForRemarks(r.sessionsDir, 1);
     const eventually = (assertion: () => void) => Effect.promise(() => vi.waitFor(assertion, { timeout: 10_000 }));
-    // 1 つ目の差分更新が終わらない間に、先の発言の途中結果と、その後ろの全体の長さが届く。サーバーは 1 件ずつ順に処理するので、
-    // 全体の長さの進み具合が標準エラーに出たなら、その前の途中結果の処理は終わっている
     r.helpers.feed({ type: "partial", track: "相手", start: 800, end: 810, text: "先読みの途中結果です" });
     r.helpers.feed({ type: "file-duration", duration: 3485 });
     yield* eventually(() => { expect(r.deps.stderr.join("")).toContain("/ 58:05"); });
@@ -567,7 +550,6 @@ describe("cli recorded <file>", () => {
     const after = cliDependencies(r.sessionsDir, r.server.port);
     yield* runCli(["status"]).pipe(Effect.provide(after.layer));
     expect(after.stdout.join("")).toContain("セッションなし");
-    // started を読めていないので、フォルダは出さず map.* のパスだけを出す
     expect(r.deps.stdout.join("")).toContain(join(dir, "map.md"));
   }).pipe(Effect.scoped));
 
@@ -668,9 +650,6 @@ describe("cli recorded <file>", () => {
   }).pipe(Effect.scoped));
 });
 
-// ヘルパーだけが落ちたときの起動し直し（Issue #1093）。ライブと同じ判断（60 秒・3 回）で、サーバーが最後に作った発言の end から読み直す。
-// 偽のヘルパーは、起動の回ごとの台本（attempts）に従って流す。偽の読み直しは頭から全部を流すので、
-// 開始位置（--from）より前の結果をサーバーが捨てることを、発言が重ならず抜けもないことで確かめる
 describe("cli recorded <file> ヘルパーが落ちたとき", () => {
   const stderrLines = (r: { deps: { stderr: string[] } }) => r.deps.stderr.join("").replaceAll("\r", "\n").split("\n").filter((line) => line.trim() !== "");
   it.live("起動し直したヘルパーが流し直す知らせ（音声のトラックが複数・映像が読めない）は、標準エラーに 1 回だけ出る", () => Effect.gen(function* () {
@@ -698,7 +677,6 @@ describe("cli recorded <file> ヘルパーが落ちたとき", () => {
   }).pipe(Effect.scoped));
 
   it.live("サーバーとの接続が切れたら続けない。CLI は、途中までのセッションのフォルダと、もう一度 cli recorded を呼べば頭から組み直せることを出し、失敗で返る", () => Effect.gen(function* () {
-    // 最初の発言を入れた差分更新が終わらないまま、サーバーが落ちる
     const r = yield* resource({ ...THREE, hold: true }, fakeUpdater(() => Effect.never));
     const running = yield* Effect.forkChild(r.cli(["recorded", r.file]));
     yield* waitForRemarks(r.sessionsDir, 1);
@@ -713,8 +691,6 @@ describe("cli recorded <file> ヘルパーが落ちたとき", () => {
   }).pipe(Effect.scoped));
 });
 
-// 動画の映像を共有画面として使う（Issue #1090）。本物のヘルパーは、映像の判定と OCR を文字起こしと並べて先に済ませるので、
-// 共有画面の変化と screen-off は、発言よりも先に届く。それでも発言と同じ音声の時刻の順でセッションに入り、語彙も映った後の発言から効く
 describe("cli recorded <file> 動画の映像", () => {
   const stderrLines = (r: { deps: { stderr: string[] } }) => r.deps.stderr.join("").replaceAll("\r", "\n").split("\n").filter((l) => l.trim() !== "");
 
@@ -751,13 +727,9 @@ describe("cli recorded <file> 動画の映像", () => {
 
 });
 
-// 差分更新が利用上限で一時停止している間（Issue #1092）、録画からのセッションは溜まっている発言をセッションへ入れず、ヘルパーにもファイルを読み進めさせない。
-// 次に試す時刻に再試行が成功したら、止めた続きから入れる。再試行がまた一時停止しても諦めず、待っている間の stop・Ctrl-C は入れた分で終える。
-// ヘルパーは台本のイベント（r1〜r3）を、一時停止の前にすべて流し終えている（先に読んで溜まっている分を入れないことを見る）。
 describe("cli recorded <file> 差分更新の一時停止", () => {
   const CHATGPT = "ChatGPT の利用上限";
   const stderrLines = (r: { deps: { stderr: string[] } }) => r.deps.stderr.join("").replaceAll("\r", "\n").split("\n").filter((l) => l.trim() !== "");
-  // 進み具合の行が出す「次に試す時刻」（地方時の時:分）。時は 1 桁でも 2 桁でも含まれる
   const localClock = (ms: number) => {
     const date = new Date(ms);
     return `${date.getHours()}:${String(date.getMinutes()).padStart(2, "0")}`;
@@ -765,7 +737,6 @@ describe("cli recorded <file> 差分更新の一時停止", () => {
   const pausedLine = (r: { deps: { stderr: string[] } }, reason: string, retryAt: number) =>
     stderrLines(r).some((line) => line.includes(reason) && line.includes(localClock(retryAt)));
 
-  // 1 回目の差分更新（r1）が一時停止する。時刻は仮想時計の 0 から数える
   const RETRY_AT = 2 * 3_600_000 + 37 * 60_000;
 
   it.effect("一時停止の進み具合に理由と次に試す時刻が出て、再開すると理由が消える", () => withVirtualClock((pending) => Effect.gen(function* () {
@@ -778,13 +749,11 @@ describe("cli recorded <file> 差分更新の一時停止", () => {
     yield* TestClock.adjust(RETRY_AT);
     yield* r.helpers.end;
     yield* runToEnd(Fiber.join(running));
-    // 再開した後の進み具合の行には、理由が出ない
     const lines = stderrLines(r);
     expect(lines.at(-1)).toBe("12:30 / 58:04  マップの更新 3 回");
     expect(lines.at(-1)).not.toContain(CHATGPT);
   })).pipe(Effect.scoped), 60_000);
 
-  // 最後の発言の 1 回目だけ一時停止する差分更新。calls にその発言の呼び出しを記録する
   const limitedOnLast = (retryAt: number) => {
     const calls: string[] = [];
     const updater = fakeUpdater((input) => {
@@ -821,7 +790,6 @@ describe("cli recorded <file> 差分更新の一時停止", () => {
   }).pipe(Effect.scoped));
 });
 
-// Issue #1094: 録画の `相手` を話者分離にかける。ヘルパーの speaker 系のイベントを話者の付与へ渡し、speaker-off では保留せず話者なしで出す
 describe("cli recorded <file> 話者分離（Issue #1094）", () => {
   const stderrLines = (r: { deps: { stderr: string[] } }) => r.deps.stderr.join("").replaceAll("\r", "\n").split("\n").filter((l) => l.trim() !== "");
   const eventually = (assertion: () => void) => Effect.promise(() => vi.waitFor(assertion, { timeout: 10_000 }));
@@ -855,11 +823,9 @@ describe("cli recorded <file> 話者分離（Issue #1094）", () => {
     const second = { start: 2, end: 4, text: "二つ目の発言です" };
     const r = yield* resource({ remarks: [], hold: true, events: [{ type: "file-duration", duration: 20 }, { type: "speaker-off", start: 0, reason: "モデルなし" }, ...remarkEvents(first)] });
     const running = yield* Effect.forkChild(r.cli(["recorded", r.file]));
-    // ヘルパーは終わらない。drain（終わり）まで待たずに、発言がセッションに入る
     yield* waitForRemarks(r.sessionsDir, 1);
     expect(remarkLines(r.sessionsDir)).toEqual([expect.objectContaining({ text: "最初の発言です" })]);
     expect(remarkLines(r.sessionsDir)[0]!.speaker).toBeUndefined();
-    // 2 回目の speaker-off（起動し直しの流し直しなど）が来ても、知らせは増えない
     r.helpers.feed({ type: "speaker-off", start: 0, reason: "モデルなし" });
     for (const event of remarkEvents(second)) r.helpers.feed(event);
     yield* waitForRemarks(r.sessionsDir, 2);
@@ -915,25 +881,19 @@ describe("cli recorded <file> 話者分離（Issue #1094）", () => {
   }).pipe(Effect.scoped));
 });
 
-// Issue #1095: 録画でヘルパーが落ちて読み直したとき、話者のラベルをライブと同じつなぎ直し（Issue #1025）でつなぐ。
-// 同じ cli recorded の 1 回の中で「落ちる前 → 落ちる → 読み直した後」を続けて見る
 describe("cli recorded <file> 起動し直しをまたいだ話者のつなぎ直し（Issue #1095）", () => {
   const remarkLines = (sessionsDir: string) => sessionLog(sessionsDir).filter((l) => l.type === "remark").map((l) => l.remark as { text: string; speaker?: string });
   const speakerSegment = (start: number, end: number, slot: number) => ({ type: "speaker", track: "相手", start, end, slot, final: true });
   const settled = (to: number) => ({ type: "speaker-settled", track: "相手", to });
   const centroid = (slot: number, vector: readonly number[]) => ({ type: "speaker-centroid", track: "相手", slot, centroid: [...vector] });
-  // 4 次元の単位ベクトル 4 本。互いの cos は 0
   const UNIT = [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]] as const;
-  // UNIT[i] と cos 0.95、ほかの UNIT とは 0.6 未満になる重心
   const near = (i: number): number[] => UNIT[i]!.map((v, k) => (k === i ? 0.95 : k === (i + 1) % 4 ? Math.sqrt(1 - 0.95 ** 2) : 0));
   const speak = (slot: number, start: number, text: string) => [speakerSegment(start, start + 2, slot), settled(start + 2.5), ...remarkEvents({ start, end: start + 2, text })];
 
   it.live("落ちる前にラベルが付いた 2 人は、読み直した後に枠の番号が入れ替わっても同じラベルで出る。重心が届くまでの発言は話者なしで、起動し直す前の発言のラベルは変わらない", () => Effect.gen(function* () {
     const r = yield* resource(THREE, fakeUpdater(), {
       attempts: [
-        // 1 回目: 枠 0 = 相手 A の声、枠 1 = 相手 B の声。重心は発言より前に届く
         { duration: 40, remarks: [], events: [centroid(0, UNIT[0]), centroid(1, UNIT[1]), ...speak(0, 0, "一人目の発言です"), ...speak(1, 2, "二人目の発言です")], exit: { code: 1, signal: null } },
-        // 2 回目: 枠の番号が逆。重心が届く前の枠 1 の発言は話者なし。届いた後は、枠 1 = A の声、枠 0 = B の声
         { duration: 40, remarks: [], events: [...speak(1, 4, "分かる前の発言です"), centroid(1, near(0)), centroid(0, near(1)), ...speak(1, 6, "A に戻った発言です"), ...speak(0, 8, "B に戻った発言です")] },
       ],
     });
@@ -958,7 +918,6 @@ describe("cli recorded <file> 起動し直しをまたいだ話者のつなぎ�
         },
         {
           duration: 40, remarks: [],
-          // 枠 0 = D、枠 1 = A、枠 2 = B、枠 3 = C の声
           events: [centroid(0, near(3)), centroid(1, near(0)), centroid(2, near(1)), centroid(3, near(2)), ...speak(0, 8, "五"), ...speak(1, 10, "六"), ...speak(2, 12, "七"), ...speak(3, 14, "八")],
         },
       ],

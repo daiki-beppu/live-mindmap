@@ -51,13 +51,10 @@ describe("settledCaptions（見返しの字幕。ラベルの待ちも仮の名�
   });
 });
 
-// Issue #1022: 会議中の字幕。サーバーの吹き出し（CaptionBubble）を、表示の吹き出しに直す純粋な状態。
-// 時計は持たない。時刻（ミリ秒）は引数で渡す。状態は同じ値にフレームを順に当てて観測する。
 describe("会議中の字幕（吹き出し）", () => {
   const bubble = (id: string, extra: Partial<CaptionBubble> = {}): CaptionBubble => ({ id, track: "相手", label: "なし", start: 0, end: 1, text: id, settledLength: (extra.text ?? id).length, ...extra });
   const named = (id: string, speaker: string, label: "仮" | "確定", extra: Partial<CaptionBubble> = {}) => bubble(id, { speaker, label, ...extra });
   const mine = (id: string, extra: Partial<CaptionBubble> = {}) => bubble(id, { track: "自分", speaker: "自分", label: "確定", ...extra });
-  // 期限までに起きる割り当てを済ませてから、その時刻の表示を読む
   const view = (state: CaptionState, now: number) => displayBubbles(advanceCaptions(state, now), now);
   const nameOf = (b: DisplayBubble) => Option.getOrUndefined(b.name);
   const shown = (state: CaptionState, now: number) => view(state, now).map((b) => [b.id, b.side, nameOf(b)]);
@@ -312,8 +309,6 @@ describe("会議中の字幕（吹き出し）", () => {
     });
   });
 
-  // Issue #1222: 「相手 A」の発言の後に、同じ区切りが延びた途中結果が届く。サーバーは出した分を除いた後ろだけを盤へ渡すので、後ろは別の吹き出し（ラベルなし）で届く。
-  // 画面では、待ちの上限の後に「相手 A」の吹き出しの続きとして出て、別の「相手」の吹き出しは立たない
   describe("発言の後に延びた途中結果（settler から盤・表示まで）", () => {
     it("「相手 A」の発言「来週のリリースは」の後に「来週のリリースは金曜に」が届くと、待ちの上限の後に「相手 A」の吹き出し 1 つに「来週のリリースは金曜に」と出る", () => {
       const settler = createRemarkSettler();
@@ -457,8 +452,6 @@ describe("slideDeltas（動きを除いた位置の差）", () => {
   });
 });
 
-// Issue #1022: 実際の送信側（createSpeakingRelay）が送ったフレームを、送った時刻に受けて表示する。
-// 送らなかった比較（speaker-settled）が盤の状態を進めて、表示前の文字が別の吹き出しへ移る不具合の回帰。時計は TestClock
 describe("送信側の間引きを通した字幕（実際の relay → receiveCaptions → displayBubbles）", () => {
   const WAIT = CAPTION_LABEL_WAIT_MS;
   const parts = [["あ", 10, 10.2], ["い", 10.25, 10.45], ["う", 10.5, 10.7]] as const;
@@ -479,7 +472,6 @@ describe("送信側の間引きを通した字幕（実際の relay → receiveC
     };
   };
 
-  // relay を TestClock で動かし、送ったフレームを送った時刻とともに記録する。body は t（相対ミリ秒）まで進める操作つき
   const scenario = (body: (h: Harness) => Effect.Effect<void>) =>
     Effect.runPromise(
       Effect.scoped(
@@ -541,7 +533,7 @@ describe("送信側の間引きを通した字幕（実際の relay → receiveC
         const f1 = h.sent[0]!.frame.bubbles;
         expect(f1.map((b) => [b.label, b.speaker, b.text])).toEqual([["仮", "相手 A", "あい"]]);
         yield* h.settled(300, [slots[0]!, slots[1]!]);
-        expect(h.sent).toHaveLength(1); // 字幕が変わらないので送らない
+        expect(h.sent).toHaveLength(1);
         yield* h.partial(600, 2);
 
         expect(h.sent.map((s) => s.at)).toEqual([0, 600]);
@@ -585,9 +577,6 @@ describe("送信側の間引きを通した字幕（実際の relay → receiveC
     ));
 });
 
-// Issue #1026: 話者の名前。名前はラベルに付く表示名で、表示（名前の欄の文字）だけを変える。
-// 名前の表（ラベル → 名前）は displayBubbles の第 3 引数。受けた状態（receiveCaptions）には名前を入れず、表示のたびに表から導く。
-// 色・同じ人が続くときの省略・押せる欄かどうか（label）は、名前ではなくラベルで決める
 describe("会議中の字幕: 話者の名前（Issue #1026）", () => {
   const bubble = (id: string, extra: Partial<CaptionBubble> = {}): CaptionBubble => ({ id, track: "相手", label: "確定", speaker: "相手 A", start: 0, end: 1, text: id, settledLength: (extra.text ?? id).length, ...extra });
   const from = (speaker: string, id: string, start: number, extra: Partial<CaptionBubble> = {}) => bubble(id, { speaker, start, end: start + 1, ...extra });
@@ -613,10 +602,9 @@ describe("会議中の字幕: 話者の名前（Issue #1026）", () => {
     expect(named.map(nameOf)).toEqual(["田中", "田中"]);
     expect(named.map(labelOf)).toEqual(["相手 A", "相手 B"]);
     expect(named[0]!.colorIndex).not.toBe(named[1]!.colorIndex);
-    expect(named.map((b) => b.colorIndex)).toEqual(plain.map((b) => b.colorIndex)); // 名前が付いても色は変わらない
+    expect(named.map((b) => b.colorIndex)).toEqual(plain.map((b) => b.colorIndex));
   });
 
-  // 見せる吹き出しは末尾の CAPTION_VISIBLE_BUBBLES（3）個。省略は見せる吹き出しの並びの中で決まるので、3 個ずつ見る
   it("同じラベルが続くときの名前の省略は、名前が付いても変わらない（2 つ目以降は省く）。間に別のラベルが入れば、また出す", () => {
     const names = { "相手 A": "田中" };
     const continued = receiveCaptions(createCaptionState(), [from("相手 A", "a1", 1), from("相手 A", "a2", 2), from("相手 B", "b", 3)], 0);
@@ -630,8 +618,8 @@ describe("会議中の字幕: 話者の名前（Issue #1026）", () => {
     const state = receiveCaptions(createCaptionState(), [from("相手 A", "a1", 1), from("相手 A", "a2", 2), mine("m", 3)], 0);
     const next = receiveCaptions(createCaptionState(), [mine("m", 3), from("相手 B", "b", 4)], 0);
 
-    expect(displayBubbles(state, 0, {}).map((b) => [b.id, labelOf(b)])).toEqual([["a1", "相手 A"], ["a2", undefined], ["m", undefined]]); // 同じ人が続く欄・自分の欄は押せない
-    expect(displayBubbles(next, 0, { "相手 B": "田中" }).map((b) => [b.id, labelOf(b)])).toEqual([["m", undefined], ["b", "相手 B"]]); // 名前が付いても、値はラベル
+    expect(displayBubbles(state, 0, {}).map((b) => [b.id, labelOf(b)])).toEqual([["a1", "相手 A"], ["a2", undefined], ["m", undefined]]);
+    expect(displayBubbles(next, 0, { "相手 B": "田中" }).map((b) => [b.id, labelOf(b)])).toEqual([["m", undefined], ["b", "相手 B"]]);
   });
 
   it("仮のラベルの欄・3 秒たって「相手」だけになった欄・話者なしの「相手」の欄は押せない（付ける先のラベルが無い・まだ振っていないかもしれない）", () => {

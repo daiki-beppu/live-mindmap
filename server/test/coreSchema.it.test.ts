@@ -1,5 +1,3 @@
-// Issue #238 段 1: core の Truth の Schema が、bench の実在する正解ファイル（deciding.truth.json）を decode できること。
-// 本物のファイルシステムでリポジトリのファイルを読む。そのほかの Schema の確認は coreSchema.test.ts
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { assert, describe, it } from "@effect/vitest";

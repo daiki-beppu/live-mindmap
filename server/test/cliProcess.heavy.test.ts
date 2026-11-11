@@ -1,5 +1,3 @@
-// CLI をプロセスとして起動して、プロセスでしか見えないもの（終了コード・stdout と stderr の実バイト・1 行にまとまること）だけを確かめる。
-// help の文面・失敗の文面の中身・優先順は cliEntry.it.test.ts（runCli の軽い IT）が持つ。
 import { execFile } from "node:child_process";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -34,7 +32,6 @@ function execute(command: string, args: string[], cwd: string | undefined, sessi
 }
 
 const runProcess = (argv: string[], sessionsDir: string) => execute(process.execPath, [cli, ...argv], undefined, sessionsDir);
-// リポジトリのルートの package.json の cli スクリプト（pnpm cli）を通して起動する
 const runPnpmCli = (argv: string[], sessionsDir: string) => execute("pnpm", ["cli", ...argv], repositoryRoot, sessionsDir);
 
 const temporaryDirectory = Effect.acquireRelease(

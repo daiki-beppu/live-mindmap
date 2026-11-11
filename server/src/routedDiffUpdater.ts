@@ -62,7 +62,6 @@ export const routedUpdater = (parts: Parts) => Effect.sync(() => {
       ...(handed ? { previousResponse: handed } : {}),
     }).pipe(Effect.mapError((error) => {
       if (!Schema.is(DiffUpdatePaused)(error)) return { _tag: error._tag, message: error.message, judge };
-      // 一時停止の回はこの回の画面をコアが消費せず再試行で渡し直すので、未送も呼ぶ前に戻す
       Object.assign(unseen, unseenBefore);
       return error;
     }));

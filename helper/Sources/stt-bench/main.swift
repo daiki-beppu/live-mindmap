@@ -1,17 +1,5 @@
 import Foundation
 
-// 使い方:
-//   stt-bench synth <台本.json> <出力フォルダ> [--only <名前>] [--gap <秒>]
-//   stt-bench tracks <会議フォルダ> <出力フォルダ> --self <話者>   （timeline.tsv・voices.json・lines/ のある合成会議を、<話者> の行だけの 自分.wav と、残りの 相手.wav に分ける）
-//   stt-bench run --variant <名前> <音声.wav> [--load <音声2.wav>] [--vocab <語彙.txt>] [--vocab-at <秒>] [--diarize <区間.jsonl>]   （結果を 1 行 1 結果の JSONL で標準出力へ）
-//     --vocab は 1 行 1 語。語彙を使う候補（vocab・vocab-init・dictation-vocab）のときだけ contextualStrings に渡す。--vocab-at を付けると、その秒まで流してから渡す
-//     --diarize は同じ音声に Nemotron 3 の話者分離も並行して掛け、区間（到着時刻・start・end・slot・isFinal）を 1 行 1 区間の JSONL でそのファイルに書く（標準出力の形は変えない）。事前に bash helper/scripts/fetch-speaker-models.sh
-//   stt-bench run --variant <名前> <相手.wav> --events [--self <自分.wav>]   （認識と話者分離のイベントを arrival つきの JSONL で標準出力へ。speakerAccuracy が読む。--vocab・--load・--diarize とは併用しない）
-//   stt-bench echo <meeting.wav> <self.wav> --self-lines <self.lines.json> [--microphone <AEC3前の録音>] [--delays 40,200,300] [--at 5,30,60] [--leak-gain-db -10] [--candidate <名前,…>] [--out <フォルダ>]
-//     AEC3 の漏れと発話の残り方を測る（JSONL）。候補: baseline、production、bypass-<秒>、suppress-lf-0.6、delay-hint-40、ep-gain-0.1
-//   stt-bench variants
-// 合成した音声・計測の出力はリポジトリの外に置く。
-
 func fail(_ message: String) -> Never {
     FileHandle.standardError.write(Data((message + "\n").utf8))
     exit(1)

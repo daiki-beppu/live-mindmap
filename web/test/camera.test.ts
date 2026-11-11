@@ -42,7 +42,6 @@ const node = (id: string, parent: string | null, kind: Exclude<SnapshotNode["kin
 
 const change = (n: string, round: number): ChangeEntry => ({ change: "追加", node: n, round, at: round }) as ChangeEntry;
 
-// root > A(議題) > B(議題) > C(議題) > D(議題: 今の議題) > D1(論点) > D2(案)。A の下に論点 P、root の下に別の議題 Z
 const nodes = (): SnapshotNode[] => [
   node("root", null, "会議"),
   node("A", "root"),
@@ -107,7 +106,6 @@ describe("cameraFocus: 寄せ先", () => {
 const rect = (x: number, y: number, width: number, height: number) => ({ x, y, width, height });
 const size = { width: 1920, height: 1080 };
 
-// ビューポートの変換で、矩形が画面に収まっているか
 const fits = (r: ReturnType<typeof rect>, v: { x: number; y: number; zoom: number }) =>
   r.x * v.zoom + v.x >= 0 &&
   r.y * v.zoom + v.y >= 0 &&
@@ -124,7 +122,7 @@ describe("focusViewport: 倍率と中心", () => {
   });
 
   it("上限と下限の間では全体が収まる倍率になる（0.75〜1.1）", () => {
-    const r = rect(0, 0, 2200, 800); // 幅 1920 に余白込みで収めると 0.75 より大きく 1.1 より小さい
+    const r = rect(0, 0, 2200, 800);
     const v = focusViewport([r], r, size);
     expect(v.zoom).toBeGreaterThan(0.75);
     expect(v.zoom).toBeLessThan(1.1);
@@ -225,7 +223,6 @@ describe("changedFocus と focusViewport(USER_MIN_ZOOM): 変わったノード�
     expect(v.zoom).toBeGreaterThanOrEqual(USER_MIN_ZOOM);
     expect(v.zoom).toBeLessThan(0.75);
     expect(rects.every((r) => fits(r, v))).toBe(true);
-    // 対照: 下限を指定しない（自動のカメラの）viewport は 0.75 で、両方は収まらない
     const auto = focusViewport(rects, nodeRect("Z", target, dims), size);
     expect(auto.zoom).toBeCloseTo(0.75);
     expect(rects.every((r) => fits(r, auto))).toBe(false);
@@ -249,7 +246,6 @@ describe("changedFocus と focusViewport(USER_MIN_ZOOM): 変わったノード�
     expect(v.zoom).toBeCloseTo(USER_MIN_ZOOM);
     expect((z.x + z.width / 2) * v.zoom + v.x).toBeCloseTo(size.width / 2);
     expect((z.y + z.height / 2) * v.zoom + v.y).toBeCloseTo(size.height / 2);
-    // lastChanged が D2 なら D2 が中央に来る（中心は変わったノードの位置で決まる）
     const other = viewportOf(snap({ round: 2, changes: [change("D2", 2), change("Z", 2)], lastChanged: "D2" }), target).v;
     const d = nodeRect("D2", target, dims);
     expect((d.x + d.width / 2) * other.zoom + other.x).toBeCloseTo(size.width / 2);
@@ -273,7 +269,6 @@ describe("changedFocus と focusViewport(USER_MIN_ZOOM): 変わったノード�
   });
 
   it("畳みで隠れたノードは、見えている祖先の位置で収める（隠れたノードの位置は使わない）", () => {
-    // D1・D2 は D の中に畳まれて見えない。D の位置で収め、D1・D2 の位置（遠い）には引きずられない
     const target = { D: { x: 100, y: 100 }, D1: { x: 9000, y: 6000 }, D2: { x: 9000, y: 6000 }, Z: { x: 400, y: 200 } };
     const s = snap({ round: 2, changes: [change("D1", 2), change("D2", 2), change("Z", 2)], lastChanged: "D2" });
     const { focus, rects, v } = viewportOf(s, target, { D1: "D", D2: "D" });
@@ -294,7 +289,6 @@ describe("clampUserZoom: 人の倍率は 0.5〜2 倍", () => {
   });
 });
 
-// 画面中心のワールド座標
 const centerOf = (v: { x: number; y: number; zoom: number }) => ({ x: (size.width / 2 - v.x) / v.zoom, y: (size.height / 2 - v.y) / v.zoom });
 
 describe("zoomAroundCenter: 画面の中心を保って倍率を変える", () => {
@@ -371,7 +365,6 @@ describe("overviewViewport: 全体を目標の位置で収める", () => {
   });
 });
 
-// 画面上の点が指すワールド座標
 const worldAt = (v: { x: number; y: number; zoom: number }, p: { x: number; y: number }) => ({ x: (p.x - v.x) / v.zoom, y: (p.y - v.y) / v.zoom });
 
 describe("zoomAtPoint: 押した点を中心に倍率を変える", () => {
@@ -483,7 +476,6 @@ const at = (x: number, y: number) => ({ n: { x, y } });
 const centerScreen = { x: size.width / 2, y: size.height / 2 };
 
 describe("scrollPanDelta: 二本指スクロールで画面が動く量（@xyflow の createPanOnScrollHandler と同じ式）", () => {
-  // 返すのは画面（ビューポートの平行移動）が動く量。delta の符号と逆で、倍率に依らず delta × 0.5（-0 と 0 は区別しない）
   const wheel = (over: Partial<{ deltaX: number; deltaY: number; deltaMode: number; shiftKey: boolean }> = {}) => ({ deltaX: 0, deltaY: 0, deltaMode: 0, shiftKey: false, ...over });
   const expectMove = (actual: { x: number; y: number }, x: number, y: number) => {
     expect(actual.x).toBeCloseTo(x, 9);
@@ -548,10 +540,8 @@ describe("edgeDots: 画面の外で変わったノードを、その方向の縁
 
   it("画面と少しでも重なるノードには点を出さない。外へ動かすと出る（対照）", () => {
     expect(edgeDots(["n"], at(100, 100), {}, IDENTITY, size)).toEqual([]);
-    // 右の端が 2000 で、画面の右端 1920 をまたぐ
     expect(edgeDots(["n"], at(1800, 500), {}, IDENTITY, size)).toEqual([]);
     expect(edgeDots(["n"], at(1930, 500), {}, IDENTITY, size)).toHaveLength(1);
-    // 中心は左の外（-50）だが、右の端 50 が見えている
     expect(edgeDots(["n"], at(-150, 500), {}, IDENTITY, size)).toEqual([]);
     expect(edgeDots(["n"], at(-250, 500), {}, IDENTITY, size)).toHaveLength(1);
   });
@@ -585,15 +575,11 @@ describe("edgeDots: 画面の外で変わったノードを、その方向の縁
     const target = at(3000, 500);
     const base = edgeDots(["n"], target, {}, IDENTITY, size);
     expect(base[0]!.side).toBe("right");
-    // 右へ動かすとノードが画面の中へ来る
     expect(edgeDots(["n"], target, {}, { x: -2500, y: 0, zoom: 1 }, size)).toEqual([]);
-    // 縮小しても画面の中へ来る（3000 × 0.5 = 1500）
     expect(edgeDots(["n"], target, {}, { x: 0, y: 0, zoom: 0.5 }, size)).toEqual([]);
-    // 上へ動かすと、点が上へ寄る
     const up = edgeDots(["n"], target, {}, { x: 0, y: -400, zoom: 1 }, size);
     expect(up[0]!.side).toBe("right");
     expect(up[0]!.y).toBeLessThan(base[0]!.y);
-    // さらに右へ動かして左の外へ出すと、左の縁になる
     expect(edgeDots(["n"], target, {}, { x: -5000, y: 0, zoom: 1 }, size)[0]!.side).toBe("left");
   });
 
@@ -633,12 +619,11 @@ describe("shiftIntoView: 列を出して今の議題が端で切れるときだ�
 
   it("切れていなければずらさない（同じ位置・倍率）", () => {
     expect(shiftIntoView(v(0, 0, 1), [rect(100, 50, 200, 40)], screen)).toEqual(v(0, 0, 1));
-    expect(shiftIntoView(v(0, 0, 1), [rect(800, 50, 200, 40)], screen)).toEqual(v(0, 0, 1)); // ちょうど右端に接する
-    expect(shiftIntoView(v(0, 0, 1), [rect(0, 50, 200, 40)], screen)).toEqual(v(0, 0, 1)); // ちょうど左端に接する
+    expect(shiftIntoView(v(0, 0, 1), [rect(800, 50, 200, 40)], screen)).toEqual(v(0, 0, 1));
+    expect(shiftIntoView(v(0, 0, 1), [rect(0, 50, 200, 40)], screen)).toEqual(v(0, 0, 1));
   });
 
   it("右が切れていれば、切れた分だけ左へずらす", () => {
-    // 右端が 1100。画面は 1000 幅なので 100 切れている
     expect(shiftIntoView(v(0, 0, 1), [rect(900, 50, 200, 40)], screen)).toEqual(v(-100, 0, 1));
   });
 
@@ -647,11 +632,8 @@ describe("shiftIntoView: 列を出して今の議題が端で切れるときだ�
   });
 
   it("倍率と現在の位置を考慮した画面の座標で測る（倍率は変えない）", () => {
-    // zoom 2・x=-300: 箱 400〜600 は画面で 500〜900 → 切れない
     expect(shiftIntoView(v(-300, 10, 2), [rect(400, 0, 200, 40)], screen)).toEqual(v(-300, 10, 2));
-    // zoom 2・x=-100: 画面で 700〜1100 → 100 切れる
     expect(shiftIntoView(v(-100, 10, 2), [rect(400, 0, 200, 40)], screen)).toEqual(v(-200, 10, 2));
-    // zoom 0.5・x=50: 左端が画面で 50 + 0.5 × -300 = -100 → 100 切れる
     expect(shiftIntoView(v(50, 10, 0.5), [rect(-300, 0, 200, 40)], screen)).toEqual(v(150, 10, 0.5));
   });
 
@@ -664,14 +646,12 @@ describe("shiftIntoView: 列を出して今の議題が端で切れるときだ�
   });
 
   it("複数の箱は外接箱で測る。片端だけ切れていれば、その分ずらす", () => {
-    const rects = [rect(100, 0, 200, 40), rect(850, 200, 200, 40)]; // 外接箱は 100〜1050（右が 50 切れる）
+    const rects = [rect(100, 0, 200, 40), rect(850, 200, 200, 40)];
     expect(shiftIntoView(v(0, 0, 1), rects, screen)).toEqual(v(-50, 0, 1));
   });
 
   it("ずらしで反対側を新たに切らない: 右が切れ、動かせるのが左の余白までのとき、その分だけずらす", () => {
-    // 外接箱 100〜1300（画面より広い）。左端が 0 に来るまでの 100 だけずらす
     expect(shiftIntoView(v(0, 0, 1), [rect(100, 0, 1200, 40)], screen)).toEqual(v(-100, 0, 1));
-    // 左が切れ、右の余白が 100 のとき（-100〜900 を、右へ 100 まで）
     expect(shiftIntoView(v(0, 0, 1), [rect(-100, 0, 1000, 40)], screen)).toEqual(v(100, 0, 1));
   });
 
@@ -697,8 +677,8 @@ describe("revealViewport: 画面の外のノードを、倍率を変えず最小
 
   it("画面の中にあるときは動かさない（端に接していても同じ）", () => {
     expect(revealViewport(v(0, 0, 1), rect(100, 50, 200, 40), screen)).toEqual(v(0, 0, 1));
-    expect(revealViewport(v(0, 0, 1), rect(800, 560, 200, 40), screen)).toEqual(v(0, 0, 1)); // 右下の端にちょうど接する
-    expect(revealViewport(v(0, 0, 1), rect(0, 0, 200, 40), screen)).toEqual(v(0, 0, 1)); // 左上の端にちょうど接する
+    expect(revealViewport(v(0, 0, 1), rect(800, 560, 200, 40), screen)).toEqual(v(0, 0, 1));
+    expect(revealViewport(v(0, 0, 1), rect(0, 0, 200, 40), screen)).toEqual(v(0, 0, 1));
   });
 
   it("右にはみ出していれば、はみ出した分だけ左へ（余白は足さない）", () => {
@@ -725,13 +705,9 @@ describe("revealViewport: 画面の外のノードを、倍率を変えず最小
   });
 
   it("倍率と現在の位置を考慮した画面の座標で測り、倍率は変えない", () => {
-    // zoom 2・x=-300: 箱 400〜600 は画面で 500〜900 → 中
     expect(revealViewport(v(-300, 10, 2), rect(400, 0, 200, 40), screen)).toEqual(v(-300, 10, 2));
-    // zoom 2・x=-100: 画面で 700〜1100 → 100 はみ出す
     expect(revealViewport(v(-100, 10, 2), rect(400, 0, 200, 40), screen)).toEqual(v(-200, 10, 2));
-    // zoom 0.5・x=50: 左端が 50 + 0.5 × -300 = -100 → 100 はみ出す
     expect(revealViewport(v(50, 10, 0.5), rect(-300, 0, 200, 40), screen)).toEqual(v(150, 10, 0.5));
-    // zoom 2・y=0: 高さ 40 は画面で 80。箱 y=290〜330 は画面で 580〜660 → 60 はみ出す
     expect(revealViewport(v(0, 0, 2), rect(0, 290, 200, 40), screen)).toEqual(v(0, -60, 2));
   });
 
@@ -763,13 +739,11 @@ describe("revealViewport: 画面の外のノードを、倍率を変えず最小
 });
 
 describe("subtreeViewport: 選んだノードと、見せるノードのうちその子孫が収まるまで寄る", () => {
-  // A(200,80) の子 A1(400,0)・A2(400,100)。B は子孫ではなく、遠くにある。高さは仮の 40
   const target = { root: { x: 0, y: 150 }, A: { x: 200, y: 80 }, A1: { x: 400, y: 0 }, A2: { x: 400, y: 100 }, B: { x: 200, y: 5000 } };
   const treeOf = (ids: string[]) => ({ ids, parents: { root: null, A: "root", A1: "A", A2: "A", B: "root" } as Record<string, string | null> });
   const all = treeOf(["root", "A", "B", "A1", "A2"]);
 
   it("収まる枝は、箱（余白込み）が収まる倍率で、箱の中心を画面の中央に置く", () => {
-    // 箱: x 200〜600・y 0〜140。余白 40 込みで 480×220。画面 400×300 → min(400/480, 300/220)
     const out = subtreeViewport("A", all, target, {}, { width: 400, height: 300 });
     const zoom = 400 / 480;
     expect(out.zoom).toBeCloseTo(zoom, 10);
@@ -789,14 +763,12 @@ describe("subtreeViewport: 選んだノードと、見せるノードのうち�
   });
 
   it("0.5 倍でも収まらない枝は、0.5 倍で選んだノードの中心を画面の中央に置く（箱の中心ではない）", () => {
-    // 画面 200×200: 480/… の fit は 200/480 ≈ 0.417 < 0.5
     const out = subtreeViewport("A", all, target, {}, { width: 200, height: 200 });
     expect(out.zoom).toBe(USER_MIN_ZOOM);
     expect(out).toEqual({ x: 100 - 300 * 0.5, y: 100 - 100 * 0.5, zoom: 0.5 });
   });
 
   it("ちょうど 0.5 倍で収まる枝は、箱の中心に置く（下限の境目）", () => {
-    // 幅 480 を 0.5 倍で収める画面幅は 240
     const out = subtreeViewport("A", all, target, {}, { width: 240, height: 400 });
     expect(out.zoom).toBeCloseTo(0.5, 10);
     expect(out.x).toBeCloseTo(120 - 400 * 0.5, 10);
@@ -805,7 +777,6 @@ describe("subtreeViewport: 選んだノードと、見せるノードのうち�
 
   it("見せるノードに無い子孫（畳んだ中）は箱に数えない。子孫でないノードも数えない", () => {
     const hidden = subtreeViewport("A", treeOf(["root", "A", "B", "A1"]), target, {}, { width: 1000, height: 800 });
-    // 箱: x 200〜600・y 0〜120（A2 が無い）
     expect(hidden).toEqual({ x: 500 - 400 * 2, y: 400 - 60 * 2, zoom: 2 });
   });
 
@@ -853,7 +824,6 @@ describe("screenPoint・anchoredViewport: 開閉したノードの画面上の�
   });
 });
 
-// 比べる相手は @xyflow の getViewportForBounds（fitView が padding 0.1 で呼ぶ関数）。丸め（floor）と中央寄せの補正まで同じ値になることを見る
 describe("fitViewport: @xyflow の fitView（padding 0.1）と同じ式で全体を収める", () => {
   type Box = { x: number; y: number; width: number; height: number };
   const boundsOf = (rects: Box[]): Box => {
@@ -923,7 +893,6 @@ describe("fitViewport: @xyflow の fitView（padding 0.1）と同じ式で全体
 });
 
 describe("pinchZoomFactor: Ctrl＋ホイール（ピンチ）の倍率（@xyflow の wheelDelta と同じ式）", () => {
-  // 2 ** (-deltaY × (deltaMode 1 なら 0.05、他の非 0 なら 1、0 なら 0.002) × (Mac で Ctrl 付きなら 10))。deltaY が負（指を広げる）で拡大
   const pinch = (over: Partial<{ deltaY: number; deltaMode: number; ctrlKey: boolean }> = {}) => ({ deltaY: 0, deltaMode: 0, ctrlKey: true, ...over });
 
   it("pixel 単位（deltaMode 0）は 0.002 倍。deltaY -100 で 2 の 0.2 乗、+100 で 2 の -0.2 乗", () => {

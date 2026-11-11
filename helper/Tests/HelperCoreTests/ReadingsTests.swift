@@ -2,9 +2,6 @@ import Foundation
 import Testing
 @testable import HelperCore
 
-// 語ごとの読み（Issue #640）の純粋な部分。語の並びからの読みの作り方と、出力の JSON の形。
-// 実際のトークナイザを通すものは ReadingsITTests に置く。
-
 @Suite("語の読みの組み立て（reading(from:)）")
 struct ReadingsTests {
     private func word(_ surface: String, _ romaji: String, _ location: Int = 0) -> Word {

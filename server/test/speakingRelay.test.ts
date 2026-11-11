@@ -5,9 +5,6 @@ import type { CaptionsFrame, SettledRemark } from "../src/core/index.ts";
 import { createSpeakingRelay, SPEAKING_INTERVAL_MS } from "../src/speakingRelay.ts";
 import { lastTexts, partialOf, spoken } from "./fixtures/speakingRelay.ts";
 
-// 字幕のフレーム（CaptionsFrame）の途中結果を、偽の send と TestClock だけで間引くこと（Issue #1022）。
-// 間引きの間隔（SPEAKING_INTERVAL_MS）と clear / stop の意味は、書き換え前と同じ。単位がトラックごとからフレーム全体の 1 本になった。
-
 describe("途中結果の間引き（フレーム全体で SPEAKING_INTERVAL_MS に 1 回まで）", () => {
   const setup = Effect.fn("setup")(function* () {
     const frames: CaptionsFrame[] = [];
@@ -24,20 +21,20 @@ describe("途中結果の間引き（フレーム全体で SPEAKING_INTERVAL_MS 
       const { relay, frames } = yield* setup();
 
       yield* relay.partial(partialOf("相手", "あ"));
-      expect(frames.map(lastTextsOf)).toEqual([["あ"]]); // 先頭はすぐ
+      expect(frames.map(lastTextsOf)).toEqual([["あ"]]);
       yield* TestClock.adjust(100);
       yield* relay.partial(partialOf("相手", "あい"));
       yield* TestClock.adjust(100);
       yield* relay.partial(partialOf("相手", "あいう"));
-      expect(frames).toHaveLength(1); // 間隔内なので増えない
+      expect(frames).toHaveLength(1);
 
       yield* TestClock.adjust(SPEAKING_INTERVAL_MS - 200 - 1);
-      expect(frames).toHaveLength(1); // 間隔の直前まではまだ送らない
+      expect(frames).toHaveLength(1);
       yield* TestClock.adjust(1);
-      expect(frames.map(lastTextsOf)).toEqual([["あ"], ["あいう"]]); // 途中の「あい」は送らず、最後の値だけ
+      expect(frames.map(lastTextsOf)).toEqual([["あ"], ["あいう"]]);
 
       yield* TestClock.adjust(SPEAKING_INTERVAL_MS * 3);
-      expect(frames).toHaveLength(2); // 予約は 1 回だけ
+      expect(frames).toHaveLength(2);
     }));
 
   it.effect("間隔が過ぎてから届いた途中結果は、待たずにすぐ送る", () =>
@@ -58,7 +55,7 @@ describe("途中結果の間引き（フレーム全体で SPEAKING_INTERVAL_MS 
       yield* relay.partial(partialOf("相手", "あ", 10));
       yield* TestClock.adjust(100);
       yield* relay.partial(partialOf("自分", "い", 11));
-      expect(frames).toHaveLength(1); // 自分の途中結果も、相手の送信から間隔内なので待つ
+      expect(frames).toHaveLength(1);
       yield* TestClock.adjust(SPEAKING_INTERVAL_MS);
 
       expect(lastTexts(frames)).toEqual(["あ", "い"]);
@@ -72,7 +69,7 @@ describe("途中結果の間引き（フレーム全体で SPEAKING_INTERVAL_MS 
       yield* relay.partial(partialOf("相手", "あ", 50));
       yield* TestClock.adjust(100);
       yield* relay.partial(partialOf("相手", "あい", 50));
-      setUnreflected([spoken(1, "相手", "確定した発言")]); // 予約してから送るまでの間に、発言が増えた
+      setUnreflected([spoken(1, "相手", "確定した発言")]);
       yield* TestClock.adjust(SPEAKING_INTERVAL_MS);
 
       expect(lastTexts(frames)).toEqual(["確定した発言", "あい"]);
@@ -96,15 +93,15 @@ describe("途中結果の間引き（フレーム全体で SPEAKING_INTERVAL_MS 
       const { relay, frames } = yield* setup();
       yield* relay.partial(partialOf("相手", "あ"));
       yield* TestClock.adjust(100);
-      yield* relay.partial(partialOf("相手", "あい")); // 予約中
+      yield* relay.partial(partialOf("相手", "あい"));
       frames.length = 0;
 
       yield* relay.clear;
       expect(frames).toEqual([{ type: "captions", bubbles: [] }]);
       yield* TestClock.adjust(SPEAKING_INTERVAL_MS * 2);
-      expect(frames).toHaveLength(1); // 予約は取り消された
+      expect(frames).toHaveLength(1);
       yield* relay.partial(partialOf("相手", "う"));
-      expect(lastTexts(frames)).toEqual(["う"]); // clear の後も送れる
+      expect(lastTexts(frames)).toEqual(["う"]);
 
       frames.length = 0;
       yield* relay.stop;

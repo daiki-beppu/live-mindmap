@@ -10,7 +10,6 @@ public struct AppleGenerationRequest: Sendable {
 
 public struct AppleGenerationResult: Sendable {
     public let content: String
-    // トークン数は SDK 27 の `Response.usage` から取る。古い SDK でビルドしたときは無い
     public let inputTokens: Int?
     public let cachedTokens: Int?
     public let outputTokens: Int?
@@ -49,7 +48,6 @@ public enum AppleGeneration {
         let model = SystemLanguageModel.default
         guard case .available = model.availability else { throw AppleError.invalid("Apple Intelligence: \(model.availability)") }
         guard model.contextSize == 8192 else { throw AppleError.invalid("文脈長が 8192 ではありません: \(model.contextSize)") }
-        // 実生成の完了を待ち、prewarm の開始だけを準備完了としない。
         let schema = try GenerationSchema(root: DynamicGenerationSchema(type: String.self, guides: [.constant("ready")]), dependencies: [])
         _ = try await LanguageModelSession(model: model).respond(to: "Return ready.", schema: schema, options: GenerationOptions(maximumResponseTokens: 8))
     }
@@ -112,7 +110,6 @@ private func makeDynamic(_ node: [String: Any]) throws -> DynamicGenerationSchem
         return DynamicGenerationSchema(name: node["title"] as! String, description: description, properties: try order.map { key in
             let property = properties[key]!
             var descriptions = (property["description"] as? String).map { [$0] } ?? []
-            // pattern guide は複合分類で生成が完了しないため、長さは説明と生成後検証で保証する。
             if let min = property["minLength"] as? Int { descriptions.append("文字列は Unicode code point で \(min) 文字以上。") }
             if let max = property["maxLength"] as? Int { descriptions.append("文字列は Unicode code point で \(max) 文字以内。短く要約する。") }
             return DynamicGenerationSchema.Property(name: key, description: descriptions.isEmpty ? nil : descriptions.joined(separator: "\n"),

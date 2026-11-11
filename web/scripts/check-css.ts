@@ -5,7 +5,6 @@ import { readSources, reportViolations, type SourceFile } from "../../server/scr
 type TextSpan = { text: string; offset: number };
 type Violation = { path: string; line: number; message: string };
 
-// These classes mark elements for scene assertions without adding visual rules.
 const MARKER_CLASSES = new Set(["evidence__meta", "review-seek__preview-chapter"]);
 const CSS_PATH = "web/src/styles.css";
 const lineAt = (source: string, offset: number): number => source.slice(0, offset).split("\n").length;

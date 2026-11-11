@@ -15,7 +15,6 @@ const input = (over: Partial<KeyInput>): KeyInput => ({
 const process = (code: string, over: Partial<KeyInput> = {}): KeyInput =>
   input({ key: "Process", code, isComposing: true, ...over });
 
-// 送り直したイベントは半角・非変換中なので、もう一度拾わない（無限に送り直さない）。
 const resentInput = (out: NonNullable<ReturnType<typeof halfWidthKeyOf>>): KeyInput => ({
   ...out,
   isComposing: false,

@@ -4,9 +4,6 @@ import { mapOnlyReviewEvents, reviewSnapshot } from "../../server/src/core/index
 import { buildReviewTimeline, captionBubblesAt, chapterNameAt, formatHms, reviewChapters, reviewMarks, snapshotAt, topicNameOf } from "../src/reviewTimeline.ts";
 import { supplementLog } from "../../server/test/fixtures/supplement.ts";
 
-// 見返しの時間軸（純粋なモジュール）。ログ（log.jsonl の行）の配列だけを入れて確かめる。
-// 時刻の軸は発言の end（会議の中の秒）で、ログの at は使わない（at はわざと逆順・無関係な値にしてある）。
-
 const remark = (id: string, track: "自分" | "相手", start: number, end: number, text: string, speaker?: string) => ({
   at: `2099-01-01T00:00:${String(90 - end).padStart(2, "0")}.000Z`,
   type: "remark",
@@ -22,7 +19,6 @@ const diff = (fresh: string[], ops: unknown[], error?: string) => ({
   ...(error !== undefined ? { error } : {}),
 });
 
-// 反映 1: 時刻 10（r1・r2）、反映 2: 時刻 30（r3・r4）。r5（end 40）は未反映。取り込みの行は知らない種類
 const events = [
   { at: "a", type: "start", title: "定例" },
   remark("r1", "相手", 0, 5, "採用の話をします。"),
@@ -139,7 +135,7 @@ describe("snapshotAt（時刻 t のスナップショット）", () => {
     expect(s.nodes.map((n) => n.text)).toEqual(["定例"]);
     expect(s.changes).toEqual([]);
     expect(s.currentTopic).toBeUndefined();
-    expect(s.now).toBe(5); // r2（end 10）は含めない
+    expect(s.now).toBe(5);
   });
 
   it("t が反映の時刻ちょうどなら、その反映を含む。変わったことは t までの反映の分だけ", () => {
@@ -157,7 +153,7 @@ describe("snapshotAt（時刻 t のスナップショット）", () => {
     const s = snapshotAt(tl, 25);
     expect(s.round).toBe(1);
     expect(s.nodes.map((n) => n.text)).toEqual(["定例", "採用"]);
-    expect(s.now).toBe(20); // r3 は含む、r4（end 30）は含めない
+    expect(s.now).toBe(20);
     expect(s.remarks.map((r) => r.id)).toEqual(["r1"]);
   });
 
@@ -194,13 +190,12 @@ describe("snapshotAt（時刻 t のスナップショット）", () => {
 
   it("同じ区間（同じ反映・同じ発言の集合）の t では同じオブジェクトを返し、区間が変わると別のオブジェクトを返す", () => {
     expect(snapshotAt(tl, 10)).toBe(snapshotAt(tl, 15));
-    expect(snapshotAt(tl, 10)).not.toBe(snapshotAt(tl, 20)); // r3 が入る
+    expect(snapshotAt(tl, 10)).not.toBe(snapshotAt(tl, 20));
     expect(snapshotAt(tl, 20)).toBe(snapshotAt(tl, 21));
-    expect(snapshotAt(tl, 21)).not.toBe(snapshotAt(tl, 30)); // 反映 2
+    expect(snapshotAt(tl, 21)).not.toBe(snapshotAt(tl, 30));
   });
 
   it("反映の時刻が番号の順に並ばないログでも、t より後の反映と、それより後ろの反映は出さない", () => {
-    // 反映 1 は時刻 30、反映 2 は時刻 10（逆転）。t = 20 では、反映 1 が t より後なので、反映 2 も出さない
     const log = [
       { at: "a", type: "start", title: "定例" },
       remark("r1", "相手", 0, 10, "a。"),
@@ -242,7 +237,7 @@ describe("captionBubblesAt（見返しの字幕の吹き出し）", () => {
 
   it("end が t 以下で、t − end が 8 秒未満の発言を、1 発言 1 吹き出しで出す（end ちょうどは出す）", () => {
     expect(idsAt(tl, 5)).toEqual(["r1"]);
-    expect(idsAt(tl, 12.9)).toEqual(["r1", "r2"]); // 相手 +7.9、自分 +2.9
+    expect(idsAt(tl, 12.9)).toEqual(["r1", "r2"]);
   });
 
   it("t − end が 8 秒ちょうどなら消える", () => {
@@ -252,7 +247,7 @@ describe("captionBubblesAt（見返しの字幕の吹き出し）", () => {
 
   it("end が t より後の発言は出さない。t に着く前は空", () => {
     expect(idsAt(tl, 4.9)).toEqual([]);
-    expect(idsAt(tl, 19.9)).toEqual([]); // r3（end 20）はまだ出さない
+    expect(idsAt(tl, 19.9)).toEqual([]);
   });
 
   it("同じトラックの古い発言も、8 秒の窓の中なら残す（トラックごとの最新 1 件にしない）", () => {
@@ -307,8 +302,6 @@ describe("formatHms", () => {
   });
 });
 
-// 章と目印。反映ごとに「end が at の発言 1 つ + diff 1 つ」を並べる。ノード ID は追加の順に n1, n2, …。
-// tail は、反映していない最後の発言の end（会議の長さを反映の時刻より後ろに伸ばす）
 type Round = { at: number; ops: Record<string, unknown>[] };
 const addNode = (ref: string, parent: string, kind: string, text: string) => ({ op: "add", ref, parent, kind, text });
 const updateNode = (node: string, fields: Record<string, unknown>) => ({ op: "update", node, ...fields });
@@ -328,9 +321,9 @@ describe("reviewChapters（議題ごとの章）", () => {
   it("変わったノードの議題が切り替わるところで区切る。最初の章は 0 秒から、最後の章は会議の長さまで。子の変化は親の議題に数える", () => {
     const tl = meeting(
       [
-        { at: 10, ops: [addNode("a", "root", "議題", "A")] }, // n1
-        { at: 100, ops: [addNode("b", "root", "議題", "B")] }, // n2
-        { at: 200, ops: [addNode("c", "n1", "要点", "Aの要点")] }, // n3: 親は A
+        { at: 10, ops: [addNode("a", "root", "議題", "A")] },
+        { at: 100, ops: [addNode("b", "root", "議題", "B")] },
+        { at: 200, ops: [addNode("c", "n1", "要点", "Aの要点")] },
       ],
       260,
     );
@@ -358,7 +351,7 @@ describe("reviewChapters（議題ごとの章）", () => {
       [
         { at: 10, ops: [addNode("a", "root", "議題", "A")] },
         { at: 100, ops: [addNode("b", "root", "議題", "B")] },
-        { at: 130, ops: [addNode("c", "n1", "要点", "Aの要点")] }, // B は 100–130（30 秒）
+        { at: 130, ops: [addNode("c", "n1", "要点", "Aの要点")] },
       ],
       300,
     );
@@ -370,7 +363,7 @@ describe("reviewChapters（議題ごとの章）", () => {
       [
         { at: 10, ops: [addNode("a", "root", "議題", "A")] },
         { at: 100, ops: [addNode("b", "root", "議題", "B")] },
-        { at: 130, ops: [addNode("c", "root", "議題", "C")] }, // B は 30 秒
+        { at: 130, ops: [addNode("c", "root", "議題", "C")] },
       ],
       300,
     );
@@ -385,7 +378,7 @@ describe("reviewChapters（議題ごとの章）", () => {
       [
         { at: 10, ops: [addNode("a", "root", "議題", "A")] },
         { at: 100, ops: [addNode("b", "root", "議題", "B")] },
-        { at: 145, ops: [addNode("c", "n1", "要点", "Aの要点")] }, // B は 45 秒ちょうど
+        { at: 145, ops: [addNode("c", "n1", "要点", "Aの要点")] },
       ],
       300,
     );
@@ -401,8 +394,8 @@ describe("reviewChapters（議題ごとの章）", () => {
       [
         { at: 10, ops: [addNode("a", "root", "議題", "A")] },
         { at: 100, ops: [addNode("b", "root", "議題", "B")] },
-        { at: 120, ops: [addNode("c", "root", "議題", "C")] }, // B は 20 秒
-        { at: 140, ops: [addNode("d", "root", "議題", "D")] }, // C は 20 秒
+        { at: 120, ops: [addNode("c", "root", "議題", "C")] },
+        { at: 140, ops: [addNode("d", "root", "議題", "D")] },
       ],
       300,
     );
@@ -415,10 +408,10 @@ describe("reviewChapters（議題ごとの章）", () => {
   it("議題が見つからない変化（議題の外のノード・最後の時点に無いノード）は区切りを作らない", () => {
     const tl = meeting(
       [
-        { at: 10, ops: [addNode("a", "root", "議題", "A")] }, // n1
-        { at: 100, ops: [addNode("x", "root", "要点", "議題の外")] }, // n2: 議題が無い
-        { at: 150, ops: [addNode("b", "root", "議題", "B")] }, // n3
-        { at: 220, ops: [{ op: "delete", node: "n3" }] }, // B は最後の時点に無い
+        { at: 10, ops: [addNode("a", "root", "議題", "A")] },
+        { at: 100, ops: [addNode("x", "root", "要点", "議題の外")] },
+        { at: 150, ops: [addNode("b", "root", "議題", "B")] },
+        { at: 220, ops: [{ op: "delete", node: "n3" }] },
       ],
       300,
     );
@@ -468,25 +461,25 @@ describe("reviewMarks（決定・TODO の目印）", () => {
   it("決定と TODO の追加、論点が決定済みになった変化を、反映の時刻で出す。決定済み化は決定の目印", () => {
     const tl = meeting(
       [
-        { at: 10, ops: [addNode("a", "root", "議題", "A"), addNode("p", "n1", "論点", "どうするか")] }, // n1, n2
-        { at: 40, ops: [addNode("t", "n1", "TODO", "資料を送る")] }, // n3
-        { at: 70, ops: [addNode("d", "n2", "決定", "これで行く")] }, // n4: 論点 n2 が決定済みになる
+        { at: 10, ops: [addNode("a", "root", "議題", "A"), addNode("p", "n1", "論点", "どうするか")] },
+        { at: 40, ops: [addNode("t", "n1", "TODO", "資料を送る")] },
+        { at: 70, ops: [addNode("d", "n2", "決定", "これで行く")] },
       ],
       100,
     );
     const marks = reviewMarks(tl);
     expect([...marks].sort((x, y) => x.at - y.at)).toEqual([
       { at: 40, kind: "TODO" },
-      { at: 70, kind: "決定" }, // 決定の追加
-      { at: 70, kind: "決定" }, // 決定済み化
+      { at: 70, kind: "決定" },
+      { at: 70, kind: "決定" },
     ]);
   });
 
   it("議題・論点・要点・案の追加と、更新・移動・却下は目印にならない", () => {
     const tl = meeting(
       [
-        { at: 10, ops: [addNode("a", "root", "議題", "A"), addNode("b", "root", "議題", "B")] }, // n1, n2
-        { at: 20, ops: [addNode("p", "n1", "論点", "論点"), addNode("k", "n1", "要点", "要点"), addNode("s", "n1", "案", "案")] }, // n3, n4, n5
+        { at: 10, ops: [addNode("a", "root", "議題", "A"), addNode("b", "root", "議題", "B")] },
+        { at: 20, ops: [addNode("p", "n1", "論点", "論点"), addNode("k", "n1", "要点", "要点"), addNode("s", "n1", "案", "案")] },
         { at: 30, ops: [updateNode("n4", { text: "要点を直す" })] },
         { at: 40, ops: [{ op: "move", node: "n4", parent: "n2" }] },
         { at: 50, ops: [updateNode("n5", { planStatus: "却下" })] },
@@ -499,7 +492,7 @@ describe("reviewMarks（決定・TODO の目印）", () => {
   it("決定・TODO の更新や移動は目印にならない（追加の時刻の目印だけが残る）", () => {
     const tl = meeting(
       [
-        { at: 10, ops: [addNode("a", "root", "議題", "A"), addNode("b", "root", "議題", "B"), addNode("t", "n1", "TODO", "送る")] }, // n1, n2, n3
+        { at: 10, ops: [addNode("a", "root", "議題", "A"), addNode("b", "root", "議題", "B"), addNode("t", "n1", "TODO", "送る")] },
         { at: 30, ops: [updateNode("n3", { text: "すぐ送る" })] },
         { at: 50, ops: [{ op: "move", node: "n3", parent: "n2" }] },
       ],

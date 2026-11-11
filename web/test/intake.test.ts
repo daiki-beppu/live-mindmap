@@ -1,10 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { intakeNoticeText, RESUMED_NOTICE_MS, type IntakeStatus } from "../src/intake.ts";
 
-// Issue #161: 画面の一言の規則（order.md:83-91）。サーバーは現在の状態だけを送り、ブラウザが
-// 「途切れ／止まった → 動いている」の遷移から「再開しました」を導く（計画の採用案）。
-// この純粋関数は、直前の状態・今の状態・今の状態になってからの経過時間（ms）から、出す文（なければ null）を決める。
-
 const STATUSES: IntakeStatus[] = ["running", "interrupted", "stopped"];
 
 describe("intakeNoticeText（画面に出す一言の規則）", () => {
@@ -48,9 +44,6 @@ describe("intakeNoticeText（画面に出す一言の規則）", () => {
   });
 
   it("セッションが終わった（none）ときは、直前が途切れ・止まった状態でも「再開しました」にならず、何も出さない", () => {
-    // running と違い、none への遷移は「再開した」として扱わない（セッションが終わっただけなのに
-    // 「再開しました」と表示される回帰を防ぐ。companion 指摘: stop() が接続中のクライアントへ送る
-    // フレームが running だと、直前 interrupted/stopped から running への遷移を誤って再開と解釈してしまう）
     for (const previous of ["interrupted", "stopped"] as (IntakeStatus | null)[]) {
       for (const msSinceChange of [0, 1, RESUMED_NOTICE_MS]) {
         expect(intakeNoticeText({ previous, current: "none", msSinceChange })).toBeNull();
@@ -65,6 +58,6 @@ describe("intakeNoticeText（画面に出す一言の規則）", () => {
         intakeNoticeText({ previous: "interrupted", current, msSinceChange: 0 }),
       ]).filter((t): t is string => t !== null),
     );
-    expect(texts.size).toBe(3); // 途切れ・止まった・再開しました
+    expect(texts.size).toBe(3);
   });
 });

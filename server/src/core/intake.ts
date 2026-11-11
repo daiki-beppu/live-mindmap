@@ -21,7 +21,6 @@ export const RESTART_WINDOW_MS = 60_000;
 export const MAX_CONSECUTIVE_FAILURES = 3;
 export const STDERR_TAIL_LINES = 5;
 export const HELPER_RUN_STDERR_TAIL_LINES = 10;
-// マイクの入力の構成の変化でヘルパーが終わるときの終了コード。BSD の sysexits.h の EX_TEMPFAIL（一時的な失敗。やり直すよう促す）。
 export const HELPER_EXIT_CONFIGURATION_CHANGED = 75;
 export const CONFIGURATION_CHANGE_WINDOW_MS = 60_000;
 export const MAX_CONFIGURATION_CHANGES = 10;
@@ -69,7 +68,6 @@ export function tailLines(text: string, n: number): string[] {
   return lines.slice(-n);
 }
 
-// transition は開始・終了の処理中。処理の間だけの報告の値で、画面へ送る IntakeFrame には載せない
 const IntakeReportStatus = Schema.Literals([...SessionIntakeStatus.literals, "transition"]);
 
 export const IntakeStatusReport = Schema.Struct({

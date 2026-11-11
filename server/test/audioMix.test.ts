@@ -3,7 +3,6 @@ import { Effect, Layer, Result } from "effect";
 import { AudioMix, AudioMixFailed } from "../src/audioMix.ts";
 import { fakeSpawner } from "./fixtures/fakeSpawner.ts";
 
-// AudioMix.unavailable が、ヘルパーを起動せずに渡した理由の AudioMixFailed で失敗すること
 describe("AudioMix.unavailable", () => {
   it.effect("mix を呼ぶと、渡した理由の AudioMixFailed で失敗する（ヘルパーを起動しない）", () =>
     Effect.gen(function* () {
@@ -20,7 +19,6 @@ describe("AudioMix.unavailable", () => {
     }));
 });
 
-// 本物の AudioMix の Layer の失敗の写像（子プロセスは起動しない）
 describe("AudioMix.layer（偽の ChildProcessSpawner）", () => {
   const helper = { command: "server-helper", args: ["existing-arg"] };
   const mixWith = (spawner: ReturnType<typeof fakeSpawner>) =>
@@ -38,7 +36,7 @@ describe("AudioMix.layer（偽の ChildProcessSpawner）", () => {
       expect(result.failure).toBeInstanceOf(AudioMixFailed);
       expect(result.failure._tag).toBe("AudioMixFailed");
       expect(result.failure.message).toContain("録音が見つかりません");
-      expect(result.failure.message).not.toContain("1\n2"); // 末尾だけ（先頭の行は含めない）
+      expect(result.failure.message).not.toContain("1\n2");
     }));
 
   it.effect("ヘルパーを起動できなくても、AudioMixFailed で失敗する（defect ではない）", () =>

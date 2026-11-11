@@ -1,9 +1,6 @@
 import Testing
 import HelperCore
 
-// `creation-date --file <path>` の引数解釈（main.swift にはテストターゲットがないため、純粋関数として検証する）。
-// 解釈の結果はファイルのパス。流儀は transcribe-file と同じで、不正な引数は拒否する。
-
 @Suite("creation-date の引数解釈（parseCreationDateArguments）")
 struct CreationDateArgumentsTests {
     @Test("--file の値をファイルのパスとして返す")

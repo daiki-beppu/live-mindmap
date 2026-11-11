@@ -30,7 +30,6 @@ struct AppleMain {
             defer { withExtendedLifetime(server) {} }
             let port = try await server.start()
             try emit(["type": "ready", "url": "http://127.0.0.1:\(port)/v1", "contextSize": 8192])
-            // 親がセッション Scope の終了で SIGTERM を送り、プロセスの終了が listener も閉じる。
             while true { try await Task.sleep(for: .seconds(3600)) }
         } catch {
             FileHandle.standardError.write(Data("\(error)\n".utf8))

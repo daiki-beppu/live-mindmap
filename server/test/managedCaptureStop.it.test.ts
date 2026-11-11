@@ -30,7 +30,6 @@ vi.mock("vite", () => ({ createServer: async () => ({
 
 beforeEach(() => { unmanaged.launch.mockClear(); });
 
-// 管理実体の絶対パス import は名前指定の vi.mock に届かないため、読込口だけをテスト用に接続する。
 const loadChromium = Layer.effect(ManagedDeps, Effect.gen(function* () {
   const deps = yield* ManagedDeps;
   const load = ((name: "chromium" | "claude") => name === "chromium"
@@ -90,7 +89,6 @@ describe("管理 Chromium と stop", () => {
         expect(unmanaged.launch).toHaveBeenCalledTimes(1);
       } else {
         expect(unmanaged.launch).not.toHaveBeenCalled();
-        // 入れ方は 1 回だけ出す
         expect(captureWarnings[0]?.split("pnpm cli install chromium")).toHaveLength(2);
       }
     }).pipe(Effect.provideService(Console.Console, warnings.service), Effect.scoped);

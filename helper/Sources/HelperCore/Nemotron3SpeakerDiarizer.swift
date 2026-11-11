@@ -2,13 +2,10 @@ import AVFoundation
 import FluidAudio
 import Foundation
 
-/// FluidAudio の Nemotron 3（CoreML、`Nemotron3Config.fast32`、8枠）による話者分離。端末の中だけで動き、音声は Mac の外に出ない。
-/// モデルは `fetch-speaker-models.sh`（`install-speaker-models`）が前もって `modelDirectory` に取得する。`prepare` は取得しない。
 public final class Nemotron3SpeakerDiarizer: SpeakerDiarizer, @unchecked Sendable {
     private static let config = Nemotron3Config.fast32
     private let modelDirectory: URL
     private var models: Nemotron3Models?
-    /// 枠への混入の検出（Issue #1024）に使う WeSpeaker。読めなければ nil で、検出だけを止める（話者分離は続ける）。
     private var embedder: WeSpeakerEmbedder?
 
     public init(modelDirectory: URL = defaultSpeakerModelDirectory) {
@@ -32,7 +29,6 @@ public final class Nemotron3SpeakerDiarizer: SpeakerDiarizer, @unchecked Sendabl
         // 読み込みの途中で壊れたキャッシュを見つけても、FluidAudio がキャッシュを消して取り直さないようにする（会議中に取りに行かない）。
         ModelHub.offlineMode = true
         models = try await Nemotron3Models.loadFromHuggingFace(config: Self.config, cacheDirectory: modelDirectory)
-        // 混入の検出は補助の機能。WeSpeaker を読めなくても、話者分離（speaker-off も含めて）は止めない。
         let embedder = WeSpeakerEmbedder(modelDirectory: modelDirectory)
         do {
             try await embedder.prepare()
@@ -57,7 +53,6 @@ public final class Nemotron3SpeakerDiarizer: SpeakerDiarizer, @unchecked Sendabl
                 do {
                     for try await captured in audio {
                         let buffer = captured.buffer
-                        // 区間の時刻は 0 が最初のバッファ。最初のバッファの取得時刻と origin の差を 1 回だけ足す（TrackTimeline と同じ）。
                         if shift == nil { shift = offsetSeconds(from: origin, to: captured.hostTime) }
                         if converter == nil { converter = AVAudioConverter(from: buffer.format, to: target) }
                         guard let converter else {
@@ -73,7 +68,6 @@ public final class Nemotron3SpeakerDiarizer: SpeakerDiarizer, @unchecked Sendabl
                             Self.yield(update, shift: shift ?? 0, mixing: mixing, to: continuation)
                         }
                     }
-                    // 上流が終わった。残りの仮の区間を確定させてから終える。
                     for chunk in try diarizer.finishStream() {
                         let update = timeline.append(probabilities: chunk.probabilities, frameCount: chunk.frameCount)
                         Self.yield(update, shift: shift ?? 0, mixing: mixing, to: continuation)
@@ -90,7 +84,6 @@ public final class Nemotron3SpeakerDiarizer: SpeakerDiarizer, @unchecked Sendabl
         }
     }
 
-    /// settled で発言を解放する前に、枠のつなぎ直しと混入をサーバーへ知らせる。
     static func yield(
         _ update: SpeakerSegmentUpdate, shift: Double, mixing: SlotMixTracker? = nil,
         to continuation: AsyncThrowingStream<SpeakerDiarization, Error>.Continuation
@@ -121,7 +114,6 @@ public final class Nemotron3SpeakerDiarizer: SpeakerDiarizer, @unchecked Sendabl
 
 }
 
-/// 取得するスクリプトと `run` が共有する保存先。開発時は利用者のモデルから隔離できる。
 public var defaultSpeakerModelDirectory: URL {
     resolveSpeakerModelDirectory(environment: ProcessInfo.processInfo.environment)
 }

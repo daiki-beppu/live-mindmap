@@ -85,7 +85,7 @@ const audioHelper = () => {
   const layer = Layer.succeed(Helpers, Helpers.of({ ...helperChecks(), apps: Effect.succeed([]), launch: (args) => Effect.gen(function* () {
     launches.push(args);
     const queue = yield* Queue.make<string, Cause.Done>();
-    Queue.offerUnsafe(queue, JSON.stringify({ type: "speaker-off", start: 0, reason: "モデルなし" })); // 相手の発言は話者の確定を待つので、話者分離を使えない helper にして待たせない（Issue #1021）
+    Queue.offerUnsafe(queue, JSON.stringify({ type: "speaker-off", start: 0, reason: "モデルなし" }));
     Queue.offerUnsafe(queue, JSON.stringify({ type: "remark", track: "相手", start: 0, end: 1, text: "面接官は3人です。" }));
     const ended = yield* Deferred.make<HelperExitInfo>();
     const stop = Effect.asVoid(Effect.andThen(Queue.end(queue), Deferred.succeed(ended, { code: null, signal: "SIGTERM" })));
@@ -154,7 +154,6 @@ describe("apple を使う開始・再生の配線", () => {
     expect(process.state).toMatchObject({ opened: 1, closed: 0 });
     const stop = yield* Effect.tryPromise(() => fetch(`http://127.0.0.1:${server.port}/session/stop`, { method: "POST" }));
     expect(stop.status).toBe(200);
-    // ライブ開始後の置き場には、全セッション共通の語彙の溜まりのファイルもある。セッションのフォルダだけを数える
     const directories = readdirSync(join(root, "sessions"), { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => entry.name);
     expect(directories).toHaveLength(1);
     expect(stdout.join("\n").trim()).toBe(join(root, "sessions", directories[0]!));

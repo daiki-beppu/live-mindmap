@@ -4,8 +4,6 @@ import Speech
 import Testing
 @testable import HelperCore
 
-// Issue #1092: 止められている間、録画ファイルの読み手が読み進めないこと（invNoReadWhilePaused）を、本物の `transcribeFile` と合成の WAV で確かめる。
-
 private typealias Support = FileAudioTestSupport
 
 @Suite("止められている間、録画ファイルを読み進めない（invNoReadWhilePaused）", .timeLimit(.minutes(1)))
@@ -19,7 +17,6 @@ struct FileReadingPauseITTests {
         let gate = FileReadingGate()
         let log = GatePullLog()
         let pausedAfterFirst = GateFlag()
-        // 最初の入力を引いたところで止める（サーバーが一時停止に入ったときと同じ）
         let transcriber = GateRecordingTranscriber("相手", log: log) { _ in
             if !pausedAfterFirst.isRaised {
                 pausedAfterFirst.raise()
@@ -29,19 +26,18 @@ struct FileReadingPauseITTests {
         let task = Task { try await gateDrain(try await transcribeFile(at: wav, with: transcriber, gate: gate)) }
         defer { task.cancel() }
         try await gateWaitUntil("最初の入力を引く") { pausedAfterFirst.isRaised }
-        try await Task.sleep(for: .milliseconds(500)) // 止めが無ければ、この間に 30 秒を読み切る
+        try await Task.sleep(for: .milliseconds(500))
         let stoppedAt = log.maxEnd(of: "相手")
         let widest = log.values.map { $0.end - $0.start }.max() ?? 0
         try #require(stoppedAt > 0)
-        try #require(stoppedAt + widest < 30) // 前提: ファイルの終わりに届いていない
+        try #require(stoppedAt + widest < 30)
         try await Task.sleep(for: .milliseconds(500))
         #expect(log.maxEnd(of: "相手") == stoppedAt, "止めている間に、読んだ最も先の位置が \(stoppedAt) 秒から \(log.maxEnd(of: "相手")) 秒へ進んだ")
 
         await gate.resume()
         try await task.value
         let pulled = log.items(of: "相手")
-        #expect(abs((pulled.last?.end ?? 0) - 30) < 0.5) // 最後まで読み切る
-        // 止めた位置の続きから、隙間も重なりもなく
+        #expect(abs((pulled.last?.end ?? 0) - 30) < 0.5)
         for (previous, next) in zip(pulled, pulled.dropFirst()) {
             #expect(abs(next.start - previous.end) < 0.001, "入力の位置が続いていない: \(previous.end) → \(next.start)")
         }
@@ -81,7 +77,6 @@ struct FileReadingPauseITTests {
         let gate = FileReadingGate()
         let log = GatePullLog()
         let paused = GateFlag()
-        // 両方が最初の入力を引いてから止める。読み手は afterPull を抜けるまで次を引かないので、止めた時点で門を通った後の読みが残らない（#1681）
         let pauseAfterBothPulled: @Sendable (GatePulled) async throws -> Void = { _ in
             if paused.isRaised { return }
             if Set(log.values.map(\.reader)).count == 2 {
@@ -104,7 +99,7 @@ struct FileReadingPauseITTests {
         try await gateWaitUntil("両方が最初の入力を引き、門が止まる") { paused.isRaised }
         let theirsStopped = log.maxEnd(of: "相手")
         let mineStopped = log.maxEnd(of: "自分")
-        try await Task.sleep(for: .milliseconds(500)) // 止めている間に読み進めないかを見る間
+        try await Task.sleep(for: .milliseconds(500))
         #expect(log.maxEnd(of: "相手") == theirsStopped)
         #expect(log.maxEnd(of: "自分") == mineStopped)
         #expect(max(theirsStopped, mineStopped) < 20)
@@ -124,20 +119,20 @@ struct FileReadingPauseITTests {
         try Support.writeWAV(wav, loudSeconds: 30, silentSeconds: 0)
         let alignment = FileReadingAlignment()
         let reader = await alignment.addReader()
-        let partner = await alignment.addReader() // テストが進める相手
+        let partner = await alignment.addReader()
         let gate = FileReadingGate()
         let log = GatePullLog()
         let task = Task { try await gateDrain(try await transcribeFile(at: wav, with: GateRecordingTranscriber("相手", log: log), alignment: reader, gate: gate)) }
         defer { task.cancel() }
         try await gateWaitUntil("最初の入力を引く") { !log.values.isEmpty }
-        try await Task.sleep(for: .milliseconds(300)) // 2 つ目の入力の開始位置で、相手を待つ
+        try await Task.sleep(for: .milliseconds(300))
         await gate.pause()
         try #require(await gate.isPaused)
         let stoppedAt = log.maxEnd(of: "相手")
         try #require(stoppedAt > 0)
         try #require(stoppedAt < 30)
 
-        await partner.advance(to: 1000) // 待ちが解ける。止められているので、読んではならない
+        await partner.advance(to: 1000)
         try await Task.sleep(for: .milliseconds(500))
         #expect(log.maxEnd(of: "相手") == stoppedAt, "待ちが解けた後、止めている間に \(stoppedAt) 秒から \(log.maxEnd(of: "相手")) 秒へ進んだ")
 
@@ -274,7 +269,6 @@ struct FileReadingPauseITTests {
         defer { serving.cancel() }
         let log = GatePullLog()
         let pausedAfterFirst = GateFlag()
-        // 最初の入力を引いたところで、サーバーが止めの指示を送る
         let transcriber = GateRecordingTranscriber("相手", log: log) { _ in
             if !pausedAfterFirst.isRaised {
                 pausedAfterFirst.raise()
@@ -289,7 +283,7 @@ struct FileReadingPauseITTests {
         let stoppedAt = log.maxEnd(of: "相手")
         try #require(stoppedAt > 0)
         try #require(stoppedAt < 30)
-        sender.yield(instruction(false, token: String(repeating: "b", count: 64))) // 違うトークンの再開は効かない
+        sender.yield(instruction(false, token: String(repeating: "b", count: 64)))
         try await Task.sleep(for: .milliseconds(500))
         #expect(log.maxEnd(of: "相手") == stoppedAt)
 

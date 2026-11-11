@@ -1,8 +1,5 @@
 import CWebRTCAPM
 
-/// 10 ms（48 kHz・モノラルの 480 サンプル）ごとの参照と、マイクのエコー除去。
-/// reverse はスピーカーに出た音（参照）、capture はマイクの音で、その場で書き換える。
-/// 1 つの Task だけが呼ぶ。
 public protocol EchoCanceller: Sendable {
     func processReverse(_ frame: UnsafePointer<Float>)
     func processCapture(_ frame: UnsafeMutablePointer<Float>)
@@ -18,13 +15,10 @@ public enum EchoCancellationError: Error, CustomStringConvertible {
     }
 }
 
-/// AEC に一度に渡すサンプルの数（48 kHz の 10 ms）。
 public let echoFrameSamples = 480
 public let echoSampleRate = 48_000
 
-/// AEC3（`EchoCanceller3Config`）の設定。項目は同名の AEC3 の設定項目に写す。
 public struct EchoCancellerSettings: Equatable, Sendable, Encodable {
-    /// `ep_strength.default_gain`: エコー経路の強さの初期値。
     public var epStrengthDefaultGain: Float
     public var suppressorNormalMaskLfEnrSuppress: Float = 0.4
     public var streamDelayMs: Int32?
@@ -42,7 +36,6 @@ public struct EchoCancellerSettings: Equatable, Sendable, Encodable {
     public static let production = EchoCancellerSettings(epStrengthDefaultGain: 0.01)
 }
 
-/// 実際の WebRTC AEC3（`CWebRTCAPM`）。48 kHz・モノラル固定。
 public final class WebRTCEchoCanceller: EchoCanceller, @unchecked Sendable {
     private let handle: ApmRef
 

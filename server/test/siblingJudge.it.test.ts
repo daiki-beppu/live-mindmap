@@ -11,7 +11,6 @@ import { build, childText, kids, parentText, REMARK_TEXT, TITLE, type Built } fr
 const OUTPUT = "siblingJudge.json";
 const SECRETS = [TITLE, REMARK_TEXT, parentText("T"), parentText("A"), ...Array.from({ length: 5 }, (_, i) => childText(`A_${i}`))];
 
-// 議題 T の下の論点 A（案 5 個）。判定対象は A だけ。
 const map = (): Built => build([
   { ref: "T", parent: "root", kind: "議題" },
   { ref: "A", parent: "T", kind: "論点" },

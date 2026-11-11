@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { PUBLISH_CONTENTS, publishConfirmationMessage } from "../src/core/index.ts";
 
-// 発言の文字・録音を含む公開で止まったときの、エージェント向けの文（Issue #1252）
 const BASE = ["閉じた会議", "相手の了解", "イベント", "規約", "登壇者の許可", "--confirmed", "実行し直"];
 const VOICE = "声は話し手を特定できれば個人情報にもなる";
 const PUBLIC = "URL を知る誰でも見られる";

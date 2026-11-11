@@ -12,14 +12,12 @@ public func parseInstallSpeakerModelsArguments(_ arguments: [String]) -> Result<
     return .success(())
 }
 
-/// 入っていなければ `download` を 1 回呼ぶ。入っていれば何もしない（冪等）。`download` の失敗はそのまま投げる。
 func installSpeakerModels(isInstalled: () -> Bool, download: () async throws -> Void) async throws {
     guard !isInstalled() else { return }
     try await download()
 }
 
 /// 取得が最後まで終わったことを示す印。FluidAudio は取得の前に保存先のフォルダを作るので、フォルダがあるだけでは取得の途中で止まった状態と区別できない。
-/// モデルのフォルダごとに置く（Nemotron 3 と WeSpeaker は別のフォルダ）。
 func speakerModelsInstalledMarker(in directory: URL) -> URL {
     directory.appendingPathComponent(Repo.nemotron3Diarization.folderName).appendingPathComponent(".install-complete")
 }
@@ -28,7 +26,6 @@ func speakerModelsInstalled(in directory: URL) -> Bool {
     FileManager.default.fileExists(atPath: speakerModelsInstalledMarker(in: directory).path)
 }
 
-/// WeSpeaker（混入の検出）の取得の印。
 func weSpeakerInstalledMarker(in directory: URL) -> URL {
     WeSpeakerEmbedder.folder(in: directory).appendingPathComponent(".install-complete")
 }
@@ -37,8 +34,6 @@ func weSpeakerInstalled(in directory: URL) -> Bool {
     FileManager.default.fileExists(atPath: weSpeakerInstalledMarker(in: directory).path)
 }
 
-/// 話者分離のモデル（Nemotron 3 と、混入の検出に使う WeSpeaker）をセットアップの段で前もって取得する。会議の開始時やセッション中には呼ばない。
-/// モデルごとに取得の印を持つので、片方だけ入っている環境でも、足りない方だけを取る。
 public func installSpeakerModels(progress: @escaping (String) -> Void) async throws {
     let directory = defaultSpeakerModelDirectory
     let model = Nemotron3SpeakerDiarizer.modelURL(in: directory)
@@ -47,7 +42,6 @@ public func installSpeakerModels(progress: @escaping (String) -> Void) async thr
         download: {
             progress("Nemotron 3 fast32 を取得中: \(model.path)")
             _ = try await Nemotron3Models.loadFromHuggingFace(config: .fast32, cacheDirectory: directory)
-            // 取得済みのファイルは FluidAudio が飛ばす。途中で止まった取得は、次の実行でここから再開する。
             try Data().write(to: speakerModelsInstalledMarker(in: directory))
         }
     )

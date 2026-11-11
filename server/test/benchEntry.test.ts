@@ -1,5 +1,3 @@
-// bench/entry.ts の reportFailure。BenchFailure の 4 つの class は、それぞれ失敗の 1 行になり、
-// それ以外の失敗は describe に回る。
 import { describe, expect, it } from "@effect/vitest";
 import { Cause, Effect, Exit } from "effect";
 import { afterEach, beforeEach, vi } from "vitest";

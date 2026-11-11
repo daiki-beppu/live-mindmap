@@ -7,14 +7,8 @@ import { spokenBubble, spokenFrame } from "./fixtures/captions.ts";
 import { mapPoint, near, PAGE_VIEWPORT, rectOf, settled, styleOf } from "./reviewPage.ts";
 import { launchBrowser, withContext, type Browser, type BrowserContext, type Page } from "./browser.ts";
 
-// 会議中（Foldkit 版）の Mount と Subscription の中身を、実ブラウザの 1 ページで 1 つずつ確かめる（Issue #829）。React 版が無くなった後も残す。
-// ResizeObserver・wheel など、実ブラウザのレイアウト・寸法・イベントの届き方を確かめる。合成 gesture は mapSurface.mount.dom.test.ts、キーの意味は Scene・Subscription の unit が見る。
-// 会議中の画面に <audio> は無い（再生は見返しだけ）ので、<audio> の時刻は review.mount.heavy.test.ts が確かめ続け、ここでは無いことを確かめる。
-// `/ws` は page.routeWebSocket で本物の server の代わりに frame を送る。時間がかかる。事前に `pnpm --filter @live-mindmap/server deps:install chromium` が要る。
-
 let server: MeetingServer;
 let frames: MeetingFrames;
-// Chromium はファイルで 1 つ。テストは withContext で自分の context を持ち、独立を保つ
 let browser: Browser;
 beforeAll(async () => {
   server = await startMeetingServer();
@@ -95,7 +89,6 @@ describe("会議中（Foldkit 版）の入口", () => {
       await page.locator("p.waiting").waitFor({ timeout: 30_000 });
       expect(await page.locator("p.waiting").textContent()).toBe("サーバーを待っています");
       for (const css of [".layout", ".map", ".map-surface", ".captions", ".side"]) expect(await page.locator(css).count(), css).toBe(0);
-      // frame を送ると（本物の WebSocket の Subscription を通って）画面になる
       await sendFrames(page, frames.first);
       await page.locator(".map-node").first().waitFor({ timeout: 30_000 });
       await waitForMeasuredNodes(page, await nodeCount(page));
@@ -103,7 +96,6 @@ describe("会議中（Foldkit 版）の入口", () => {
       expect(await page.locator(".layout").count()).toBe(1);
       expect(await page.locator(".map-viewport").count()).toBe(1);
       expect(await page.locator(".react-flow").count()).toBe(0);
-      // React 19 は root の要素に __reactContainer$… を付ける。付いていなければ createRoot をしていない
       expect(await page.evaluate(() => Object.keys(document.getElementById("root")!).filter((key) => key.startsWith("__reactContainer")))).toEqual([]);
       expect(await page.locator("audio").count()).toBe(0);
       expect(await page.locator(".intake-notice").count()).toBe(0);
@@ -184,7 +176,6 @@ describe("会議中（Foldkit 版）の Mount", () => {
             bodyEncoding: "utf-8", contentType: "application/json",
           });
           await page.locator('[data-node-id="n1"] .map-node').click();
-          // Enter は選んだ議題を開く。選びが画面に出る前に押すと、Enter はボタンの既定の動きに回って開かない
           await expect.poll(() => page.locator('[data-node-id="n1"] .map-node__button').getAttribute("aria-pressed")).toBe("true");
           await page.keyboard.press("Enter");
           await expect.poll(() => page.locator('[data-node-id="n2"] .map-node__criteria-value').innerText()).toBe(links.join("\n"));
@@ -308,7 +299,6 @@ describe("会議中（Foldkit 版）の Mount", () => {
       const before = await nodeCount(page);
       await waitForMeasuredNodes(page, before);
       const changesBefore = await page.locator(".changes__item").count();
-      // 表示面の要素そのものが、反映で作り直されないことの目印
       await page.evaluate(() => ((document.querySelector(".map-surface") as HTMLElement & { __same?: boolean }).__same = true));
       await sendFrames(page, frames.reflected);
       await page.waitForFunction((count) => document.querySelectorAll("[data-node-id]").length > count, before, { timeout: 10_000 });
@@ -373,7 +363,6 @@ describe("会議中（Foldkit 版）の Mount", () => {
       await page.keyboard.up("Meta");
       await settled(page);
       const after = await readMeetingViewport(page);
-      // click の clientX・clientY は整数に切り捨てられて届く
       const expected = zoomAtPoint(before, { x: Math.trunc(x) - surface.x, y: Math.trunc(y) - surface.y }, CLICK_ZOOM_FACTOR);
       expect(after.zoom).toBeGreaterThan(before.zoom);
       expect(after.zoom).toBeCloseTo(expected.zoom, 3);
@@ -413,7 +402,6 @@ describe("会議中（Foldkit 版）の Mount", () => {
       expect(dragged.x - before.x).toBeCloseTo(-120, 3);
       expect(dragged.y - before.y).toBeCloseTo(-60, 3);
       expect(dragged.zoom).toBe(before.zoom);
-      // 離した後の移動では動かない
       await page.mouse.move(x - 300, y - 200, { steps: 4 });
       await settled(page);
       expect(await readMeetingViewport(page)).toEqual(dragged);
@@ -436,7 +424,6 @@ describe("会議中（Foldkit 版）の Mount", () => {
       await settled(fresh);
       await waitForMeasuredNodes(fresh, await nodeCount(fresh));
       await waitForMeasuredNodes(moved, await nodeCount(fresh));
-      // 補間（500ms）が終わるまで、期限付きで moved の位置が fresh と一致するのを待つ
       const expected = await positionsOf(fresh);
       await expect.poll(() => positionsOf(moved), { timeout: 10_000 }).toEqual(expected);
     }),
@@ -463,9 +450,7 @@ describe("会議中（Foldkit 版）の Subscription", () => {
       await page.locator(".screen-notice").waitFor({ state: "detached" });
       await page.locator(".tap-notice").waitFor({ state: "detached" });
       expect(await nodeCount(page)).toBe(count);
-      // 切れただけでは字幕は残る
       expect(await page.locator(".captions__bubble").allTextContents()).toEqual(captions);
-      // つなぎ直す（RECONNECT_MS 後）。server が先に送る frame（字幕・スナップショット）で画面が最新になる
       await expect.poll(() => connectionCount(page), { timeout: 15_000 }).toBe(2);
       await expect.poll(() => page.locator(".captions__bubble").allTextContents(), { timeout: 15_000 }).toEqual(captions);
       expect(await nodeCount(page)).toBe(count);
@@ -476,11 +461,8 @@ describe("会議中（Foldkit 版）の Subscription", () => {
   );
 });
 
-// 寸法と位置は、CSS の置き場によらず実ブラウザの computed style と矩形で確かめる。
-// 字幕と知らせの位置は、窓の幅 1280 で幅 648px、字幕の左右 12px の外に知らせ。値は animation・transition が終わった後に読み（styleOf・rectOf が最後まで進める）、
-// 配置が落ち着くのは決め打ちの待ちではなく、値に届くまで待つ
 describe("会議中（Foldkit 版）の寸法", () => {
-  const CAPTIONS_WIDTH = 648; // min(720px, 100vw − 2 × 316px) の 1280px での値
+  const CAPTIONS_WIDTH = 648;
 
   it(
     "字幕の吹き出し: 幅は文字の量で変わらない。吹き出しが増えて位置が変わる動きは、終われば止まる（揺れ続けない）",
@@ -493,8 +475,7 @@ describe("会議中（Foldkit 版）の寸法", () => {
       await expect.poll(async () => (await bubbleWidths()).every((w) => w > 0), { timeout: 5_000 }).toBe(true);
       const [shortWidth, longWidth] = await bubbleWidths();
       near(shortWidth!, longWidth!, "短い文と長い文の吹き出しの幅");
-      await page.waitForTimeout(500); // Mount（動きの監視）が張られるのを待つ
-      // 動きが付いた呼び出しを記録する（動きは 250ms で終わるので、終わった後に探しても見つからない）
+      await page.waitForTimeout(500);
       await page.evaluate(() => {
         const slides: { id: string | null; transform: boolean }[] = [];
         (window as unknown as { __slides: typeof slides }).__slides = slides;
@@ -505,10 +486,8 @@ describe("会議中（Foldkit 版）の寸法", () => {
         };
       });
       await sendFrame(page, { type: "captions", bubbles: [bubble("short", 1, "はい"), bubble("long", 2, "これはとても長い文章です。".repeat(8)), bubble("next", 3, "次の発言です")] });
-      // 末尾に足すと既存の行が上へ動く。その行に滑りの動き（transform）が付く
       await expect.poll(() => page.evaluate(() => (window as unknown as { __slides: { id: string | null; transform: boolean }[] }).__slides.filter((r) => r.transform).map((r) => r.id)), { timeout: 5_000 }).toEqual(expect.arrayContaining(["short"]));
       await expect.poll(() => page.locator(".captions__bubble").count(), { timeout: 10_000 }).toBe(3);
-      // 動きは CAPTION_SLIDE_MS で終わる。終わった後は、動きが残らず、位置（変形を含まない offsetTop）が動かない
       await expect.poll(() => page.evaluate(() => document.getAnimations().length), { timeout: 5_000 }).toBe(0);
       const tops = () => page.evaluate(() => Array.from(document.querySelectorAll<HTMLElement>(".captions__row")).map((row) => row.offsetTop));
       const before = await tops();
@@ -543,7 +522,6 @@ describe("会議中（Foldkit 版）の寸法", () => {
     }),
     MEETING_TIMEOUT,
   );
-  // animate の呼び出しを記録する。滑り（translateY）の動きは、作った時点で途中（半分）に止める
   const recordAnimations = (page: Page) =>
     page.evaluate((halfway) => {
       const records: { id: string | null; kind: "slide" | "fade"; dy: number }[] = [];
@@ -590,13 +568,12 @@ describe("会議中（Foldkit 版）の寸法", () => {
         });
       await send(["a", "b"]);
       await wait(2);
-      await page.waitForTimeout(500); // Mount（動きの監視）が張られ、最初のフェードが終わるのを待つ
+      await page.waitForTimeout(500);
       await recordAnimations(page);
 
       await send(["a", "b", "c"]);
       await wait(3);
       await expect.poll(async () => (await recorded(page)).filter((r) => r.kind === "slide").length, { timeout: 5_000 }).toBeGreaterThan(0);
-      // 最初の滑りが途中（半分）で止まっている間に、さらに行を足す。止まっている行の見かけの位置は、offsetTop に入らない
       const before = await tops();
       const firstCount = (await recorded(page)).length;
       await send(["a", "b", "c", "d"]);
@@ -607,7 +584,6 @@ describe("会議中（Foldkit 版）の寸法", () => {
       expect(second.length).toBeGreaterThan(0);
       for (const { id, dy } of second) expect(dy, `${id} の移動量`).toBe(before[id!]! - after[id!]!);
 
-      // 途中で止めた動きを終わらせる。終わった後は、動きが残らず、位置が動かない
       await page.evaluate(() => document.getAnimations().forEach((animation) => animation.finish()));
       await expect.poll(() => page.evaluate(() => document.getAnimations().length), { timeout: 5_000 }).toBe(0);
       const settledTops = await tops();
@@ -632,7 +608,6 @@ describe("会議中（Foldkit 版）の寸法", () => {
       near((captions.left + captions.right) / 2, (layout.left + layout.right) / 2, "字幕の中央");
       near(captions.bottom, layout.bottom - 24, "字幕の下端");
       expect(await styleOf(page, ".captions", ["position", "pointer-events", "display", "flex-direction", "gap"])).toEqual({ position: "absolute", "pointer-events": "none", display: "flex", "flex-direction": "column", gap: "4px" });
-      // 吹き出しは白の半透明の塗りと細い線の枠を持ち、話し手の側の下の角だけ小さい。影は付けない。名前の欄は小さい文字で、固定幅
       expect(await styleOf(page, ".captions__bubble", ["box-shadow", "background-color", "border-top-width", "border-top-left-radius", "border-bottom-left-radius", "font-size"])).toEqual({
         "box-shadow": "none", "background-color": "rgba(255, 255, 255, 0.92)", "border-top-width": "1px", "border-top-left-radius": "12px", "border-bottom-left-radius": "4px", "font-size": "16px",
       });
@@ -655,7 +630,6 @@ describe("会議中（Foldkit 版）の寸法", () => {
       near(screen.width, CAPTIONS_WIDTH, "共有画面の一文の幅");
       expect(await styleOf(page, ".screen-notice", ["position", "pointer-events", "text-align", "box-shadow", "line-height"])).toEqual({ position: "absolute", "pointer-events": "none", "text-align": "center", "box-shadow": "none", "line-height": "19.5px" });
 
-      // ローカルモード: 線は上端 2px の帯、知らせは左上。共有画面の一文は 36px 下へ、幅は layout − 24px（上限 720px）
       await sendFrames(page, [{ type: "session-mode", local: true }, { type: "diff-update", state: { status: "running" } }]);
       await page.locator(".layout--local .local-mode-line").waitFor({ timeout: 10_000 });
       await expect.poll(async () => (await styleOf(page, ".local-mode-line", ["background-color"]))["background-color"], { timeout: 10_000 }).toBe("rgb(22, 101, 52)");
@@ -714,7 +688,6 @@ describe("会議中（Foldkit 版）の寸法", () => {
     MEETING_TIMEOUT,
   );
 
-  // Issue #1069: 休止中の一言は取り込みの一言と同じ場所・同じ灰色の文字で字幕の右に出る。取り込みの一言と同時に出るときはその下。字幕・マップは動かさない
   it(
     "自分の休止の一言: 字幕の右（左端は字幕の右 +12px・下端は layout −24px）に取り込みの一言と同じ文字で出て、字幕・マップの位置は動かない。取り込みの一言と同時なら重ならず下に並ぶ",
     () => withContext(browser, { viewport: PAGE_VIEWPORT }, async (context) => {
@@ -735,14 +708,12 @@ describe("会議中（Foldkit 版）の寸法", () => {
       near(pause.left, captionsBefore.right + 12, "休止の一言の左端");
       near(pause.bottom, layout.bottom - 24, "休止の一言の下端");
       expect(await styleOf(page, ".self-pause-notice", ["position", "pointer-events", "white-space", "font-size", "color", "z-index"])).toEqual({ position: "absolute", "pointer-events": "none", "white-space": "normal", "font-size": "13px", color: "rgb(107, 114, 128)", "z-index": "5" });
-      // 出ても動かない
       for (const [name, before] of [["字幕", captionsBefore], ["マップ", mapBefore]] as const) {
         const now = await rectOf(page, name === "字幕" ? ".captions" : ".map");
         for (const key of ["left", "top", "right", "bottom"] as const) near(now[key], before[key], `${name}の${key}`);
       }
       expect(await readMeetingViewport(page)).toEqual(viewportBefore);
 
-      // 自動の文言は長く折り返す。全文が .layout の右端の内側に収まり、上端は固定（layout −24px −1 行分）、字幕の右 +12px に置く
       await sendFrame(page, { type: "self-pause", paused: true, reason: "自動" });
       await expect.poll(async () => (await page.locator(".self-pause-notice").textContent())?.trim(), { timeout: 10_000 }).toBe("自分を休止中（会議アプリがマイクを使っていない）");
       const auto = await rectOf(page, ".self-pause-notice");
@@ -757,7 +728,6 @@ describe("会議中（Foldkit 版）の寸法", () => {
       await sendFrame(page, { type: "self-pause", paused: true, reason: "手動" });
       await expect.poll(async () => (await page.locator(".self-pause-notice").textContent())?.trim(), { timeout: 10_000 }).toBe("自分を休止中（M で再開）");
 
-      // 取り込みの一言と同時: 取り込みの一言は上、休止の一言はその下で、重ならない。どちらが出入りしても字幕は動かない
       await sendFrame(page, { type: "intake", status: "interrupted" });
       await page.locator(".intake-notice").waitFor({ timeout: 10_000 });
       const intake = await rectOf(page, ".intake-notice");
@@ -769,7 +739,6 @@ describe("会議中（Foldkit 版）の寸法", () => {
       const captionsWith = await rectOf(page, ".captions");
       for (const key of ["left", "top", "right", "bottom"] as const) near(captionsWith[key], captionsBefore[key], `同時に出ているときの字幕の${key}`);
 
-      // 再開で休止の一言だけ消え、取り込みの一言は残る。取り込みの一言が 1 つだけのときは今の位置（下端 layout −24）
       await sendFrame(page, { type: "self-pause", paused: false });
       await expect.poll(async () => page.locator(".self-pause-notice").count(), { timeout: 10_000 }).toBe(0);
       await expect.poll(async () => Math.abs((await rectOf(page, ".intake-notice")).bottom - (layout.bottom - 24)) <= 1, { timeout: 10_000 }).toBe(true);
@@ -785,7 +754,6 @@ describe("会議中（Foldkit 版）の寸法", () => {
       expect(await styleOf(page, ".map-node--folded", ["color"])).toEqual({ color: "rgb(107, 114, 128)" });
       await sendFrames(page, frames.reflected);
       await page.locator(".map-node--blink").first().waitFor({ timeout: 10_000 });
-      // クラスが付いた直後は、CI で規則がまだ効いていない値（0px）を読むことがある。点滅が終わって落ち着いた値を待つ
       await page.waitForFunction(() => document.querySelector(".map-node--blink")!.getAnimations().every((a) => a.playState === "finished"), undefined, { timeout: 10_000 });
       await expect.poll(async () => styleOf(page, ".map-node--blink", ["outline-offset"]), { timeout: 10_000 }).toEqual({ "outline-offset": "2px" });
       await page.locator(".map-node__button").first().click();
@@ -795,8 +763,6 @@ describe("会議中（Foldkit 版）の寸法", () => {
     MEETING_TIMEOUT,
   );
 
-  // Issue #1026: 名前の欄を押して名前を入れる。欄は固定幅で、押す前・入力中・名前が付いた後で、欄の幅と吹き出しの位置が動かない（実ブラウザで測る）。
-  // pointer-events: none の字幕の中でも、押せる欄と入力だけがクリックを受ける。入力中のキー（M など）は文書のキーとして働かない
   it(
     "名前の欄: 押すと同じ固定幅の欄の中で入力でき、吹き出しの位置が動かない。確定で POST /session/speaker-name を送り、名前が付くと（長い名前でも）欄の幅は同じ。自分の欄は押せない",
     () => withContext(browser, { viewport: PAGE_VIEWPORT }, async (context) => {
@@ -817,7 +783,6 @@ describe("会議中（Foldkit 版）の寸法", () => {
       const geometry = async () => ({ name: await rectOf(page, ".captions__name", 0), bubble: await rectOf(page, ".captions__bubble", 0), mineName: await rectOf(page, ".captions__name", 1), mineBubble: await rectOf(page, ".captions__bubble", 1) });
       const before = await geometry();
       near(before.name.width, 72, "名前の欄の幅");
-      // 1px 以内で同じ（欄の幅・高さと、吹き出しの位置・大きさが動かない）
       const expectSame = async (label: string) => {
         const now = await geometry();
         for (const part of ["name", "bubble", "mineName", "mineBubble"] as const) {
@@ -825,29 +790,25 @@ describe("会議中（Foldkit 版）の寸法", () => {
         }
       };
 
-      // 押せるのは確定した相手のラベルの欄だけ
       expect(await page.locator("button.captions__name").count()).toBe(1);
       expect(await page.locator(".captions__name").nth(1).evaluate((element) => element.tagName)).not.toBe("BUTTON");
 
       await page.locator("button.captions__name").click();
       const input = page.locator(".captions__name input");
       await input.waitFor({ timeout: 10_000 });
-      await expect.poll(() => input.evaluate((element) => document.activeElement === element), { timeout: 5_000 }).toBe(true); // 押したら、そのまま打てる
+      await expect.poll(() => input.evaluate((element) => document.activeElement === element), { timeout: 5_000 }).toBe(true);
       await expectSame("入力中");
 
-      // 長い名前を打っても欄は伸びない。M・E のキーは文書のキー（休止・右の列）として働かない
       await page.keyboard.type("MEとても長い名前のひと");
       expect(await input.inputValue()).toBe("MEとても長い名前のひと");
       await expectSame("長い入力");
       expect(selfPaused).toEqual([]);
 
-      // Esc で取り消すと何も送らずに閉じ、元の欄に戻る
       await page.keyboard.press("Escape");
       await expect.poll(() => page.locator(".captions__name input").count(), { timeout: 5_000 }).toBe(0);
       expect(posted).toEqual([]);
       await expectSame("取り消した後");
 
-      // もう一度押して確定する
       await page.locator("button.captions__name").click();
       await input.waitFor({ timeout: 10_000 });
       await page.keyboard.type("田中");
@@ -855,9 +816,8 @@ describe("会議中（Foldkit 版）の寸法", () => {
       await expect.poll(() => posted.length, { timeout: 10_000 }).toBe(1);
       expect(posted).toEqual([{ label: "相手 A", name: "田中" }]);
       await expect.poll(() => page.locator(".captions__name input").count(), { timeout: 5_000 }).toBe(0);
-      expect(await page.locator(".captions__name").first().textContent()).toBe("相手 A"); // 名前が付いた表示は、サーバーの frame が届いてから
+      expect(await page.locator(".captions__name").first().textContent()).toBe("相手 A");
 
-      // 名前が付く。長い名前でも欄は同じ固定幅で、吹き出しは動かない
       await sendFrame(page, { type: "speaker-names", names: [{ label: "相手 A", name: "とても長い名前の田中さん" }] });
       await expect.poll(() => page.locator(".captions__name").first().textContent(), { timeout: 10_000 }).toBe("とても長い名前の田中さん");
       await expectSame("名前が付いた後");
@@ -866,23 +826,17 @@ describe("会議中（Foldkit 版）の寸法", () => {
   );
 });
 
-// Issue #969: 幅 768px 以下（スマホ・縦向きの iPad）の並べ方。CSS の @media で切り替え、会議中の画面（.meeting）だけに効く。
-// 狭い幅では右の列とキーの一覧を隠し、ノードを選んでいる間だけ根拠を画面下のシートとして出す。字幕は左右 12px の余白を除いた幅いっぱい、知らせは字幕の上に 1 行で重ねる。
-// 狭い幅で開くと字幕と右の列を隠して始める（Issue #1236 の一部）ので、字幕の並べ方を見るときは C で出してから測る。
-// 769px 以上（Mac の幅）の並べ方は変えない
 const NARROW_VIEWPORTS = [
   { width: 390, height: 844 },
   { width: 768, height: 1024 },
 ] as const;
 const MARGIN = 12;
 
-// 狭い幅で開いた直後は字幕を隠している。C で出して、.captions が描かれるまで待つ
 const showCaptions = async (page: Page): Promise<void> => {
   await page.keyboard.press("C");
   await page.locator(".captions").waitFor({ timeout: 10_000 });
 };
 
-// 自動のカメラは今の議題を追うので、狭い幅では先頭のノードが画面の外にあることがある。画面の中にある最初のノードを使う
 const visibleNodeButton = async (page: Page) => {
   const index = await page.evaluate(() =>
     [...document.querySelectorAll(".map-node__button")].findIndex((el) => {
@@ -915,7 +869,6 @@ describe.each(NARROW_VIEWPORTS)("会議中（Foldkit 版）の狭い幅: $width�
       near(viewport.width - captions.right, MARGIN, "字幕の右の余白");
       expect(captions.bottom).toBeLessThanOrEqual(layout.bottom);
       expect(captions.top).toBeGreaterThan(layout.top + layout.height / 2);
-      // カメラは測った画面の大きさから計算するので、.map が画面全体なら狭い幅でもマップは画面に合う
       const map = await rectOf(page, ".map");
       near(map.left, layout.left, "マップの左端");
       near(map.right, layout.right, "マップの右端");
@@ -955,20 +908,16 @@ describe.each(NARROW_VIEWPORTS)("会議中（Foldkit 版）の狭い幅: $width�
       expect(sheet.height).toBeGreaterThan(0);
       expect(await page.locator(".changes").isVisible()).toBe(false);
       expect((await page.locator(".evidence__text").first().textContent())?.length ?? 0).toBeGreaterThan(0);
-      // 影は付けない（淡い塗り・枠・角丸だけ）
       expect((await styleOf(page, ".side", ["box-shadow"]))["box-shadow"]).toBe("none");
-      // 開いても .map の大きさは変わらない（カメラが動き直さない）
       const layout = await rectOf(page, ".layout");
       const map = await rectOf(page, ".map");
       near(map.width, layout.width, "シートを開いたときのマップの幅");
       near(map.height, layout.height, "シートを開いたときのマップの高さ");
 
-      // 閉じるボタンで選びを外す
       await page.locator(".side__close").click();
       await page.locator(".side").waitFor({ state: "hidden", timeout: 10_000 });
       expect(await page.locator(".map-node--selected").count()).toBe(0);
 
-      // Esc でも外れる
       await selectFirstNode(page);
       await page.locator(".side").waitFor({ state: "visible", timeout: 10_000 });
       await page.keyboard.press("Escape");
@@ -1011,7 +960,6 @@ describe.each(NARROW_VIEWPORTS)("会議中（Foldkit 版）の狭い幅: $width�
     () => withContext(browser, { viewport }, async (context) => {
       const page = await openMeetingPage(context, server, { frames: frames.first });
       await settled(page);
-      // 狭い幅は右の列を隠して始めるので、E で 1 回出してから、もう 1 回で隠す
       await page.keyboard.press("E");
       await page.keyboard.press("E");
       await settled(page);
@@ -1047,7 +995,6 @@ describe.each(NARROW_VIEWPORTS)("会議中（Foldkit 版）の狭い幅: $width�
         expect(notice.bottom, `${selector} の下端は字幕の上端より上`).toBeLessThanOrEqual(captions.top + 1);
         expect(notice.left, `${selector} の左端`).toBeGreaterThanOrEqual(0);
         expect(notice.right, `${selector} の右端`).toBeLessThanOrEqual(viewport.width);
-        // 1 行分の高さ（折り返さない）
         const lineHeight = Number.parseFloat((await styleOf(page, selector, ["line-height"]))["line-height"]);
         expect(notice.height, `${selector} の高さ`).toBeLessThanOrEqual(lineHeight + 1);
       }

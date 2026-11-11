@@ -23,7 +23,6 @@ const snap = (nodes: SnapshotNode[], round: number, currentTopic?: string, chang
 });
 const combined = (round: number, into: SnapshotNode, from: string[]): ChangeEntry => ({ change: "統合", node: into.id, kind: into.kind, text: into.text, from, round, at: round });
 
-// 本番と同じく、畳む見せ方の結果から見えている木を組み立てる（位置は使わない）
 const stateOf = (snapshot: Snapshot, selectedId: string | null = null) => {
   const shown = foldView(snapshot, undefined, selectedId).nodes;
   const tree: VisibleTree = {
@@ -123,7 +122,6 @@ describe("relocations: 見えている木から消えたノードの移り先", 
   });
 
   it("見返しで時刻を戻して、まだ無い時点になったノードは、統合の記録があっても、その時点にあるいちばん近い祖先へ移る", () => {
-    // 前（round 5）の P3 は、戻った先（round 3）に P1 への統合の記録があっても、統合ではなく「まだ無い」だけ
     const later = snap([root, node("A", "root", "議題", ["r1"]), node("P1", "A", "論点", ["r1"]), node("P3", "A", "論点", ["r3"]), node("Y", "P3", "案", ["r3"])], 5, "A");
     const P1 = node("P1", "A", "論点", ["r1", "r3"]);
     const earlier = snap([root, node("A", "root", "議題", ["r1"]), P1], 3, "A", [combined(3, P1, ["P3"])]);

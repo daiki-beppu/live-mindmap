@@ -1,14 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { correctRemark, placeCorrectionForCaptions, type VocabularyWord, type Word } from "../src/core/index.ts";
 
-// Issue #640: 発言の補正の部品（I/O なし）。語彙と、語ごとの読みつきの発言から、直した本文と置き換えの一覧を返す。
-// 照合のキー・区間・近さ・守りは #633「照合と置き換え」のとおり。ふつうの語の一覧の守りは Issue #641（末尾の describe）。一覧は小さな Set で渡し、同梱の 5 万語のファイルは読まない。
 // 語の読み（romaji）は、実際の CFStringTokenizer（ja）が返した値（macOS で確認）を使う。
-// 「(合成)」と書いた行だけは、トークナイザの出力ではなく守りを当てるために組んだ読み。
 
 type Token = readonly [surface: string, romaji: string];
 
-// 語の並びから本文と words を組む。location / length は UTF-16 コード単位（連続して並ぶ）
 const utterance = (...tokens: Token[]): { text: string; words: Word[] } => {
   let location = 0;
   const words = tokens.map(([surface, romaji]) => {
@@ -21,7 +17,6 @@ const utterance = (...tokens: Token[]): { text: string; words: Word[] } => {
 
 const vocab = (surface: string, romaji: string): VocabularyWord => ({ surface, romaji });
 
-// ふつうの語の一覧が空のとき（#641 より前の挙動）
 const correct = (vocabulary: VocabularyWord[], ...tokens: Token[]) => correctWith([], vocabulary, ...tokens);
 
 const correctWith = (commonWords: readonly string[], vocabulary: VocabularyWord[], ...tokens: Token[]) => {
@@ -122,7 +117,6 @@ describe("correctRemark: 正しく直す", () => {
 });
 
 describe("correctRemark: 近さ（1 − 距離 ÷ 長い方の長さ）", () => {
-  // (合成) キーの長さ 10 で、読みが 2 字違う → 近さ 0.8 ちょうどで置き換える
   it("近さが 0.8 ちょうどなら置き換える。置き換えの一覧に近さが入る", () => {
     const result = correct([vocab("山田工房", "yamadakoubou")], ["ヤメダコブ", "yamedakobu"]);
     expect(result.text).toBe("山田工房");
@@ -130,14 +124,12 @@ describe("correctRemark: 近さ（1 − 距離 ÷ 長い方の長さ）", () => 
     expect(result.replacements[0]!.score).toBeCloseTo(0.8, 10);
   });
 
-  // (合成) 3 字違い → 近さ 0.7
   it("近さが 0.8 に届かなければ直さない", () => {
     const result = correct([vocab("山田工房", "yamadakoubou")], ["イエメダコブ", "yemedakobu"]);
     expect(result.text).toBe("イエメダコブ");
     expect(result.replacements).toEqual([]);
   });
 
-  // (合成) キー suwaga（6 字）に対して suwagu（1 字違い）→ 近さ 5/6
   it("キーが 6 字以上なら、1 字違いの近似でも置き換える", () => {
     const result = correct([vocab("Swagger", "suwagā")], ["スワグー", "suwagū"]);
     expect(result.text).toBe("Swagger");
@@ -157,7 +149,6 @@ describe("correctRemark: 直さない（守り）", () => {
   });
 
   it("1 文字の区間は、読みが一致しても直さない", () => {
-    // 龍 → 竜 は読みが ryuu で完全一致するが、1 文字の区間
     const result = correct([vocab("竜", "ryuu")], ["龍", "ryuu"], ["が", "ga"], ["来", "ki"], ["た", "ta"]);
     expect(result).toEqual({ text: "龍が来た", replacements: [] });
   });
@@ -168,13 +159,11 @@ describe("correctRemark: 直さない（守り）", () => {
     expect(result.replacements).toEqual([]);
   });
 
-  // (合成) 語の表記はひらがなだけではないが、区間の最初の文字がひらがな
   it("区間の最初の文字がひらがななら、語がひらがなだけでなくても候補にしない", () => {
     const result = correct([vocab("野々村", "nonomura")], ["お野村", "nonomura"]);
     expect(result).toEqual({ text: "お野村", replacements: [] });
   });
 
-  // (合成) 語の表記はひらがなだけではないが、区間の最後の文字がひらがな
   it("区間の最後の文字がひらがななら、語がひらがなだけでなくても候補にしない", () => {
     const result = correct([vocab("野々村", "nonomura")], ["野野村ん", "nonomura"]);
     expect(result).toEqual({ text: "野野村ん", replacements: [] });
@@ -185,52 +174,44 @@ describe("correctRemark: 直さない（守り）", () => {
     expect(result).toEqual({ text: "野々村さん", replacements: [] });
   });
 
-  // (合成) 表記は NFKC・小文字でそろえて比べる。全角の ＮＯＴＩＯＮ は Notion と同じ表記
   it("すでに正しい表記かどうかは、NFKC と小文字でそろえて比べる", () => {
     const result = correct([vocab("Notion", "notion")], ["ＮＯＴＩＯＮ", "notion"], ["で", "de"]);
     expect(result).toEqual({ text: "ＮＯＴＩＯＮで", replacements: [] });
   });
 
-  // (合成) 語彙 港南店舗 は、5 字以下の完全一致の条件で候補から外れる。それでも港南の表記を含む区間は直さない
   it("正しい表記を含む区間は、5 字以下の完全一致の条件で別の語が外れても直さない（港南店 を 港南店舗 にしない）", () => {
     const result = correct([vocab("港南", "kounan"), vocab("港南店舗", "kounantenpo")], ["港南", "kounan"], ["店", "ten"]);
     expect(result).toEqual({ text: "港南店", replacements: [] });
   });
 
-  // (合成) 語彙 湖南支店 は、長さの比で候補から外れる。それでも港南の表記を含む区間は直さない
   it("正しい表記を含む区間は、長さの比で別の語が外れても直さない（港南視点 を 湖南支店 にしない）", () => {
     const result = correct([vocab("港南", "kounan"), vocab("湖南支店", "kounanshiten")], ["港南", "kounan"], ["視点", "shiten"]);
     expect(result).toEqual({ text: "港南視点", replacements: [] });
   });
 
-  // 近さ 0.857 で、端は漢字。置き換え先に「の」が無いので直さない
   it("区間の中のひらがなを落とす置き換え（出店の候補→出店候補）は直さない", () => {
     const result = correct([vocab("出店候補", "shuttenkouho")], ["出店", "shutten"], ["の", "no"], ["候補", "kouho"]);
     expect(result).toEqual({ text: "出店の候補", replacements: [] });
   });
 
-  // Issue #1348: 送り仮名の「び」は運び の語の一部で、ひらがなだけの語ではない。キーは hakobizu で完全一致
   it("漢字の語の送り仮名は、置き換え先に無くても直す（運び図→ハコビズ）", () => {
     const result = correct([vocab("ハコビズ", "hakobizu")], ["運び", "hakobi"], ["図", "zu"], ["の", "no"], ["画面", "gamen"]);
     expect(result.text).toBe("ハコビズの画面");
     expect(result.replacements).toEqual([{ location: 0, length: 3, span: "運び図", surface: "ハコビズ", score: 1 }]);
   });
 
-  // Issue #1348: 過ご楽 は 過・ご・楽 に区切られる。キーは kagoraku で完全一致なので、間のひらがなだけの語を落としても直す
   it("読みが完全一致なら、置き換え先に無いひらがなだけの語を間に含む区間も直す（過ご楽→カゴラク）", () => {
     const result = correct([vocab("カゴラク", "kagoraku")], ["過", "ka"], ["ご", "go"], ["楽", "raku"], ["の", "no"], ["アプリ", "apuri"]);
     expect(result.text).toBe("カゴラクのアプリ");
     expect(result.replacements).toEqual([{ location: 0, length: 3, span: "過ご楽", surface: "カゴラク", score: 1 }]);
   });
 
-  // (合成) 公報→候補 の読み違い。キーは同じで、置き換え先に「の」が残る
   it("置き換え先がそのひらがなを含むなら、ひらがなを含む区間も直せる", () => {
     const result = correct([vocab("出店の候補", "shuttennokouho")], ["出店", "shutten"], ["の", "no"], ["公報", "kouhou"]);
     expect(result.text).toBe("出店の候補");
     expect(result.replacements).toEqual([{ location: 0, length: 5, span: "出店の公報", surface: "出店の候補", score: 1 }]);
   });
 
-  // キー noson（5 字）は完全一致だけ。1 字違いの nosan は近さ 0.8 でも置き換えない
   it("読みのキーが 5 字以下の語は、キーの完全一致だけで置き換える（短い読みの近似は直さない）", () => {
     const near = correct([vocab("Notion", "nōshon")], ["ノー", "nō"], ["サン", "san"]);
     expect(near).toEqual({ text: "ノーサン", replacements: [] });
@@ -246,7 +227,6 @@ describe("correctRemark: 直さない（守り）", () => {
   it("空白をまたぐ区間は作らない（空白の語がある場合も、語の間に本文が挟まる場合も）", () => {
     const withToken = correct([vocab("港南店", "kounanten")], ["江南", "kounan"], [" ", ""], ["店", "ten"]);
     expect(withToken).toEqual({ text: "江南 店", replacements: [] });
-    // 語と語の間に、どの語にも入っていない本文（空白）がある
     const words: Word[] = [
       { surface: "江南", romaji: "kounan", location: 0, length: 2 },
       { surface: "店", romaji: "ten", location: 3, length: 1 },
@@ -267,30 +247,24 @@ describe("correctRemark: 直さない（守り）", () => {
 describe("correctRemark: 重なる区間の選び方", () => {
   const tokens: Token[] = [["カメラ", "kamera"], ["マン", "man"], ["ホース", "hosu"]];
 
-  // (合成) 長い区間 カメラマンホース の近さは 12/13、短い区間 マンホース は 1.0
   it("重なる区間は、近さの高い方を採る（短くても）", () => {
     const result = correct([vocab("CameraManHose", "kameramanhoso"), vocab("ManHose", "manhosu")], ...tokens);
     expect(result.text).toBe("カメラManHose");
     expect(result.replacements).toEqual([{ location: 3, length: 5, span: "マンホース", surface: "ManHose", score: 1 }]);
   });
 
-  // (合成) どちらも近さ 1.0。長い方を採る
   it("近さが同じなら、長い区間を採る", () => {
     const result = correct([vocab("ManHose", "manhosu"), vocab("CameraManHose", "kameramanhosu")], ...tokens);
     expect(result.text).toBe("CameraManHose");
     expect(result.replacements).toEqual([{ location: 0, length: 8, span: "カメラマンホース", surface: "CameraManHose", score: 1 }]);
   });
 
-  // 港南炭（konantan）も近さ 0.875 で候補だが、港南店（完全一致）の方が近い。語彙の並びの順には依らない
   it("同じ区間に複数の語が近いときは、一番近い語に置き換える", () => {
     const result = correct([vocab("港南炭", "kounantan"), vocab("港南店", "kounanten")], ["江南", "kounan"], ["店", "ten"]);
     expect(result.text).toBe("港南店");
   });
 });
 
-// Issue #641: 区間の表記がふつうの語の一覧に載っていれば、語彙に読みの近い語があっても直さない。
-// ただし英字の語（NFKC で英字だけ）への書き換えは通す。一覧に載らない区間は今までどおり直す。語彙の側は絞らない。
-// 読みは実際のトークナイザの出力の形。「(合成)」は守りを当てるために組んだ読み。
 describe("correctRemark: ふつうの語の一覧の守り（Issue #641）", () => {
   const cases: Array<{ name: string; vocabulary: VocabularyWord[]; tokens: Token[]; kept: string }> = [
     { name: "開発（kaihatsu）を 改札（kaisatsu）にしない", vocabulary: [vocab("改札", "kaisatsu")], tokens: [["開発", "kaihatsu"]], kept: "開発" },
@@ -318,7 +292,6 @@ describe("correctRemark: ふつうの語の一覧の守り（Issue #641）", () 
     expect(excel.replacements).toEqual([{ location: 0, length: 4, span: "エクセル", surface: "Excel", score: 1 }]);
   });
 
-  // (合成) 英字でない語（先に並べる）と英字の語が同じ近さ。英字でない語は一覧の守りで候補から外れ、英字の語に直る
   it("一覧に載る区間で英字の語と英字でない語がどちらも近いときは、英字の語に直る", () => {
     const result = correctWith(["ズーム"], [vocab("図務", "zūmu"), vocab("Zoom", "zūmu")], ["ズーム", "zūmu"]);
     expect(result.text).toBe("Zoom");
@@ -340,19 +313,15 @@ describe("correctRemark: ふつうの語の一覧の守り（Issue #641）", () 
   });
 
   it("一覧は区間の表記と丸ごと同じものだけに効く。区間を含むだけの語・区間の一部だけの語は守りにならない", () => {
-    // 一覧の 江南店舗 は区間 江南店 を含むだけ、江南 は区間の一部だけ
     const result = correctWith(["江南店舗", "江南"], [vocab("港南店", "kounanten")], ["江南", "kounan"], ["店", "ten"]);
     expect(result.text).toBe("港南店");
   });
 });
 
-// 字幕用の補正: 直す前の本文と語の時刻（wordTimes）から、直した後の本文と位置を作る（字幕が直した本文を語ごとに分けるため）
 describe("placeCorrectionForCaptions", () => {
-  // 吹き出しの id を run の位置から返す。all は run ごとに別の吹き出し
   const all = (w: { location: number }) => String(w.location);
   const time = (location: number, length: number, start: number, end: number) => ({ location, length, start, end });
   const replacement = (location: number, length: number, surface: string) => ({ location, length, span: "", surface, score: 1 });
-  // 各 run の文字（本文を run の位置で切る）
   const pieces = (result: { text: string; wordTimes: readonly { location: number; length: number }[] }) => result.wordTimes.map((w) => result.text.slice(w.location, w.location + w.length));
 
   it("置き換えが無ければ、本文も位置もそのまま", () => {
@@ -398,7 +367,6 @@ describe("placeCorrectionForCaptions", () => {
   });
 
   it("適用できない置き換えが混ざっても、後ろの語は適用した置き換えの差だけずらす", () => {
-    // 0〜3 は適用できない（鰯）、4〜6 は適用できる（Zendesk、内側なし）、その後ろに「を」
     const wordTimes = [time(0, 1, 10, 11), time(1, 2, 11, 12), time(3, 1, 12, 13), time(4, 2, 13, 14), time(6, 1, 14, 15)];
     const result = placeCorrectionForCaptions("イワシのあいを", wordTimes, [replacement(0, 3, "鰯"), replacement(4, 2, "Zendesk")], all);
 
@@ -437,7 +405,6 @@ describe("placeCorrectionForCaptions", () => {
     expect(placeCorrectionForCaptions("イワシ", wordTimes, [replacement(0, 3, "鰯")], (w) => (w.location === 1 ? "B" : "A"))).toEqual({ text: "イワシ", wordTimes });
   });
 
-  // bubbleOf を表で与える（キー: run の位置）
   const bubbles = (table: Record<number, string>) => (w: { location: number }) => table[w.location];
 
   it("後ろの吹き出しが置き換えの外の文字を持つなら適用する（意|和志す → 鰯す）", () => {

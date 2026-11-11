@@ -1,7 +1,3 @@
-// CLI の入口が利用者に見せるもの（help・version・補完・失敗の 1 行・終了コード）を、runCli と入口の reportFailure・teardown で確かめる。
-// プロセスでしか見えないもの（実際の終了コード・stdout と stderr の実バイト）は cliProcess.heavy.test.ts の代表 4 件が持つ。
-// 入口の出力は Console を差し替えて集める（Console.log / Console.error の 1 回が、本物の 1 行と同じ末尾の改行つきの 1 件になる）。
-// 終了コードは入口と同じく teardown に任せ、process.exitCode に置かれた値を読む。
 import { createServer } from "node:net";
 import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -20,7 +16,6 @@ import { readyManagedDeps } from "./fixtures/readyManagedDeps.ts";
 import { fakeScreenJpeg } from "./fixtures/screenJpeg.ts";
 
 const external = vi.hoisted(() => ({ openClaudeUpdater: vi.fn() }));
-// play の準備（モデルの updater）だけを偽物にする。待受け（http.ts）は本物のまま（ポート使用中を実際の待受けで起こすため）
 vi.mock("../src/claude.ts", async () => (await import("./fixtures/claudeModule.ts")).fakeClaudeModule(() => external.openClaudeUpdater()));
 
 beforeEach(() => {
@@ -48,7 +43,6 @@ const runEntry = Effect.fnUntraced(function* (argv: string[], sessionsDir: strin
   return yield* runCliEntry(argv, layer);
 });
 
-// 127.0.0.1 で待ち受けて塞いだポートを返す（play も 127.0.0.1 で待ち受けるので、同じアドレスでないと衝突しない）
 const occupiedPort = Effect.acquireRelease(
   Effect.tryPromise(() => new Promise<{ port: number; close: () => Promise<void> }>((resolve, reject) => {
     const server = createServer();
@@ -67,7 +61,6 @@ const occupiedPort = Effect.acquireRelease(
 
 const emptyExport = { root: { id: "root", kind: "会議", text: "定例", evidence: [], children: [] } };
 
-// 期待値は core/evaluate.ts の文面の写しではなく、CLI が出す契約として書く（Schema を使う前の実装と同じ文面）
 const KEYWORDS_RULE = "keywords は 1 件以上の配列で書く（要素は文字列か、文字列の配列）";
 
 describe("CLI の入口の出力", () => {
@@ -146,7 +139,6 @@ describe("CLI の入口の出力", () => {
     for (const detail of errors.slice(1)) expect(detail).toMatch(/^\s+\S/);
   }).pipe(Effect.scoped));
 
-  // JSON の構文エラーだけは理由が effect の文面になる（正解の形まで進めない）。枠・1 行・exit 1 を固定する
   it.live.each([
     { name: "JSON 構文不正", content: "{ not json" },
   ])("不正な正解ファイル（$name）は日本語の一行だけを stderr に出して exit 1", ({ content }) => Effect.gen(function* () {
@@ -165,7 +157,6 @@ describe("CLI の入口の出力", () => {
     expect(result.stderr).toBe(`${errors[0]}\n`);
   }).pipe(Effect.scoped));
 
-  // 理由の文面は、人が正解ファイルを直せる日本語（CLI の出力契約）。期待値は Truth の Schema を使う前の実装と同じ
   it.live.each([
     { name: "入れ物が配列", content: JSON.stringify([]), reason: "正解はオブジェクトで書く" },
     { name: "種別のキーが無い", content: JSON.stringify({ TODO: [] }), reason: "「決定」は配列で書く" },
@@ -205,8 +196,6 @@ describe("CLI の入口の出力", () => {
       content: JSON.stringify({ 決定: [], TODO: [{ text: "x", from: 1, to: 2, keywords: ["x"] }, { text: "y", from: 1, to: 2 }] }),
       reason: `「TODO」の 2 件目: ${KEYWORDS_RULE}`,
     },
-    // 1 つの項目に複数の誤りがあるときに選ぶ理由。Schema を使う前の実装は from / to の型 → from が to より大きい →
-    // keywords の順に止めたので、その順を保つ（keywords の誤りが時刻の誤りを隠さない）
     {
       name: "from が to より大きく keywords も無い",
       content: JSON.stringify({ 決定: [{ text: "x", from: 5, to: 2 }], TODO: [] }),

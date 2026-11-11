@@ -2,13 +2,6 @@ import AVFoundation
 import CoreImage
 import Foundation
 
-// 録画の動画の映像を共有画面として流す経路（`transcribe-file`、Issue #1090）。
-//   動画 → AVAssetReader（最初の映像トラック、BGRA） → 4 fps に間引く → 1280×720 に収める → ScreenChangeDetector → screen
-// 判定器・送る画像（JPEG 0.8）・OCR はライブ（`ScreenCapture`）と同じ。時刻は動画の時刻（PTS、先頭が 0 秒）で、音声の時刻と同じ。
-// ScreenChangeDetector.withoutTabDetection() でブラウザのタブの判定はかけない。顔だけの画面も特別扱いしない。
-// 映像のトラックが無いファイルは何も流さない。映像が読めなければ `screen-off` で知らせて、音声だけで続ける。
-
-/// ライブと同じ 4 fps（`screenFramesPerSecond`）に間引く。時刻を 1/4 秒の枠に分け、前に通した枠より後ろの枠のフレームだけを通す。
 struct ScreenFrameThinner {
     private var lastSlot: Int?
 
@@ -21,7 +14,6 @@ struct ScreenFrameThinner {
 }
 
 /// 映像の読み出しは、デコードが済むまでスレッドを止めて待つ。Swift の並行処理のスレッドで呼ばず、専用の直列のキューで行う（音声の `fileReadingQueue` と同じ事情。Issue #1086）。
-/// 音声の読み出しと別のキューにして、映像の JPEG・OCR で音声の読み出しを止めない。
 let fileScreenQueue = DispatchQueue(label: "live-mindmap.file-screen")
 
 func onFileScreenQueue<T: Sendable>(_ body: @escaping @Sendable () -> T) async -> T {
@@ -30,13 +22,10 @@ func onFileScreenQueue<T: Sendable>(_ body: @escaping @Sendable () -> T) async -
     }
 }
 
-/// 動画の最初の映像トラックを読み、変化した画面のイベントにする。`step()` は `fileScreenQueue` の上でだけ呼ぶ。
 /// AVAssetReader の読み出しと停止（`copyNextSampleBuffer`・`cancelReading`）は `fileScreenQueue` の上（と `deinit`）でだけ行う。読み出し中に別のスレッドから `cancelReading` が入ると落ちる（Issue #1198）。
 final class FileScreenReading: @unchecked Sendable {
     enum Opened {
-        /// 映像のトラックが無い（音声だけのファイル）。「読めない」とは別。
         case noVideo
-        /// 映像のトラックはあるが、読み始められない。
         case unreadable(String)
         case reading(FileScreenReading)
     }
@@ -46,11 +35,9 @@ final class FileScreenReading: @unchecked Sendable {
     private let imageContext = CIContext()
     private var thinner = ScreenFrameThinner()
     private var detector = ScreenChangeDetector.withoutTabDetection()
-    /// 最後に判定へ渡したフレームの時刻（途中で読めなくなったときの `screen-off` の時刻）。
     private(set) var lastTime: Double
     var safeProgress: Double? { detector.fileProgress }
     private var finished = false
-    /// 取り消しの印。`cancel()` はどのスレッドからでも立てられ、`next()` はフレームを読むたびに見る。
     private let cancelLock = NSLock()
     private var cancelled = false
     private var isCancelled: Bool { cancelLock.withLock { cancelled } }
@@ -63,7 +50,6 @@ final class FileScreenReading: @unchecked Sendable {
 
     deinit { reader.cancelReading() }
 
-    /// `startingAt` は読み始める映像の時刻（秒。起動し直しのとき 0 より後ろ）。
     static func open(_ url: URL, startingAt: Double = 0) async -> Opened {
         let asset = AVURLAsset(url: url)
         let tracks: [AVAssetTrack]
@@ -91,7 +77,6 @@ final class FileScreenReading: @unchecked Sendable {
         }
     }
 
-    /// 読むのをやめる。どのスレッドから呼んでもよい。読み出し中の `next()` は次のフレームで抜け、読み手は `fileScreenQueue` の上で止める。
     func cancel() {
         let first = cancelLock.withLock { () -> Bool in
             defer { cancelled = true }
@@ -100,21 +85,14 @@ final class FileScreenReading: @unchecked Sendable {
         if first { fileScreenQueue.async { self.reader.cancelReading() } }
     }
 
-    /// 読み手の状態（テストで、取り消しが AVAssetReader に触れた時機を見る）。`fileScreenQueue` の上か、キューを塞いでいる間にだけ読む。
     var readerStatus: AVAssetReader.Status { reader.status }
 
-    /// `step()` の結果。
     enum Step {
-        /// フレームを 1 つ読んだ。出すイベントは無い。
         case frame
-        /// イベントが出た。
         case events([HelperEvent])
-        /// 映像を読み終えた。
         case end
     }
 
-    /// フレームを 1 つだけ読んで進める。呼び出し側が 1 フレームごとに止められるよう、イベントが出るまでは進めない（一時停止の間は読み進めない。Issue #1092）。
-    /// 途中で読めなくなったら、画像を送った後なら `image: null`、続けて `screen-off`（許可なし）を返してから終わる（ライブの `emitCaptureStopped` と同じ順）。
     func step() -> Step {
         if finished || isCancelled { return .end }
         if !isCancelled, let sample = output.copyNextSampleBuffer() {
@@ -137,7 +115,6 @@ final class FileScreenReading: @unchecked Sendable {
         return events.isEmpty ? .end : .events(events)
     }
 
-    /// フレームを 1280×720 に収めた画像にして、輝度の画像と一緒に返す。作れなければ nil（そのフレームは判定に入れない）。
     private func render(_ sample: CMSampleBuffer) -> (luma: [UInt8], image: CGImage)? {
         guard let pixelBuffer = CMSampleBufferGetImageBuffer(sample) else { return nil }
         let source = CIImage(cvPixelBuffer: pixelBuffer)
@@ -154,8 +131,6 @@ final class FileScreenReading: @unchecked Sendable {
     }
 }
 
-/// 録画セッションの映像を選ぶ。メインに映像があればメイン、なければ自分用にあれば自分用、どちらにもなければ nil。
-/// 映像の有無を確かめられないファイルは、映像なしとして扱う（音声の読み出しが、そのファイルの失敗を扱う）。
 public func selectFileVideo(theirs: URL, mine: URL?) async -> URL? {
     if await hasVideoTrack(theirs) { return theirs }
     if let mine, await hasVideoTrack(mine) { return mine }
@@ -167,10 +142,6 @@ private func hasVideoTrack(_ url: URL) async -> Bool {
     return !tracks.isEmpty
 }
 
-/// 録画セッションの映像を読み、変化した画面を `server` に流す。
-/// イベントを流した後に、後続画面のstartを越えない時刻まで `progress` を進める。
-/// 変化が未確定の間も音声を先行させず、どの出口でも終わりを知らせる。取り消されたら読むのをやめる。
-/// `gate` があれば、サーバーの指示で止められている間は読み進めない。
 public func relayFileScreen(
     from url: URL, to server: WebSocketServer, progress: FileReadingAlignment.Screen, startingAt: Double = 0, gate: FileReadingGate? = nil
 ) async {
@@ -188,10 +159,8 @@ func relayFileScreen(
         printScreenError("動画の映像を読めない（音声だけで続ける）: \(reason)")
         await server.send(.screenOff(start: 0, reason: .許可なし))
     case .reading(let reading):
-        // 取り消されたら、読み出しを止めて `next()` を抜けさせる（変化の無い長い区間を、次のイベントまで読み切らない）
         await withTaskCancellationHandler {
             while !Task.isCancelled {
-                // 止められている間は、映像も読み進めない。キャンセルされたら読むのをやめる
                 do { try await gate?.waitOpen() } catch { break }
                 let stepped = await onFileScreenQueue { () -> (events: [HelperEvent], time: Double, safeProgress: Double?)? in
                     switch reading.step() {

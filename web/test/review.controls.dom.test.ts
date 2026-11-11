@@ -7,10 +7,6 @@ import { ObserveSeekPointer } from "../src/app/review/mount.ts";
 import { makeSubscriptions } from "../src/app/review/subscription.ts";
 import { audioContext } from "./reviewHarness.ts";
 
-// DOM が無い unit 環境で、操作の行（Issue #825）が DOM に触れる 2 か所を偽の要素で確かめる:
-// 押して離したあとにフォーカスを外す Command（ReleaseFocus）と、シークバーの上のポインタの位置を fraction にする Mount（ObserveSeekPointer）。
-// 実ブラウザでの座標・フォーカスは未確認（E2E の review が名前「時刻」のスライダーを操作する）
-
 describe("ReleaseFocus（Command）: 今フォーカスのある要素から外す", () => {
   class FakeHTMLElement {
     blurCalls = 0;
@@ -45,7 +41,6 @@ describe("ReleaseFocus（Command）: 今フォーカスのある要素から外�
 });
 
 describe("ObserveSeekPointer（Mount）: ポインタの位置をシークバーの左端からの割合にする", () => {
-  // 幅 400・左端 100 のシークバー。root の位置と大きさを返す偽の要素（root を探すための querySelector・closest は自分を返す）
   class FakeSeekRoot extends EventTarget {
     rect = { left: 100, width: 400, right: 500, top: 0, bottom: 16, height: 16, x: 100, y: 0 };
     getBoundingClientRect() {
@@ -68,7 +63,6 @@ describe("ObserveSeekPointer（Mount）: ポインタの位置をシークバー
     await flush();
     return { got, close: () => Effect.runPromise(Fiber.interrupt(fiber)) };
   };
-  // 同じ意味のイベントが pointer と mouse の両方で届いても 1 種類とみなす（どちらの系統で聞くかは実装の自由）
   const distinct = (got: Array<{ _tag: string; fraction?: number }>) => [...new Set(got.map((m) => JSON.stringify(m)))].map((json) => JSON.parse(json) as { _tag: string; fraction?: number });
   const move = async (root: FakeSeekRoot, clientX: number, got: Array<{ _tag: string; fraction?: number }>) => {
     root.dispatchEvent(at("pointermove", clientX));
@@ -156,14 +150,12 @@ describe("ReleaseFocusAfterMenuClose（Command）: Menu が閉じるときの Fo
       },
       querySelector: () => button,
     });
-    // フレームは手で進める（RenderCommit が無い環境では、commit を 1 フレームとして数える）
     vi.stubGlobal("requestAnimationFrame", (callback: () => void) => frames.push(callback));
     vi.stubGlobal("cancelAnimationFrame", () => {});
   });
   afterEach(() => vi.unstubAllGlobals());
 
   const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
-  // 保留のフレームを 1 つずつ進め、そのたびに Effect の続きを走らせる
   const drain = async () => {
     await flush();
     while (frames.length > 0) {
@@ -212,7 +204,6 @@ describe("sliderRelease（Subscription）: 押している間の文書のイベ�
   });
   afterEach(() => vi.unstubAllGlobals());
 
-  // 購読が文書にリスナーを付け終えるまで待つ（負荷で遅れても、イベントを取りこぼさない）
   const listening = async (expected: number) => {
     for (let i = 0; i < 200 && added.length < expected; i += 1) await flush();
   };

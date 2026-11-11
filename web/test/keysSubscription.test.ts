@@ -9,14 +9,10 @@ import { makeSubscriptions } from "../src/app/review/subscription.ts";
 import { audioContext, plainContext } from "./reviewHarness.ts";
 import { element, eventOfBinding, fakeDocument, keydown, pressEach, settleKeyEvents, type FakeKeyEvent, type KeyInit } from "./keysHarness.ts";
 
-// キーの Subscription（Issue #822）の stream。document の keydown を、Dom.streamFromKeyBindings（普通の道）と、日本語入力がオンのときの道（halfWidthKeyOf で半角に直して同じ表で照合）で受け、
-// 「このキーが押された」の Message（PressedKey）だけを出す。意味は update が決める（keys.story.test.ts）。document は偽の代役、日本語入力の道は送り直し（dispatchEvent・stopImmediatePropagation）をしない
-
 const SCREENS: readonly Screen[] = ["live", "review", "reviewAudio"];
 const NO_MODIFIERS = { metaKey: false, ctrlKey: false, altKey: false };
 const pressed = (key: string) => Message.PressedKey({ key: key as never, ...NO_MODIFIERS });
 
-// 画面ごとの stream に、イベントを順に流す。届いた Message をイベントごとに返す
 const press = (screen: Screen, events: readonly FakeKeyEvent[], hasSelection = false) =>
   pressEach((target) => keyPressStream({ screen, hasSelection: () => hasSelection, target }), events);
 const pressOne = async (screen: Screen, init: KeyInit, hasSelection = false) => {
@@ -86,7 +82,6 @@ describe("倍率・位置・一覧のキーの配列ごとの形（JIS の ^・U
   ];
 
   it.each(cases)("%s → %s", async (_label, init, id) => {
-    // < > は見返しの行なので、会議中の画面には無い（会議中は届かない）
     const isReviewKey = id === "<" || id === ">";
     for (const screen of SCREENS) {
       const { messages } = await pressOne(screen, init);
@@ -161,9 +156,7 @@ describe("Enter: 選んだノードの開閉に使うときだけ既定動作を
   });
 });
 
-// Issue #1133: 選択の有無は stream を張った時点の値で持たず、keydown のたびに読む。選択が変わった直後の Enter も、張り直しを待たずにその時点の選択で決まる
 describe("Enter: 選択の有無は keydown のたびに読む（張り直さない）", () => {
-  // 同じ stream を張ったまま、選択の有無を変えてはノード本体のボタンの中で Enter を押す。ステップごとに届いた Message と、既定動作を取り消したかを返す
   const pressWhile = (steps: readonly boolean[]) =>
     Effect.runPromise(
       Effect.gen(function* () {
@@ -325,7 +318,6 @@ describe("見返しの Subscription の keys: 依存と、画面の決まり方"
   const subscriptions = (context: typeof plainContext) => makeSubscriptions(context);
   afterEach(() => vi.unstubAllGlobals());
 
-  // keys の stream は target を取らず、グローバルの document に付ける。偽の document に差し替えて走らせる
   const runKeys = (context: typeof plainContext, hasSelection: boolean, inits: readonly KeyInit[]) =>
     Effect.runPromise(
       Effect.gen(function* () {
@@ -355,7 +347,6 @@ describe("見返しの Subscription の keys: 依存と、画面の決まり方"
     expect(subscriptions(plainContext).keys.modelToDependencies(selected)).toEqual({ hasSelection: true });
   });
 
-  // Issue #1133: 選択の有無が変わっても stream を張り直さない（Enter の判定は keydown のたびに readDependencies から読む）
   it("選択の有無だけが変わっても張り直さない（keepAliveEquivalence が等しいと判定する）", () => {
     const { keepAliveEquivalence } = subscriptions(plainContext).keys;
     expect(keepAliveEquivalence?.({ hasSelection: false }, { hasSelection: true })).toBe(true);

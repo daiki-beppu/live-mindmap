@@ -14,10 +14,6 @@ import * as MapSurface from "../src/app/mapSurface/main.ts";
 import { cameraFocus, fitViewport, screenPoint, USER_MAX_ZOOM } from "../src/camera.ts";
 import { NODE_WIDTH } from "../src/layout.ts";
 
-// 見返しの Foldkit プログラム（Issue #823）の update。Model に持つのは再生の状態と表示面の実測だけ。
-// 時刻 → その時刻のマップ（Snapshot）は、時間軸（Model の外の Context）から毎回導く。反映の時刻への移動（prev・next）は playbackReducer の規則
-
-// 反映 1: 時刻 10（r1）で「採用」、反映 2: 時刻 30（r2）で「予算」と論点。会議の長さは 30
 const remark = (id: string, end: number, text: string) => ({ at: "x", type: "remark", remark: { id, track: "相手", start: end - 5, end, text } });
 const add = (ref: string, parent: string, kind: string, text: string, evidence: string[]) => ({ op: "add", ref, parent, kind, text, evidence });
 const diff = (fresh: string[], ops: unknown[]) => ({ at: "x", type: "diff", input: { recent: [], fresh, nodeCount: 0 }, ops, dropped: [] });
@@ -93,7 +89,7 @@ describe("見返しの update: 反映の時刻への移動", () => {
       }),
       message(Message.ClickedPrev()),
       model((m) => {
-        expect(m.playback.time).toBe(10); // 手前に反映が無いので動かない
+        expect(m.playback.time).toBe(10);
         record(m);
       }),
       message(Message.ClickedNext()),
@@ -103,7 +99,7 @@ describe("見返しの update: 反映の時刻への移動", () => {
       }),
       message(Message.ClickedNext()),
       model((m) => {
-        expect(m.playback.time).toBe(30); // 先に反映が無いので動かない
+        expect(m.playback.time).toBe(30);
         record(m);
       }),
     );
@@ -175,7 +171,6 @@ describe("見返しの update: 表示面の実測", () => {
   });
 });
 
-// 見る状態（Issue #818）は表示面の Model.viewing に持ち、見返しの Model.mapSurface に持ち越される（時刻を動かしても残る）
 describe("見返しの update: 表示面の見る状態", () => {
   it("初期は自動のカメラ・選択なしで、本物の Model に通る", () => {
     expect(init(context).mapSurface.viewing).toEqual(INITIAL_VIEWING);
@@ -211,8 +206,6 @@ describe("見返しの update: 表示面の見る状態", () => {
   });
 });
 
-// カメラ（Issue #819）。見返しの表示面は mode が review で、人が動かして止めた後、触らずに 10 秒たつ（ElapsedIdleTime）と自動に戻る。
-// 表示面の新しい欄（viewport・idleStamp など）は、見返しの Model.mapSurface に持ち越される（時刻を動かしても残る）
 describe("見返しの update: 表示面のカメラ", () => {
   const surface = (message: MapSurfaceMessage) => Message.GotMapSurfaceMessage({ message });
   const measured = (m: Model): Model => update(m, surface(MapSurfaceMessage.MeasuredMapSurface({ width: 800, height: 600, nodeHeights: { root: 40, t1: 40, t2: 40, p1: 40 } }))).model;
@@ -272,7 +265,6 @@ describe("見返しの update: 表示面のカメラ", () => {
     );
   });
 
-  // 時刻の変更で Snapshot が別のものになったら、表示面へ ChangedSnapshot を渡して補間が終わった（Tick 500 の後の）最終配置が viewport になる
   const expectedAfter = (before: Model, to: number) =>
     MapSurface.update(
       MapSurface.update({ mode: "review", snapshot: snapshotAt(context.timeline, before.playback.time), speakerNames: {}, ...before.mapSurface }, MapSurfaceMessage.ChangedSnapshot({ snapshot: snapshotAt(context.timeline, to) })).model,
@@ -321,9 +313,6 @@ describe("見返しの update: 表示面のカメラ", () => {
   });
 });
 
-// 見返しも補間（motion）を保存し、補間の Subscription が TickedAnimationFrame で進める。補間の最中も終わった後も、押したノードの画面座標は変わらない。
-// 保存された Model から view と同じ式（displayedPositions → screenPoint）で描く位置を求めて確かめる。
-// 時間軸はこの describe の中だけで使う: 議題 t1（論点 q1・q2）の後に、今の議題 t2 が来る（t1 は今の議題でないので、丸で開閉できる）
 describe("見返しの update: 開閉の後の最終配置とカメラ", () => {
   const ctx = makeContext([
     { at: "a", type: "start", title: "定例" },
@@ -348,7 +337,6 @@ describe("見返しの update: 開閉の後の最終配置とカメラ", () => {
     const start = init(ctx);
     return { ...start, playback: { ...start.playback, time: 30 } };
   };
-  // view と同じ式で描く、ノードの画面座標
   const drawnAt = (m: Model, id: string) => {
     const surface = surfaceOf(m);
     return screenPoint(surface.camera.viewport, MapSurface.displayedPositions(surface)[id]!);
@@ -358,7 +346,6 @@ describe("見返しの update: 開閉の後の最終配置とカメラ", () => {
     expect(at.x).toBeCloseTo(point.x, 6);
     expect(at.y).toBeCloseTo(point.y, 6);
   };
-  // 前提: 子の update は補間を始め、t1 のいずれかのノードの始まりの位置と目標の位置が違う（保存の前の結果）
   const expectChildStartsMotion = (m: Model, message: Message) => {
     if (message._tag !== "GotMapSurfaceMessage") throw new Error("GotMapSurfaceMessage を渡す");
     const child = MapSurface.update(surfaceOf(m), message.message).model;
@@ -403,7 +390,6 @@ describe("見返しの update: 開閉の後の最終配置とカメラ", () => {
         expectDrawnAt(m, T1, point);
       }),
     );
-    // 前提: 高さを測り直す Message も、子の update では補間を始める
     expectChildStartsMotion(run(start, clickDot(T1)), measureMsg({ ...HEIGHTS, [T1]: 120 }));
   });
 
@@ -435,7 +421,6 @@ describe("見返しの update: 開閉の後の最終配置とカメラ", () => {
   });
 });
 
-// 今の議題が無い時刻（議題の外のノードだけがある）の自動のカメラは、全体を収める。高さの測り直しで目標の位置が動くと、補間の最中は補間中の位置で収め直し、補間が終わった後は最終配置に収める
 describe("見返しの update: 今の議題が無い自動のカメラ", () => {
   const ctx = makeContext([
     { at: "a", type: "start", title: "定例" },
@@ -452,7 +437,6 @@ describe("見返しの update: 今の議題が無い自動のカメラ", () => {
     const heights = (h: number) => Object.fromEntries(ids.map((id) => [id, id === "root" ? 40 : h]));
     const first = upd(start, got(MapSurfaceMessage.MeasuredMapSurface({ width: 800, height: 600, nodeHeights: heights(40) }))).model;
     const message = got(MapSurfaceMessage.MeasuredMapSurface({ width: 800, height: 600, nodeHeights: heights(300) }));
-    // 前提: 今の議題が無く、子の update では補間が始まって収め直しが始まりの位置で行われる
     expect(cameraFocus(snapshotOf(ctx, first))).toBeNull();
     expect(first.mapSurface.camera.mode).toBe("auto");
     const child = MapSurface.update(surfaceOf(first), (message as { message: MapSurfaceMessage }).message).model;
@@ -468,13 +452,11 @@ describe("見返しの update: 今の議題が無い自動のカメラ", () => {
     expect(next.mapSurface.camera.viewport.x).toBeCloseTo(expected.x, 6);
     expect(next.mapSurface.camera.viewport.y).toBeCloseTo(expected.y, 6);
     expect(next.mapSurface.camera.viewport.zoom).toBeCloseTo(expected.zoom, 6);
-    // 前提: 補間中の位置で収めた viewport とは別の値になる入力である
     const childFit = MapSurface.update({ ...surfaceOf(first) }, (message as { message: MapSurfaceMessage }).message).model.camera.viewport;
     expect(Math.abs(childFit.x - expected.x) + Math.abs(childFit.y - expected.y) + Math.abs(childFit.zoom - expected.zoom)).toBeGreaterThan(1e-3);
   });
 });
 
-// 見返しも位置の補間（500ms）を行う。測定済みで反映をまたぐと motion が保存され、Tick で始まりの位置から最終位置へ進み、500ms で止まる
 describe("見返しの update: 反映をまたぐ移動の補間", () => {
   const got = (message: MapSurfaceMessage) => Message.GotMapSurfaceMessage({ message });
   const measuredAt = (time: number): Model => {
@@ -498,7 +480,6 @@ describe("見返しの update: 反映をまたぐ移動の補間", () => {
         expect(m.playback.time).toBe(30);
         expect(Option.isSome(m.mapSurface.motion)).toBe(true);
         const final = finalPositions(m);
-        // 表示位置は始まりの位置（共通のノードは動く前の位置）。最終位置とは違うノードがある
         expect(displayed(m)["t1"]).toEqual(beforePositions["t1"]);
         expect(Object.keys(final).some((id) => displayed(m)[id]!.y !== final[id]!.y)).toBe(true);
       }),
@@ -544,7 +525,6 @@ describe("見返しの update: 反映をまたぐ移動の補間", () => {
   });
 });
 
-// 測定済みで表示する Snapshot の反映番号が変わる操作は、点滅を最初から再生し直す Command（RestartBlink）を出す。変わらない操作・測定前では出さない
 describe("見返しの update: 点滅のやり直し", () => {
   const got = (message: MapSurfaceMessage) => Message.GotMapSurfaceMessage({ message });
   const measuredAt = (time: number): Model =>

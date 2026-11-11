@@ -8,21 +8,15 @@ import { makeSubscriptions } from "../src/app/review/subscription.ts";
 import { AUDIO_RATES, PLAYBACK_RATES } from "../src/reviewPlayback.ts";
 import { argsOf, audioContext, commandNames, DURATION, ownCommandNames, plainContext, stateAt } from "./reviewHarness.ts";
 
-// 見返しの操作の行（Issue #825）の update（Story）。シーク・音量・速さを、Slider と Menu の OutMessage だけで受けることと、
-// 押して離したらフォーカスを外すこと、字幕・右の列のボタンの状態を見る。
-// 会議の長さは 200 秒、録音つきの速さの並びは AUDIO_RATES（0.5〜2）、録音なしは PLAYBACK_RATES（10〜120）
-
 const audioUpdate = makeUpdate(audioContext);
 const plainUpdate = makeUpdate(plainContext);
 
-// 子（Slider・Menu）への Message。包む Message は見返しのもの、中身は @foldkit/ui の Message
 const seek = (message: Slider.Message) => Message.GotSeekSliderMessage({ message });
 const volume = (message: Slider.Message) => Message.GotVolumeSliderMessage({ message });
 const rateMenu = (message: Menu.Message) => Message.GotRateMenuMessage({ message });
 const key = (direction: "StepDecrement" | "StepIncrement" | "PageDecrement" | "PageIncrement" | "Min" | "Max", value: number) => Slider.Message.PressedKeyboardNavigation({ direction, value });
 const selectRate = (rates: readonly number[], index: number) => rateMenu(Menu.Message.SelectedItem({ index, item: String(rates[index]) }));
 
-// 続いた Model の上で Message を順に流し、各段の結果を返す
 const run = (update: ReturnType<typeof makeUpdate>, start: ReturnType<typeof stateAt>, ...messages: Message[]) => {
   let model = start;
   return messages.map((message) => {
@@ -243,7 +237,6 @@ describe("速さ: Menu の Selected だけで速さが変わる", () => {
   });
 });
 
-// 子の Slider のドラッグ用の購読（lift した入れ物）が、今の Model で文書のイベントを開くか
 const dragActivity = (subscription: ReturnType<typeof makeSubscriptions>["seekDragPointer"], model: ReturnType<typeof stateAt>) =>
   Option.getOrThrow(subscription.modelToDependencies(model).maybeDependencies).dragActivity;
 
@@ -293,7 +286,6 @@ describe("押して離したらフォーカスを外す", () => {
     expect(cancelled!.model.isPressingSlider).toBe(false);
     expect(cancelled!.model.playback.time).toBe(moved!.model.playback.time);
     expect(cancelled!.model.playback.volume).toBe(1);
-    // 中断のあとに届いた pointermove は、Idle の子が受け流すので何も出ない
     const after = audioUpdate(cancelled!.model, seek(Slider.Message.MovedDragPointer({ value: 10 })));
     expect(after.model.playback.time).toBe(cancelled!.model.playback.time);
     expect(commandNames(after.commands)).toEqual([]);

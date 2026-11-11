@@ -4,8 +4,6 @@ import HelperCore
 
 private typealias Support = DuplicateMarkerTestSupport
 
-// スピーカーのときの転送。`自分` の確定結果に重複の印を付け、捨てずに全件流す。
-
 private struct TrackFailure: Error, Equatable {}
 
 private final class TerminationFlag: @unchecked Sendable {
@@ -84,10 +82,6 @@ private func partialEvent(_ track: Track, _ text: String, _ start: Double, _ end
     try HelperEvent.partial(track: track, start: start, end: end, text: text, duplicate: duplicate, words: transcriptWords(text), wordTimes: []).jsonString()
 }
 
-/// Issue #141 の状況。`相手` の発言が保留の上限より長く続き、その確定結果は上限に達した後に届く。
-/// 同じ判定器・同じ `relay` の上で、(1) `相手` の途中結果が届く (2) `自分` の確定結果が保留される
-/// (3) 保留の上限に達する (4) `自分` の確定結果が流れる (5) `相手` の確定結果が届く、の順に流し、
-/// (4) で届いた `自分` の確定結果のイベントと、(5) まで含めて届いたイベントを返す。
 private func relayRemarkReleasedBeforeTheirFinal(
     theirPartial: TranscriptionResult, mine mineResult: TranscriptionResult, theirFinal: TranscriptionResult
 ) async throws -> (releasedRemark: String, rest: [String]) {
@@ -99,7 +93,6 @@ private func relayRemarkReleasedBeforeTheirFinal(
 
     let (mine, mineContinuation) = AsyncThrowingStream.makeStream(of: TranscriptionResult.self)
     let (theirs, theirsContinuation) = AsyncThrowingStream.makeStream(of: TranscriptionResult.self)
-    // 保留の上限を、実時間ではなく外からの合図で到達させる。
     let (entered, enteredContinuation) = AsyncStream.makeStream(of: Void.self)
     let (limit, limitContinuation) = AsyncStream.makeStream(of: Void.self)
     let marker = DuplicateMarker(sleep: { _ in
@@ -172,13 +165,11 @@ struct DuplicateRelayITTests {
         let task = try await connect(to: server, port: port)
         defer { task.cancel(with: .goingAway, reason: nil) }
 
-        // 1 件目は相手と無関係、2 件目は漏れ（重複）、3 件目は 2 件目の後の自分の発言。
         let mine = finishedStream([
             Support.final(Support.other, 0, 2),
             Support.final(Support.sentence, 20, 23),
             Support.final("了解です、少し確認します", 24, 26),
         ])
-        // 相手の確定結果が 1 件だけ、自分の最初の発言の後 8 秒より後に届いて文脈になる。
         let theirs = finishedStream([Support.final(Support.sentence, 20, 23)])
         try await relay(tracks: [(.自分, mine), (.相手, theirs)], to: server, duplicates: DuplicateMarker())
 
@@ -223,7 +214,6 @@ struct DuplicateRelayITTests {
         defer { mineContinuation.finish() }
         let (theirs, theirsContinuation) = AsyncThrowingStream.makeStream(of: TranscriptionResult.self)
         defer { theirsContinuation.finish() }
-        // 保留に入った合図を受け、上限には達させない。相手の到着だけで解放されることを見る。
         let (entered, enteredContinuation) = AsyncStream.makeStream(of: Void.self)
         let (limit, limitContinuation) = AsyncStream.makeStream(of: Void.self)
         defer { limitContinuation.finish() }
@@ -239,7 +229,6 @@ struct DuplicateRelayITTests {
 
         theirsContinuation.yield(Support.partialResult(Support.sentence, 10, 13))
 
-        // 保留せずに流していれば、印なしの自分の途中結果がこの 2 件に混ざる。
         let received = try await receiveTexts(task, count: 2)
         #expect(Set(received) == [
             try partialEvent(.相手, Support.sentence, 10, 13, duplicate: false),
@@ -272,11 +261,9 @@ struct DuplicateRelayITTests {
         mineContinuation.yield(Support.partialResult("明日の会議は十時", 10.5, 12))
         await Support.awaitSignal(entered)
 
-        // 区間が離れた相手の途中結果。これで解放されるなら、この 1 件に自分の途中結果が混ざる。
         theirsContinuation.yield(Support.partialResult(Support.other, 40, 43))
         #expect(try await receiveTexts(task, count: 1) == [try partialEvent(.相手, Support.other, 40, 43, duplicate: false)])
 
-        // 区間が重なる相手の途中結果が届いて、はじめて解放される。
         theirsContinuation.yield(Support.partialResult(Support.sentence, 10, 13))
         let received = try await receiveTexts(task, count: 2)
         #expect(Set(received) == [
@@ -310,8 +297,6 @@ struct DuplicateRelayITTests {
         mineContinuation.yield(Support.partialResult("明日の会議は十時", 10.5, 12))
         await Support.awaitSignal(entered)
 
-        // `partialResult` ではなく確定結果。`add(theirs:)` が保留の解放を起こすことを見る
-        // （`add(theirPartial:)` とは別の配線）。
         theirsContinuation.yield(Support.final(Support.sentence, 10, 13))
 
         let received = try await receiveTexts(task, count: 2)
@@ -334,7 +319,6 @@ struct DuplicateRelayITTests {
         defer { mineContinuation.finish() }
         let (theirs, theirsContinuation) = AsyncThrowingStream.makeStream(of: TranscriptionResult.self)
         defer { theirsContinuation.finish() }
-        // 上限を、実時間ではなく外からの合図で到達させる。要求された待ち時間も記録する。
         let (entered, enteredContinuation) = AsyncStream.makeStream(of: Void.self)
         let (limit, limitContinuation) = AsyncStream.makeStream(of: Void.self)
         defer { limitContinuation.finish() }
@@ -367,7 +351,6 @@ struct DuplicateRelayITTests {
         defer { mineContinuation.finish() }
         let (theirs, theirsContinuation) = AsyncThrowingStream.makeStream(of: TranscriptionResult.self)
         defer { theirsContinuation.finish() }
-        // 上限にすぐ到達させ、相手の文脈がない時点の判定で流させる。
         let marker = DuplicateMarker(sleep: { _ in })
         let relaying = Task { try await relay(tracks: [(.自分, mine), (.相手, theirs)], to: server, duplicates: marker) }
         defer { relaying.cancel() }
@@ -396,7 +379,6 @@ struct DuplicateRelayITTests {
         defer { mineContinuation.finish() }
         let (theirs, theirsContinuation) = AsyncThrowingStream.makeStream(of: TranscriptionResult.self)
         defer { theirsContinuation.finish() }
-        // 上限にすぐ到達させ、相手の文脈がない時点の判定で流させる。
         let marker = DuplicateMarker(sleep: { _ in })
         let relaying = Task { try await relay(tracks: [(.自分, mine), (.相手, theirs)], to: server, duplicates: marker) }
         defer { relaying.cancel() }
@@ -404,8 +386,6 @@ struct DuplicateRelayITTests {
         mineContinuation.yield(Support.partialResult("明日の会議は十時", 10.5, 12))
         #expect(try await receiveTexts(task, count: 1) == [try partialEvent(.自分, "明日の会議は十時", 10.5, 12, duplicate: false)])
 
-        // `partialResult` ではなく確定結果。`add(theirs:)` が照らし直しを起こすことを見る
-        // （`add(theirPartial:)` とは別の配線）。
         theirsContinuation.yield(Support.final(Support.sentence, 10, 13))
 
         let received = try await receiveTexts(task, count: 2)
@@ -431,11 +411,9 @@ struct DuplicateRelayITTests {
         let relaying = Task { try await relay(tracks: [(.自分, mine), (.相手, theirs)], to: server, duplicates: marker) }
         defer { relaying.cancel() }
 
-        // 流し直しの対象になる、印なしの途中結果を先に作る。
         mineContinuation.yield(Support.partialResult("明日の会議は十時", 10.5, 12))
         #expect(try await receiveTexts(task, count: 1) == [try partialEvent(.自分, "明日の会議は十時", 10.5, 12, duplicate: false)])
 
-        // 確定結果が流れたことで、その途中結果は発言になっている。
         mineContinuation.yield(Support.final(Support.other, 20, 22))
         #expect(try await receiveTexts(task, count: 1) == [try remark(.自分, Support.other, 20, 22, duplicate: false)])
 
@@ -459,8 +437,6 @@ struct DuplicateRelayITTests {
         let (entered, enteredContinuation) = AsyncStream.makeStream(of: Void.self)
         let (limit, limitContinuation) = AsyncStream.makeStream(of: Void.self)
         defer { limitContinuation.finish() }
-        // 途中結果の保留（1 秒）だけ合図で制御する。確定結果の保留（8 秒）は、相手の文脈が無いので
-        // すぐ終えてよく、ここでは区別してすぐ返す。
         let marker = DuplicateMarker(sleep: { duration in
             guard duration == .seconds(1) else { return }
             enteredContinuation.yield()
@@ -469,20 +445,15 @@ struct DuplicateRelayITTests {
         let relaying = Task { try await relay(tracks: [(.自分, mine), (.相手, theirs)], to: server, duplicates: marker) }
         defer { relaying.cancel() }
 
-        // 自分の途中結果が保留に入る（相手の文脈はまだない）。
         mineContinuation.yield(Support.partialResult("明日の会議は十時", 10.5, 12))
         await Support.awaitSignal(entered)
 
-        // 保留が解放される前（上限にも相手の到着にも達する前）に、別の区切りの確定結果が届く。
-        // 保留中の途中結果は捨てられず、確定結果（判定待ちが最大 8 秒ある）より先に流れる。
         mineContinuation.yield(Support.final(Support.other, 20, 22))
         #expect(try await receiveTexts(task, count: 2) == [
             try partialEvent(.自分, "明日の会議は十時", 10.5, 12, duplicate: false),
             try remark(.自分, Support.other, 20, 22, duplicate: false),
         ])
 
-        // 古い保留のタイマーを発火させ、相手の文字も届かせる。流した時点で保留は解かれ、
-        // 照らし直しの対象からも外れているので、二重送出も流し直しも起きない。
         limitContinuation.yield()
         theirsContinuation.yield(Support.partialResult(Support.sentence, 10, 13))
         #expect(try await receiveTexts(task, count: 1) == [try partialEvent(.相手, Support.sentence, 10, 13, duplicate: false)])
@@ -497,8 +468,6 @@ struct DuplicateRelayITTests {
         let task = try await connect(to: server, port: port)
         defer { task.cancel(with: .goingAway, reason: nil) }
 
-        // 相手の流れを先に終える。この状態では確定結果の判定が待たずに返るので、送信の所有者が 1 つでなければ
-        // 確定結果が途中結果を追い越しうる（追い越すと、確定で消した字幕へ古い本文が戻る）。
         let marker = DuplicateMarker()
         try await relay(finishedStream([]), track: .相手, to: server, duplicates: marker)
         try await relay(
@@ -524,7 +493,6 @@ struct DuplicateRelayITTests {
         defer { mineContinuation.finish() }
         let (theirs, theirsContinuation) = AsyncThrowingStream.makeStream(of: TranscriptionResult.self)
         defer { theirsContinuation.finish() }
-        // 保留に入った合図を受け、上限には達させない（テスト内で明示的に発火させる）。
         let (entered, enteredContinuation) = AsyncStream.makeStream(of: Void.self)
         let (limit, limitContinuation) = AsyncStream.makeStream(of: Void.self)
         defer { limitContinuation.finish() }
@@ -535,19 +503,15 @@ struct DuplicateRelayITTests {
         let relaying = Task { try await relay(tracks: [(.自分, mine), (.相手, theirs)], to: server, duplicates: marker) }
         defer { relaying.cancel() }
 
-        // 相手の確定結果が先に届いている。区間は 11.2〜15 で、自分の最初の途中結果（10〜11）とは重ならない。
         theirsContinuation.yield(Support.final(Support.sentence, 11.2, 15))
         #expect(try await receiveTexts(task, count: 1) == [try remark(.相手, Support.sentence, 11.2, 15, duplicate: false)])
 
-        // 自分の最初の途中結果は相手と重ならないので保留される。
         mineContinuation.yield(Support.partialResult(Support.sentence, 10, 11))
         await Support.awaitSignal(entered)
 
-        // 書き換え（10〜11.5）で区間が伸び、相手と重なるようになる。即時判定され、古い保留は解除されるはず。
         mineContinuation.yield(Support.partialResult(Support.sentence, 10, 11.5))
         #expect(try await receiveTexts(task, count: 1) == [try partialEvent(.自分, Support.sentence, 10, 11.5, duplicate: true)])
 
-        // 保留が解除されていれば、古いタイマーが発火しても、古い区間（10〜11）の途中結果は流れない。
         limitContinuation.yield()
         #expect(await receivesNothingMore(task))
     }
@@ -564,7 +528,6 @@ struct DuplicateRelayITTests {
         let (mine, mineContinuation) = AsyncThrowingStream.makeStream(of: TranscriptionResult.self)
         let (theirs, theirsContinuation) = AsyncThrowingStream.makeStream(of: TranscriptionResult.self)
         defer { theirsContinuation.finish() }
-        // 上限には到達させない。要求された待ち時間を記録してから合図を送るので、合図を待てば記録はアサーションより前に終わる。
         let (entered, enteredContinuation) = AsyncStream.makeStream(of: Void.self)
         let marker = DuplicateMarker(sleep: { duration in
             durations.append(duration)
@@ -575,15 +538,12 @@ struct DuplicateRelayITTests {
         defer { relaying.cancel() }
 
         mineContinuation.yield(Support.partialResult("マリ", 10, 11))
-        // 1 本目のタイマーが要求した待ち時間の記録を確立してから書き換える。
         await Support.awaitSignal(entered)
         mineContinuation.yield(Support.partialResult("マリコ", 10, 11.5))
         mineContinuation.finish()
 
         let received = try await receiveTexts(task, count: 1)
         #expect(received == [try partialEvent(.自分, "マリコ", 10, 11.5, duplicate: false)])
-        // 書き換えでタイマーが作り直されていれば、2 本目の待ち時間がここで記録される。
-        // 増えないことの確認なので、`receivesNothingMore` と同じく有界で打ち切る。
         for _ in 0..<10 where durations.values.count < 2 { try await Task.sleep(for: .milliseconds(50)) }
         #expect(durations.values == [.seconds(1)])
     }
@@ -601,9 +561,7 @@ struct DuplicateRelayITTests {
         let relaying = Task { try await relay(tracks: [(.自分, mine), (.相手, theirs)], to: server, duplicates: DuplicateMarker()) }
         defer { relaying.cancel() }
 
-        // 自分の確定結果を保留に入れる。相手は終わらないので、判定は待ち続ける。
         mineContinuation.yield(Support.final(Support.other, 0, 2))
-        // 相手の途中結果が流れ終わってから（文脈に入ってから）、自分の途中結果を流す。
         theirsContinuation.yield(Support.partialResult(Support.sentence, 10, 13))
         #expect(try await receiveTexts(task, count: 1) == [try partialEvent(.相手, Support.sentence, 10, 13, duplicate: false)])
         mineContinuation.yield(Support.partialResult("明日の会議は十時", 10.5, 12))
@@ -619,7 +577,6 @@ struct DuplicateRelayITTests {
         let task = try await connect(to: server, port: port)
         defer { task.cancel(with: .goingAway, reason: nil) }
 
-        // 同じ判定器で、相手 → 自分の順に流し終える（並行実行に結果が左右されない）。
         let marker = DuplicateMarker()
         let theirs = finishedStream([Support.partialResult(Support.sentence, 10, 13), Support.final(Support.other, 30, 33)])
         try await relay(theirs, track: .相手, to: server, duplicates: marker)
@@ -670,7 +627,6 @@ struct DuplicateRelayITTests {
             continuation.yield(Support.final(Support.sentence, 0, 2))
         }
         let theirs = AsyncThrowingStream<TranscriptionResult, Error> { _ in }
-        // 待ち時間をすぐ終える sleep を注入する。
         let marker = DuplicateMarker(sleep: { _ in })
         let relaying = Task { try await relay(tracks: [(.自分, mine), (.相手, theirs)], to: server, duplicates: marker) }
         defer { relaying.cancel() }
@@ -734,7 +690,6 @@ struct DuplicateRelayITTests {
             continuation.yield(Support.final(Support.sentence, 0, 2))
         }
         let (failing, failingContinuation) = AsyncThrowingStream.makeStream(of: TranscriptionResult.self)
-        // 保留中の確定結果が判定待ち（resolve）に入ったことを知らせる合図。
         let (entered, enteredContinuation) = AsyncStream.makeStream(of: Void.self)
         let marker = DuplicateMarker(sleep: { duration in
             enteredContinuation.yield()
@@ -743,7 +698,6 @@ struct DuplicateRelayITTests {
         let relaying = Task { try await relay(tracks: [(.自分, mine), (.相手, failing)], to: server, duplicates: marker) }
         defer { relaying.cancel() }
 
-        // 判定待ちに入ってから相手を失敗させ、キャンセルが判定待ちの最中に起きる状態にする。
         await Support.awaitSignal(entered)
         failingContinuation.finish(throwing: TrackFailure())
         _ = try? await relaying.value
@@ -762,7 +716,6 @@ struct DuplicateRelayITTests {
         let (mine, mineContinuation) = AsyncThrowingStream.makeStream(of: TranscriptionResult.self)
         defer { mineContinuation.finish() }
         let (failing, failingContinuation) = AsyncThrowingStream.makeStream(of: TranscriptionResult.self)
-        // 途中結果が保留に入った合図。上限には達させない。
         let (entered, enteredContinuation) = AsyncStream.makeStream(of: Void.self)
         let (limit, limitContinuation) = AsyncStream.makeStream(of: Void.self)
         defer { limitContinuation.finish() }
@@ -773,7 +726,6 @@ struct DuplicateRelayITTests {
         let relaying = Task { try await relay(tracks: [(.自分, mine), (.相手, failing)], to: server, duplicates: marker) }
         defer { relaying.cancel() }
 
-        // 保留に入ってから相手を失敗させ、キャンセルが保留の最中に起きる状態にする。
         mineContinuation.yield(Support.partialResult("明日の会議は十時", 10.5, 12))
         await Support.awaitSignal(entered)
         failingContinuation.finish(throwing: TrackFailure())
@@ -830,7 +782,6 @@ struct DuplicateRelayITTests {
         #expect(terminated.isSet)
     }
 
-    // Issue #1019: 重複の判定を通る `自分` の経路（relayMine）でも、語の区間が載る
     @Test("重複の判定を通る自分の確定結果と途中結果にも、語の区間がそのまま載る")
     func mineResultsCarryWordTimesThroughDuplicateMarker() async throws {
         let server = WebSocketServer(port: 0)
@@ -874,21 +825,17 @@ struct DuplicateRelayITTests {
             sleep: { duration in
                 durations.append(duration)
                 enteredContinuation.yield()
-                // 1 件目の待ちだけを、テストの合図まで止める（2 件目以降は待たずに戻る）
                 if durations.values.count == 1 { for await _ in release { return } }
             },
             now: { nowCalls.increment(); return clock.value })
         let (mine, mineContinuation) = AsyncThrowingStream.makeStream(of: TranscriptionResult.self)
-        // 相手の流れは終わらせない（終わると保留なしで判定が返る）
         let (theirs, theirsContinuation) = AsyncThrowingStream.makeStream(of: TranscriptionResult.self)
         let relaying = Task { try await relay(tracks: [(.自分, mine), (.相手, theirs)], to: server, duplicates: marker) }
         defer { relaying.cancel() }
 
-        // 2 件とも、音声の時刻 100 秒に届く。1 件目の待ちが止まっている間に、時計を 3 秒進める。
         mineContinuation.yield(Support.final(Support.sentence, 90, 92))
         mineContinuation.yield(Support.final(Support.other, 93, 95))
         await Support.awaitSignal(entered)
-        // 2 件目の届いた時刻まで取り終えるのを待ってから、時計を進める（読み取りの回数そのものは契約ではないので、下限だけで同期する）
         for _ in 0..<400 where nowCalls.value < 3 { try await Task.sleep(for: .milliseconds(25)) }
         clock.advance(to: 103)
         releaseContinuation.yield()

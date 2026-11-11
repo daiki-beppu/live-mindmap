@@ -12,10 +12,6 @@ import {
   tailLines,
 } from "../src/core/intake.ts";
 
-// 起動し直しの上限の判断（Issue #161 の決定: 「60 秒以内に終わったら続けて失敗したと数え、3 回続いたら諦める。
-// 60 秒より長く動いてから終わったら数え直す」）。Issue（構成の変化）で、ヘルパーの終了コード 75（シグナルなし）の終了は
-// 失敗に数えず、別の歯止め（60 秒に 10 回を超えたら諦める）で数える。それ以外の止まり方（コード・シグナル）は今までどおり。
-// 60 秒を実際に待つと検証できないので、純粋関数の境界テストにする（実装ガイドラインの方針）。
 const NOW = 1_000_000;
 const CRASH = { code: 1, signal: null } as const;
 const CONFIG_CHANGE = { code: HELPER_EXIT_CONFIGURATION_CHANGED, signal: null } as const;
@@ -203,7 +199,6 @@ describe("decideIntakeRestart（75 以外の終了は構成の変化に数えな
   });
 });
 
-// 「ヘルパーが止まった」ログ・標準エラーに載せる stderr の末尾数行（order.md:76 が「末尾数行」と指定。行数は開放）
 describe("tailLines（標準エラーの末尾）", () => {
   it("定数として末尾の行数が決まっている", () => {
     expect(STDERR_TAIL_LINES).toBeGreaterThan(0);
@@ -233,7 +228,6 @@ describe("tailLines（標準エラーの末尾）", () => {
   });
 });
 
-// cli status の標準出力（段 3 以前は server.heavy.test.ts が CLI 経由で固定していた文面。値の組み立ては Sessions.status が担い、文面はここで固定する）
 describe("formatIntakeStatus（cli status の標準出力）", () => {
   it("取り込みと別に一時停止の理由・次回時刻・最後の失敗を出す", () => {
     const out = formatIntakeStatus({ status: "running", diffUpdate: { status: "paused", reason: "Claude の利用上限", nextRetryAt: 120_000, lastFailure: "利用上限に達しました" } });

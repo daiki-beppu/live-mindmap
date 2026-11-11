@@ -3,9 +3,6 @@ import Foundation
 import Testing
 @testable import HelperCore
 
-// Issue #1071: 会議アプリのマイクの使用を読み直し（通知のきっかけ・0.5 秒ごとのポーリング）、規則の部品へ渡し、休止の変化を
-// 音のゲートとイベントへ届ける監視。Core Audio・タイマーは外から渡す偽物で置き換え、同じ監視の上で状態の変化を続けて観測する。
-
 private let app = "com.google.Chrome"
 private let ownPID: Int32 = 100
 private let using = [InputProcess(bundleID: app, pid: 200, isRunningInput: true)]
@@ -15,13 +12,11 @@ private func hostTime(seconds: Double) -> UInt64 {
     AudioConvertNanosToHostTime(UInt64(seconds * 1_000_000_000))
 }
 
-/// 期限つきの条件待ちが超過したときの失敗。待っていた条件を示す。
 private struct WaitTimeout: Error, CustomStringConvertible {
     let condition: String
     var description: String { "期限内に成り立たなかった: \(condition)" }
 }
 
-/// 条件が成り立つまで、壁時計の期限つきで待つ。超えたら、待っていた条件を示して throw する。
 private func waitUntil(
     _ condition: String, timeout: Duration = .seconds(5),
     _ predicate: () -> Bool
@@ -45,7 +40,6 @@ private final class Box<Value>: @unchecked Sendable {
     func update(_ body: (inout Value) -> Void) { lock.withLock { body(&stored) } }
 }
 
-/// 偽の時計・待ち・読み取り・出力をまとめたもの。`tick()` で 0.5 秒進めて、待っている監視を 1 回起こす。
 private final class Harness: @unchecked Sendable {
     let origin = hostTime(seconds: 100)
     let processes = Box<[InputProcess]?>(idle)
@@ -53,10 +47,8 @@ private final class Harness: @unchecked Sendable {
     let reads = Box<Int>(0)
     let sleepCalls = Box<Int>(0)
     let sleepDurations = Box<[Duration]>([])
-    /// 監視が処理を始めた入力の数（`now` は入力 1 件につき 1 回呼ばれる）と、こちらが送った入力の数
     let handled = Box<Int>(0)
     let sent = Box<Int>(0)
-    /// こちらが送った入力のうち、読み直しになるもの（`readProcesses` が 1 回ずつ呼ばれる）の数
     let sentReads = Box<Int>(0)
     let events = Box<[HelperEvent]>([])
     let gate = Box<[(paused: Bool, hostTime: UInt64)]>([])
@@ -74,7 +66,6 @@ private final class Harness: @unchecked Sendable {
             rule: rule,
             origin: origin,
             readProcesses: { [self] in
-                // 値を取り終えてから数える（待ちが戻った後のテストの変更が、前の入力に混ざらないように）
                 let value = processes.value
                 reads.update { $0 += 1 }
                 return value
@@ -96,13 +87,12 @@ private final class Harness: @unchecked Sendable {
     }
 
     func start() async throws {
-        sent.update { $0 += 1 }  // start が先頭の読み取りを 1 件入れる
+        sent.update { $0 += 1 }
         sentReads.update { $0 += 1 }
         task = monitor.start()
         try await waitHandled()
     }
 
-    /// 時計を `seconds` 進めて、待っているポーリングを 1 回起こす
     func tick(_ seconds: Double = 0.5) async throws {
         clock.update { $0 += seconds }
         sent.update { $0 += 1 }
@@ -111,7 +101,6 @@ private final class Harness: @unchecked Sendable {
         try await waitHandled()
     }
 
-    /// 入力（読み直しのきっかけ・手動の指示）を 1 件送り、処理されるのを待つ
     func send(reads: Bool = false, _ input: () -> Void) async throws {
         sent.update { $0 += 1 }
         if reads { sentReads.update { $0 += 1 } }
@@ -119,8 +108,6 @@ private final class Harness: @unchecked Sendable {
         try await waitHandled()
     }
 
-    /// 送った入力がすべて値（時計・プロセス一覧）を読み終えるまで、期限つきで待つ。これを返ってから、時計やプロセス一覧を変えてよい。
-    /// 結果（イベント・ゲート）は、呼ぶ側が `waitUntil` で観測する。
     func waitHandled(timeout: Duration = .seconds(5)) async throws {
         try await waitUntil(
             "送った入力 \(sent.value) 件の処理の開始と、読み直し \(sentReads.value) 回（実際は \(handled.value) 件・\(reads.value) 回）",
@@ -128,7 +115,6 @@ private final class Harness: @unchecked Sendable {
         ) { handled.value >= sent.value && reads.value >= sentReads.value }
     }
 
-    /// 何も起きないことを確かめるときだけ使う。起きるはずのことを待つ場面では使わない。
     func idleBriefly() async {
         for _ in 0..<50 { await Task.yield() }
         try? await Task.sleep(for: .milliseconds(20))
@@ -149,7 +135,6 @@ private final class Harness: @unchecked Sendable {
     }
 }
 
-/// 期待する休止の列（時刻つき）。実際の列と秒の許容差つきで比べる。
 private func matches(
     _ actual: [(paused: Bool, reason: SelfPauseReason, start: Double)],
     _ expected: [(paused: Bool, reason: SelfPauseReason, start: Double)]
@@ -187,8 +172,8 @@ struct SelfPauseMonitorTests {
     func idleForThreeSecondsPausesThenUsingTakes() async throws {
         let harness = Harness()
         try await harness.start()
-        for _ in 0..<5 { try await harness.tick() }  // 2.5 秒
-        try await harness.tick()  // 3.0 秒
+        for _ in 0..<5 { try await harness.tick() }
+        try await harness.tick()
         try await waitUntil("3.0 秒で自動の休止が 1 件") { harness.pauses.count == 1 }
         #expect(harness.pauses.first?.paused == true)
         #expect(harness.pauses.first?.reason == .automatic)
@@ -199,24 +184,20 @@ struct SelfPauseMonitorTests {
             #expect(abs(offsetSeconds(from: harness.origin, to: gateTime) - 3.0) < 0.001)
         }
 
-        // 休止の間は繰り返し知らせない（最後に列全体で確かめる）
         try await harness.tick()
         try await harness.tick()
 
-        // 同じ監視の上で、マイクを使い始めるとその回で取る（4.5 秒）
         harness.processes.value = using
         try await harness.tick()
         try await waitUntil("4.5 秒で休止の解除が届く") { harness.pauses.count == 2 }
         #expect(harness.gate.value.map(\.paused) == [true, false])
 
-        // もう一度閉じると、待ちはやり直し（閉じて最初に読んだ 5.0 秒から 3 秒後の 8.0 秒まで休止しない）
         harness.processes.value = idle
         for _ in 0..<6 { try await harness.tick() }
         try await harness.tick()
         try await waitUntil("8.5 秒の読み直しで 3 件目の休止が届く") { harness.pauses.count == 3 }
         harness.monitor.stop()
         await harness.task?.value
-        // 早すぎる休止・繰り返しの知らせが無いことを、時刻つきの列の一致で確かめる
         let times = harness.pauses.map(\.start)
         #expect(
             matches(harness.pauses, [(true, .automatic, 3.0), (false, .automatic, 4.5), (true, .automatic, 8.0)]),
@@ -270,7 +251,6 @@ struct SelfPauseMonitorTests {
 
         try await harness.send { harness.monitor.press(paused: true) }
 
-        // 手動の休止は、会議アプリがマイクを閉じるまで続き、閉じると待たずに自動の休止になる（取る瞬間は無い）
         for _ in 0..<6 { try await harness.tick() }
         harness.processes.value = idle
         try await harness.tick()
@@ -295,13 +275,11 @@ struct SelfPauseMonitorTests {
         let expected = SelfPauseCarryOver(manual: .none, basis: .unknown, lastKnown: .idle, idleFor: 3)
         try await waitUntil("3 秒の状態が届く") { harness.states.last == expected }
         let settled = harness.states.count
-        // 休止で頭打ちになった後は、値が変わらないので増えない
         try await harness.tick()
         try await harness.tick()
         harness.monitor.stop()
         await harness.task?.value
         #expect(harness.states.count == settled)
-        // 重複した連続は出さない
         for (before, after) in zip(harness.states, harness.states.dropFirst()) { #expect(before != after) }
     }
 

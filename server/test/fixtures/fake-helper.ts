@@ -45,7 +45,6 @@ if (command === "check") {
   writeFileSync(rest[rest.indexOf("--out") + 1]!, MIX_OUTPUT);
 } else if (command === "run") {
   record({ type: "run", argv: [command, ...rest], pid: process.pid });
-  // 起動直後に書く（終了直前だと child.once("exit") が最後の data イベントより先に解決し得るため）
   for (const line of script.stderrLines ?? []) process.stderr.write(line + "\n");
   if (script.failRun) {
     process.stderr.write(script.failRun.stderr);

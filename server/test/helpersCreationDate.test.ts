@@ -3,9 +3,6 @@ import { Effect, Layer, PlatformError, Result, Sink, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { Helpers } from "../src/helpers.ts";
 
-// サーバーが起動するヘルパーの creation-date（録画のファイルの作成日時を 1 回だけ問い合わせる）の契約。
-// 成功は ISO8601 の文字列か null。起動の失敗・0 以外の終了・壊れた出力は、型付きの失敗になる（呼び出し側が今の時刻へ切り替える）。
-
 const processLayer = Effect.fnUntraced(function* (stdout: string, code: number) {
   const commands: ChildProcess.StandardCommand[] = [];
   const state = { closed: 0 };

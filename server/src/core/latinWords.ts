@@ -1,6 +1,3 @@
-// STT は英字の製品名・サービス名をカタカナ（ノーション・フィグマ）で書く。読みのサブコマンドは英字を読めないので、
-// 略語でない英字の語は、先にモデルにカタカナの読みを聞き、返ったカタカナを読みのサブコマンドでローマ字にする。
-
 export type KatakanaAnswer = { readonly surface: string; readonly katakana: string };
 
 const ABBREVIATION = /^[A-Z]{1,5}$/;

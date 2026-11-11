@@ -147,7 +147,6 @@ describe("Apple の会議中の再起動", () => {
     expect(fake.requests.at(-1)!.url).toBe(`${fake.processes[1]!.url}/chat/completions`);
   }));
 
-  // Issue #642: 英字の語のカタカナの読み（katakana）も、差分更新（update）と同じ状態の確認を通る
   it.effect("再起動中の katakana は HTTP を送らず通常失敗する（空の答えにしない）。ready 後はまた同じ updater で聞ける", () => Effect.gen(function* () {
     const fake = yield* fakeAppleLifecycle([{}, { holdReady: true }]);
     const layer = yield* fake.prepare;

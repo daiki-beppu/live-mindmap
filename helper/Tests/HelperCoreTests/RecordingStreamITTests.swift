@@ -10,7 +10,6 @@ private func hostTime(after origin: UInt64, nanos: UInt64) -> UInt64 {
     origin + AudioConvertNanosToHostTime(nanos)
 }
 
-/// 440 Hz のサイン波を `seconds` 秒分入れたバッファ。
 private func tone(sampleRate: Double, channels: AVAudioChannelCount, seconds: Double) throws -> AVAudioPCMBuffer {
     let format = try #require(AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: channels))
     let frames = AVAudioFrameCount(sampleRate * seconds)
@@ -29,7 +28,6 @@ private func temporaryDirectory() throws -> URL {
     return url
 }
 
-/// 録音ファイルの長さ（秒）。
 private func duration(of url: URL) throws -> Double {
     let file = try AVAudioFile(forReading: url)
     return Double(file.length) / file.processingFormat.sampleRate
@@ -95,8 +93,7 @@ struct RecordingStreamITTests {
         let (stream, finished) = recording(upstream, to: recorder)
 
         input.yield(CapturedAudio(buffer: try tone(sampleRate: 48_000, channels: 1, seconds: 0.1), hostTime: origin))
-        for try await _ in stream { break } // 下流（文字起こし）が 1 つ受け取って止まる
-        // 下流が止まった後の音声も録音される
+        for try await _ in stream { break }
         input.yield(CapturedAudio(buffer: try tone(sampleRate: 48_000, channels: 1, seconds: 0.4), hostTime: hostTime(after: origin, nanos: 100_000_000)))
         input.finish()
         try await finished.value

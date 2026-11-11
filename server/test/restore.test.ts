@@ -7,7 +7,6 @@ import { playBatches } from "./fixtures/batches.ts";
 import { remark, restore, scripted, type Step } from "./fixtures/restore.ts";
 import { collectLog, forbiddenUpdater, logLayer, settleUntil, silentLog, updaterLayer, type UpdateFailure } from "./fixtures/sessionLayers.ts";
 
-// 差分更新が呼ばれたら記録して defect にする偽物。復元が LLM を呼ばないことの確認に使う。
 function forbidden() {
   const calls: DiffInput[] = [];
   const layer = updaterLayer((input) => {
@@ -17,11 +16,9 @@ function forbidden() {
   return { calls, layer };
 }
 
-// ファイルに書いて読み直した形（at 付きの JSONL 1 行ぶん）にする
 const viaJsonl = (events: LogEvent[]): unknown[] =>
   events.map((e, i) => JSON.parse(JSON.stringify({ at: `2026-10-01T00:00:0${i % 10}.000Z`, ...e })));
 
-// すべての種類の操作・捨てられる操作・失敗・重複の印・論点の決定済み・未処理の発言を起こした元のセッション
 const original = Effect.fn("original")(function* () {
   const p = Array.from({ length: 6 }, () => [remark("発言"), remark("発言")] as const);
   const id = (i: number, j: 0 | 1) => p[i]![j].id;
@@ -31,7 +28,7 @@ const original = Effect.fn("original")(function* () {
       { op: "add", ref: "t2", parent: "t1", kind: "論点", text: "面接は何回か", evidence: [id(0, 0)] },
       { op: "add", ref: "t3", parent: "t2", kind: "案", text: "3 回", evidence: [id(0, 1)] },
       { op: "add", ref: "t4", parent: "root", kind: "課題", text: "面接官が足りない", evidence: [id(0, 1)] },
-      { op: "add", ref: "t5", parent: "root", kind: "課題", text: "面接の担当が偏る", evidence: [id(0, 0)] }, // 統合で統合先が新しく得る根拠
+      { op: "add", ref: "t5", parent: "root", kind: "課題", text: "面接の担当が偏る", evidence: [id(0, 0)] },
     ],
     [
       { op: "update", node: "n3", text: "3 回にする", evidence: [id(1, 0)], planStatus: "却下" },
@@ -42,17 +39,15 @@ const original = Effect.fn("original")(function* () {
       { op: "delete", node: "n6" },
       { op: "add", ref: "t7", parent: "n1", kind: "TODO", text: "求人票を直す", evidence: [id(2, 0)] },
     ],
-    [{ op: "delete", node: "n99" }], // 捨てられる操作
-    { _tag: "UpdateFailed", message: "timeout" }, // 差分更新の失敗
+    [{ op: "delete", node: "n99" }],
+    { _tag: "UpdateFailed", message: "timeout" },
     [
       { op: "move", node: "n3", parent: "n1" },
       { op: "add", ref: "t8", parent: "root", kind: "論点", text: "予算", evidence: [id(5, 0)] },
     ],
   ];
-  // 1 回の呼び出しに 2 件を渡すため、組ごとに前の呼び出し中に届かせる。重複の印つきの発言は差分更新に渡らない
   const duplicate = remark("予算は来週決めます", { track: "自分", duplicate: true });
   const { session, events } = yield* playBatches([p[0]!, p[1]!, p[2]!, [duplicate, ...p[3]!], p[4]!, p[5]!], script);
-  // 最後の発言は、差分更新に渡った（返事を待っている）が、まだ反映されていない。台本が尽きているので、この呼び出しは返らない
   const lone = remark("最後の発言");
   yield* session.push(lone);
   return { session, events, lone };
@@ -97,7 +92,6 @@ describe("ログからの復元", () => {
 
       expect(yield* restored.snapshot).toEqual(yield* session.snapshot);
       expect(yield* restored.exportJson).toEqual(yield* session.exportJson);
-      // 変わったこと（round・at・記録）もログから同じ値に戻る
       expect((yield* restored.snapshot).changes).toEqual((yield* session.snapshot).changes);
       expect((yield* restored.snapshot).round).toBe((yield* session.snapshot).round);
     }));
@@ -120,13 +114,11 @@ describe("ログからの復元", () => {
       expect(yield* restored.unreflectedRemarks).toEqual(yield* session.unreflectedRemarks);
     }));
 
-  // Issue #1021: log.jsonl の発言の行に決まった話者が残る。復元でも話者を保ち、話者を持たない古い行は話者なしとして戻す
   it.effect("発言の行の話者（相手 A・自分）は復元しても保たれ、話者を持たない古い行は話者なしのまま。speaker の行は読み飛ばす", () =>
     Effect.gen(function* () {
       const labeled = remark("ラベルつき", { speaker: "相手 A" });
       const own = remark("自分の発言", { track: "自分", speaker: "自分" });
       const old = remark("話者のない古い行");
-      // speaker の行は SessionSink が書く行（LogEvent ではない）。ファイルから読み直した形にして渡す
       const rows: ReadonlyArray<{ readonly type: string; readonly [key: string]: unknown }> = [
         { type: "start", title: "定例" },
         { type: "speaker", track: "相手", start: 0, end: 1, slot: 2, final: true },
@@ -152,13 +144,12 @@ describe("ログからの復元", () => {
       const node = (id: string) => snap.nodes.find((n) => n.id === id);
       expect(snap.nodes[0]).toMatchObject({ id: "root", text: "定例" });
       expect(node("n3")).toMatchObject({ text: "3 回にする", planStatus: "却下", parent: "n1" });
-      expect(node("n5")).toBeUndefined(); // 統合された
-      expect(node("n6")).toBeUndefined(); // 削除された
+      expect(node("n5")).toBeUndefined();
+      expect(node("n6")).toBeUndefined();
       expect(node("n2")).toMatchObject({ pointStatus: "未決" });
       const diffs = events.flatMap((e) => (e.type === "diff" ? [e] : []));
       expect(diffs.some((d) => d.dropped.length > 0)).toBe(true);
       expect(diffs.some((d) => d.error !== undefined)).toBe(true);
-      // 変わったこと: 成功した 5 回の反映で round が進み（失敗した 1 回は進まない）、全種類の変化が記録されている
       expect(snap.round).toBe(5);
       const types = new Set(snap.changes.map((c) => c.change));
       expect(types).toEqual(new Set(["追加", "更新", "決定済み化", "却下", "移動", "統合"]));
@@ -167,7 +158,6 @@ describe("ログからの復元", () => {
       expect(snap.changes.find((c) => c.change === "却下")).toMatchObject({ node: "n3", round: 2 });
     }));
 
-  // Issue #1019: wordTimes（語ごとの区間）を持つ remark の行を含む新しいログも、持たない古い行と同じように復元できる
   it.effect("wordTimes 付きの remark の行を含むログも、wordTimes を除いたログと同じマップ・書き出しに復元される", () =>
     Effect.gen(function* () {
       const { events } = yield* original();
@@ -209,7 +199,6 @@ describe("ログからの復元", () => {
         lines[0],
         unknown(1),
         ...lines.slice(1, 4),
-        // 知っている種類のフィールド名を持っていても、種類が違えば読み飛ばす
         { type: "future", remark: { id: "r-x", track: "相手", start: 0, end: 1, text: "x" }, ops: [{ op: "delete", node: "n1" }] },
         ...lines.slice(4),
         unknown(2),
@@ -220,9 +209,6 @@ describe("ログからの復元", () => {
       expect(yield* restored.exportJson).toEqual(yield* session.exportJson);
     }));
 
-  // Issue #161: ヘルパーの予期せぬ終了・起動し直し・諦め・resume を記録する新しいログの種類（intake-stopped・intake-restarted・
-  // intake-gave-up）があっても、復元は壊れない（order.md:74 が明示）。type が start・remark・diff のどれでもない行は decode せず
-  // 読み飛ばす（前のテストの汎用の未知種類とは別の検証）
   it.effect("ヘルパーが止まった・起動し直した・諦めた・resume のログ（intake-stopped・intake-restarted・intake-gave-up）を含んでいても、復元は同じマップに戻り、それらの行はマップに反映されない", () =>
     Effect.gen(function* () {
       const { session, events } = yield* original();
@@ -241,11 +227,9 @@ describe("ログからの復元", () => {
 
       expect(yield* restored.snapshot).toEqual(yield* session.snapshot);
       expect(yield* restored.exportJson).toEqual(yield* session.exportJson);
-      // intake 系の行の内容（stderr 等）がマップへ漏れていない
       expect(JSON.stringify(yield* restored.exportJson)).not.toContain("boom");
     }));
 
-  // Issue #863: 相手の音声が届かないときに残る tap-silent の行があっても、復元は同じマップに戻る
   it.effect("tap-silent のログを含んでいても、復元は同じマップに戻る", () =>
     Effect.gen(function* () {
       const { session, events } = yield* original();
@@ -257,7 +241,6 @@ describe("ログからの復元", () => {
       expect(yield* restored.exportJson).toEqual(yield* session.exportJson);
     }));
 
-  // Issue #1069: 自分の休止のログ（self-paused / self-resumed）があっても、復元は同じマップに戻る
   it.effect("self-paused / self-resumed のログを含んでいても、復元は同じマップに戻る", () =>
     Effect.gen(function* () {
       const { session, events } = yield* original();
@@ -278,7 +261,6 @@ describe("ログからの復元", () => {
       expect(JSON.stringify(yield* restored.exportJson)).not.toContain("手動");
     }));
 
-  // Issue #1020: 話者の区間の生の記録（speaker・speaker-off）があっても、復元は同じマップに戻る
   it.effect("speaker・speaker-off のログを含んでいても、復元は同じマップに戻る", () =>
     Effect.gen(function* () {
       const { session, events } = yield* original();
@@ -310,25 +292,19 @@ describe("ログからの復元", () => {
       yield* restored.push(next);
       yield* restored.idle;
 
-      // 未処理だった発言は、復元後の最初の差分更新に、続きの発言と合わせて渡る
       expect(cont.calls).toHaveLength(1);
       expect(cont.calls[0]!.fresh.map((u) => u.id)).toEqual([lone.id, next.id]);
-      // 直前の発言は、復元前に処理済みだった最後の 3 つ
       expect(cont.calls[0]!.recent).toHaveLength(3);
       expect(cont.calls[0]!.map.nodes["n3"]).toMatchObject({ text: "3 回にする", planStatus: "却下" });
-      // ログに書くのは復元後の新しいイベントだけ（発言と差分）。start は書き直さない
       expect(contEvents.map((e) => e.type)).toEqual(["remark", "diff"]);
       expect((yield* restored.snapshot).nodes.find((n) => n.text === "続き")).toMatchObject({ parent: "root", evidence: [lone.id, next.id] });
     }));
 
   it.effect("続きの差分更新が受け取る直前の発言・マップは、元のセッションが続けた場合と同じ", () =>
     Effect.gen(function* () {
-      // 元のセッションをそのまま続けた場合と、復元して続けた場合で、差分更新へ渡すマップと発言が一致する
       const p = [remark("一"), remark("二"), remark("三"), remark("四")];
       const first: Op[] = [{ op: "add", ref: "t1", parent: "root", kind: "議題", text: "採用", evidence: [p[0]!.id] }];
-      // 元のセッション: 1 回目の呼び出し中に p[1]〜p[3] が届き、2 回目の呼び出しに 3 件まとめて渡る
       const { session, calls, events } = yield* playBatches([[p[0]!], [p[1]!, p[2]!, p[3]!]], [first, []]);
-      // 復元するのは、1 回目の反映まで書いて落ちた時点のログ。p[1]・p[2] は未処理のまま、p[3] はまだ届いていない
       const secondDiff = events.findIndex((e, i) => e.type === "diff" && events.slice(0, i).some((x) => x.type === "diff"));
       const logged = events.slice(0, secondDiff).filter((e) => !(e.type === "remark" && e.remark.id === p[3]!.id));
       expect(secondDiff).toBeGreaterThan(0);
@@ -354,7 +330,7 @@ describe("ログからの復元", () => {
       const events: LogEvent[] = [
         { type: "start", title: "定例" },
         { type: "remark", remark: real },
-        { type: "remark", remark: filler }, // 印のない（古い形式の）ログでも現行の基準で除く
+        { type: "remark", remark: filler },
         { type: "remark", remark: marked, noContent: true },
       ];
       const next = remark("担当は佐藤さんで");
@@ -368,7 +344,6 @@ describe("ログからの復元", () => {
       expect(cont.calls[0]!.fresh.map((u) => u.id)).toEqual([real.id, next.id]);
     }));
 
-  // 中身のない発言が差分更新に渡っていた旧形式のログ（fresh にフィラーが入っている）
   function legacyLogWithProcessedFillers() {
     const f1 = remark("あ");
     const r1 = remark("今日は採用の話をします");
@@ -534,9 +509,7 @@ describe("話者の名前を含むログからの復元", () => {
   }
 });
 
-// 段 6 の互換: 今の形式の log.jsonl（at・intake-*・noContent・error つきの diff・dropped つきの diff を含む合成のログ）を、そのまま復元できる
 describe("済み（close）を含むログからの復元", () => {
-  // 手の n 番目が round n。1: 追加 / 2: 何もしない / 3: 閉じる（有効 2 つ・無効 3 つ）/ 4: 済みの論点の下に追加して開き直す / 5: 別の議題を閉じる
   const closedSession = Effect.fn("closedSession")(function* () {
     const p = Array.from({ length: 5 }, () => [remark("発言"), remark("発言")] as const);
     const id = (i: number, j: 0 | 1) => p[i]![j].id;
@@ -550,9 +523,9 @@ describe("済み（close）を含むログからの復元", () => {
       [
         { op: "close", node: "n2" },
         { op: "close", node: "n1" },
-        { op: "close", node: "n99" }, // 存在しない
-        { op: "close", node: "n2" }, // すでに済み
-        { op: "close", node: "root" }, // 議題・論点でない
+        { op: "close", node: "n99" },
+        { op: "close", node: "n2" },
+        { op: "close", node: "root" },
       ],
       [{ op: "add", ref: "t4", parent: "n2", kind: "案", text: "3 回", evidence: [id(3, 0)] }],
       [{ op: "close", node: "n3" }],
@@ -564,7 +537,6 @@ describe("済み（close）を含むログからの復元", () => {
     Effect.gen(function* () {
       const { session, events } = yield* closedSession();
       const live = yield* session.snapshot;
-      // 前提: 済みのノードがあり、開き直しが起きており、無効な閉じるが dropped に残っている
       expect(live.nodes.filter((n) => n.talkStatus === "済み").map((n) => n.id)).toEqual(["n3"]);
       expect(live.nodes.find((n) => n.id === "n1")).not.toHaveProperty("talkStatus");
       expect(live.nodes.find((n) => n.id === "n2")).not.toHaveProperty("talkStatus");
@@ -659,13 +631,10 @@ describe("共有画面の復元（復元はファイル名だけを戻し、画�
   const bytesOf = (s: string) => new TextEncoder().encode(s);
   const shot = (start: number, id: string): ScreenChange => ({ start, image: { id, bytes: bytesOf(`bytes:${id}`) } });
   const gone = (start: number): ScreenChange => ({ start, image: null });
-  // 比べるのは映り始めた時刻とバイト列だけ（復元した画像の id はファイル名で、元の id とは違う）
   const view = (list: readonly ScreenChange[] | undefined) => list?.map((s) => ({ start: s.start, bytes: s.image === null ? null : Array.from(s.image.bytes) }));
   const spoken = (id: string, end: number): Remark => ({ id, track: "相手", start: end - 1, end, text: `発言${id}` });
 
   type Screens = { file: string; bytes: Uint8Array }[];
-  // screens/ から読む SessionLog の偽物。読んだファイル名を記録する。無いファイルは defect（読み戻しの失敗）。
-  // lines・written を渡すと、書いた行と画像もためる
   const reader = (stored: Screens, lines?: LogEvent[], written?: Screens) => {
     const reads: string[] = [];
     const log = logLayer(
@@ -681,10 +650,6 @@ describe("共有画面の復元（復元はファイル名だけを戻し、画�
     return { reads, log };
   };
 
-  // 元のセッション: 2 回目の呼び出しは失敗。最後の呼び出しの後に、まだ添えていない変化が 3 件残る（F は最後の diff の区切りより前の時刻だが、行は diff より後）
-  // 発言 1 件ごとに 1 回呼ぶ。
-  //   call 1 (cutoff 10): A@1 を添え、B@2 は 10 秒未満なので持ち越す / call 2 (cutoff 40, 失敗): 持ち越した B と C@15 を添える
-  //   diff より後に受けた: F@28（区切り 40 以下）, D@100, E(なし)@120
   const original = Effect.gen(function* () {
     const events: LogEvent[] = [];
     const screens: Screens = [];
@@ -706,12 +671,11 @@ describe("共有画面の復元（復元はファイル名だけを戻し、画�
   it.effect("続きの呼び出しに添える未送画面が、元のセッションと一致する", () =>
     Effect.gen(function* () {
       const { session, live, events: logged, screens } = yield* original;
-      const events = [...logged]; // 続きを入れる前までのログ
+      const events = [...logged];
       const next = [spoken("a3", 200)];
       for (const r of next) yield* session.push(r);
       yield* session.idle;
       const expected = live.calls[2]!;
-      // 元のセッションの続きで、未送の F・D・E を添えることが前提
       expect(view(expected.screens)!.map((s) => s.start)).toEqual([28, 100, 120]);
 
       const cont = scripted([]);
@@ -722,7 +686,6 @@ describe("共有画面の復元（復元はファイル名だけを戻し、画�
 
       expect(cont.calls).toHaveLength(1);
       expect(view(cont.calls[0]!.screens)).toEqual(view(expected.screens));
-      // 画面以外の入力も元と同じ
       expect(cont.calls[0]!.fresh).toEqual(expected.fresh);
     }));
 
@@ -745,9 +708,9 @@ describe("共有画面の復元（復元はファイル名だけを戻し、画�
       const lines: LogEvent[] = [];
       const { log } = reader(screens, lines, written);
       const restored = yield* restoreSession(viaJsonl(events)).pipe(Effect.provide(Layer.merge(forbiddenUpdater, log)));
-      yield* restored.pushScreen(shot(2, "again")); // B と同じ秒
-      yield* restored.pushScreen(shot(28, "again2")); // 添えていない F と同じ秒
-      yield* restored.pushScreen(shot(1, "old")); // 過去の A と同じ秒
+      yield* restored.pushScreen(shot(2, "again"));
+      yield* restored.pushScreen(shot(28, "again2"));
+      yield* restored.pushScreen(shot(1, "old"));
       yield* restored.pushScreen(shot(3, "new-time"));
       expect(written.map((w) => w.file)).toEqual(["0002.0-2.jpg", "0028.0-2.jpg", "0001.0-2.jpg", "0003.0.jpg"]);
       expect(lines.filter((l) => l.type === "screen")).toEqual([
@@ -773,7 +736,7 @@ describe("共有画面の復元（復元はファイル名だけを戻し、画�
       yield* session.pushScreen(shot(1, "A"));
       yield* session.pushScreen(shot(12, "B"));
       yield* session.push(spoken("a1", 25));
-      yield* settleUntil(() => calls.length === 1); // 1 回目が応答待ちになるまで
+      yield* settleUntil(() => calls.length === 1);
       expect(calls).toHaveLength(1);
       yield* session.pushScreen(shot(23, "F"));
       yield* session.pushScreen(gone(24));
@@ -830,9 +793,6 @@ describe("共有画面の復元（復元はファイル名だけを戻し、画�
         expect(reads).toEqual([]);
       }));
 
-    // 一時停止の回は diff の行を書かない。元と復元の両方を再試行して、続きの入力を比べる
-    // paused の回（paused 番目の呼び出し）を Deferred で止め、その間に during を受けてから一時停止させる。
-    // 続きの発言を元のセッション（時計を進めて再試行）と復元したセッションの両方へ流して、添える画面を比べる
     const waitFor = Effect.fnUntraced(function* (condition: () => boolean, message: string) {
       const deadline = Date.now() + 5_000;
       while (!condition()) {
@@ -866,7 +826,6 @@ describe("共有画面の復元（復元はファイル名だけを戻し、画�
         const before = calls.length;
         const cont = scripted([]);
         const restored = yield* restoreSession(viaJsonl(logged)).pipe(Effect.provide(Layer.merge(updaterLayer(cont.update), reader(screens).log)));
-        // 復元したセッションも一時停止のまま戻るので、どちらも 1 つ目の発言を受けてから時計を進めて再試行する。どちらも一時停止した発言を含む
         yield* session.push(spoken("n0", next[0]!));
         yield* restored.push(spoken("n0", next[0]!));
         yield* TestClock.adjust(DIFF_UPDATE_RETRY_MS);

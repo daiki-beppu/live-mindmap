@@ -6,8 +6,6 @@ import { join } from "node:path";
 import { describe, expect, it } from "@effect/vitest";
 import { Effect } from "effect";
 
-// サーバーと同じプロセスで動くケース（start の HTTP 拒否・モデルの保持）は openaiCompatible.it.test.ts の runCli が持つ。
-// ここに残すのは、サーバーを使わずにプロセスの stderr・exit code だけで確かめられる 1 件
 const directory = Effect.acquireRelease(
   Effect.tryPromise(() => mkdtemp(join(tmpdir(), "live-mindmap-compatible-process-"))),
   (root) => Effect.promise(() => rm(root, { recursive: true, force: true })),

@@ -1,19 +1,15 @@
 import Foundation
 
-/// 発言のトラック。値はサーバーの `Track`（server/src/core/session.ts）と同じ文字列。
 public enum Track: String, Sendable, Equatable {
     case 自分
     case 相手
 }
 
-/// STT が返す 1 件の結果。`isFinal` が true なら確定結果、false なら途中結果。
-/// `start` / `end` は、`run` が音声取得を始める直前を 0 とする、2 トラック共通の秒数。
 public struct TranscriptionResult: Sendable, Equatable {
     public var text: String
     public var isFinal: Bool
     public var start: Double
     public var end: Double
-    /// STT の run ごとの区間。本文の UTF-16 位置と、`start` / `end` と同じ基準の秒。持たない結果は空。
     public var wordTimes: [WordTime]
 
     public init(text: String, isFinal: Bool, start: Double, end: Double, wordTimes: [WordTime] = []) {
@@ -25,14 +21,10 @@ public struct TranscriptionResult: Sendable, Equatable {
     }
 }
 
-/// WebSocket に流すイベント。確定結果は `remark`、途中結果は別の `partial`。どちらも `duplicate` を持つ。
-/// `id` はサーバーが採番するので、ここでは持たない。
-/// `screen-off` の理由。ヘルパーが流すのは `許可なし` だけ（`指定` はサーバーが書く）。
 public enum ScreenOffReason: String, Sendable, Equatable {
     case 許可なし
 }
 
-/// `speaker-off` の理由（Issue #1020）。
 public enum SpeakerOffReason: String, Sendable, Equatable {
     case モデルなし
     case 読み込みに失敗
@@ -40,7 +32,6 @@ public enum SpeakerOffReason: String, Sendable, Equatable {
 }
 
 enum HelperEventRetentionSlot: CaseIterable, Sendable {
-    // 接続時の再送順は起動時のイベント到着順に依存させない。
     case origin, screen, screenOff, tapSilent, selfPause, selfPauseState, speakerOff, fileDuration, fileAudioTracks
 }
 
@@ -53,37 +44,19 @@ enum HelperEventDelivery: Equatable, Sendable {
 public enum HelperEvent: Sendable, Equatable {
     case remark(track: Track, start: Double, end: Double, text: String, duplicate: Bool, words: [Word], wordTimes: [WordTime])
     case partial(track: Track, start: Double, end: Double, text: String, duplicate: Bool, words: [Word], wordTimes: [WordTime])
-    /// 2 トラック共通の時刻の基準（`AudioGetCurrentHostTime()` の値）の通知。ヘルパー起動につき 1 回だけ流す（Issue #161）。
     case origin(hostTime: UInt64)
-    /// 共有画面の変化（Issue #278）。`start` は `origin` と同じ原点からの秒。
-    /// `image` は JPEG の base64。映していたウィンドウが無くなったときは nil で、JSON では `null` を明示する。
-    /// `lines` は Vision で読んだ文字の行（Issue #643）。OCR に失敗したときは nil で、ocrFailed を付ける。画像が nil のときは nil で、キーを付けない。
     case screen(start: Double, image: String?, lines: [String]?, ocrFailed: Bool = false, meetingTabTitle: String? = nil)
-    /// 共有画面を取り込めない（画面収録の許可が無い・断られた・途中で取れなくなった）。音声は続ける。`start` は `origin` と同じ原点からの秒。
     case screenOff(start: Double, reason: ScreenOffReason)
-    /// 相手のタップから、フレーム数 1 以上のバッファが 10 秒届かなかった。`start` は `origin` と同じ原点からの秒。1 回だけ流す。
     case tapSilent(start: Double)
-    /// `自分` の休止の状態が変わった（Issue #1069・#1071）。`reason` は手動・自動・判定できないのどれか。休止中に理由だけが変わったときも流す。`start` は `origin` と同じ原点からの秒。
     case selfPause(paused: Bool, reason: SelfPauseReason, start: Double)
-    /// `自分` の休止の規則の、起動し直しで引き継ぐ状態（Issue #1071）。server が覚え、helper を起動し直すときに引数で送り直す。
     case selfPauseState(SelfPauseCarryOver)
-    /// `相手` のトラックの話者の区間（Issue #1020）。`start` / `end` は `origin` と同じ原点からの秒。
-    /// `slot` は Nemotron 3 の出力の番号。`isFinal` が false なら仮の区間で、JSON のキーは `final`。
     case speaker(track: Track, start: Double, end: Double, slot: Int, isFinal: Bool)
-    /// 話者分離が使えない（モデルが無い・読み込みに失敗・途中で停止）。認識は続ける。`start` は `origin` と同じ原点からの秒。
     case speakerOff(start: Double, reason: SpeakerOffReason)
-    /// 録画の文字起こし（`transcribe-file`）が最初に流す、ファイルの音声の全体の長さ（秒）。サーバーが進み具合の「全体」に使う。
     case fileDuration(duration: Double)
-    /// 録画の文字起こし（`transcribe-file`）が `file-duration` の後に流す、ファイルの音声トラックの本数。使うのは最初の 1 本だけ。サーバーは 2 本以上のとき端末に知らせる。
     case fileAudioTracks(count: Int)
-    /// `相手` の話者分離が、ここまで確定した（Issue #1021）。`to` より前の確定した区間（`speaker` の `final: true`）は、すべて流した。
-    /// `origin` と同じ原点からの秒。値は前に流した値より小さくならない。サーバーはこの位置で、発言の終わりまでの区間が揃ったかを判定する。
     case speakerSettled(track: Track, to: Double)
     /// `相手` の話者の枠 `slot` に、別の声が混ざっている（Issue #1024）。Nemotron 3 の枠は 8 つで、同じ枠に別の声が混ざることがある。
-    /// `start` は判定のもとになった確定区間の終わり（`origin` と同じ原点からの秒）。サーバーはその枠のラベルを、以降の発言に付けない。
     case speakerMixed(track: Track, slot: Int, start: Double)
-    /// `相手` の話者の枠 `slot` の、主な塊の声の埋め込みの重心（長さ 1。Issue #1025）。重心が変わった枠だけを、変わるたびに最新の値で流す。
-    /// サーバーはラベルごとの重心を覚え、ヘルパーを起動し直した後の新しい枠を前のラベルにつなぎ直すのに使う。ヘルパーは重心をプロセスをまたいで持たない。
     case speakerCentroid(track: Track, slot: Int, centroid: [Float])
 
     func delivery(retained: HelperEvent?) -> HelperEventDelivery {
@@ -106,9 +79,7 @@ public enum HelperEvent: Sendable, Equatable {
         }
     }
 
-    /// WebSocket のテキストフレームに載せる JSON 文字列。
     public func jsonString() throws -> String {
-        // キーの順序を固定する（同じイベントは常に同じ文字列になる）。
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         let data = try encoder.encode(self)
@@ -154,7 +125,6 @@ extension HelperEvent: Encodable {
         case let .screen(start, image, lines, ocrFailed, meetingTabTitle):
             try container.encode("screen", forKey: .type)
             try container.encode(start, forKey: .start)
-            // nil でもキーを省かず、JSON の null として出す（`encodeIfPresent` は使わない）。
             if let image {
                 try container.encode(image, forKey: .image)
             } else {
@@ -221,10 +191,6 @@ extension HelperEvent: Encodable {
     }
 }
 
-/// STT の結果をイベントにする。両トラック・確定/途中のすべてのイベントは、ここで作る。
-/// `duplicate` は重複の印。既定は false（判定器を通さない経路と `相手`）。判定は `DuplicateMarker` が行い、呼び出し側（`relay`）が渡す。
-/// `words` は本文を語に区切る関数（既定は CFStringTokenizer。unit テストは固定の関数を渡す）。語は確定結果にも途中結果にも載る。
-/// `wordTimes` は結果の区間をそのまま載せる。
 public func event(
     from result: TranscriptionResult, track: Track, duplicate: Bool = false, words: (String) -> [Word] = transcriptWords
 ) -> HelperEvent {
@@ -238,12 +204,10 @@ public func event(
         words: words(result.text), wordTimes: result.wordTimes)
 }
 
-/// 話者の区間をイベントにする。トラックは呼び出し側が決める（話者分離は `相手` にだけ掛ける）。
 public func event(from segment: SpeakerSegment, track: Track) -> HelperEvent {
     .speaker(track: track, start: segment.start, end: segment.end, slot: segment.slot, isFinal: segment.isFinal)
 }
 
-/// 話者分離が流す 1 件をイベントにする。トラックは呼び出し側が決める（話者分離は `相手` にだけ掛ける）。
 public func event(from item: SpeakerDiarization, track: Track) -> HelperEvent {
     switch item {
     case .segment(let segment): return event(from: segment, track: track)

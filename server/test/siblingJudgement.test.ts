@@ -5,7 +5,6 @@ import { largestGroup } from "../bench/mapShape.ts";
 import { formatRow, judgeSiblings } from "../bench/siblingJudgement.ts";
 import { build, bigGroup, childText, kids, parentText, REMARK_TEXT, TITLE, type Built, type Spec } from "./fixtures/siblingJudgement.ts";
 
-// order.md が外部スクリプト siblingJudge.ts と同じプロンプトを指定しているため、転送値を検証する。モデルの判断品質は証明しない。
 const PROMPT = `会議のマインドマップで、1 つの親の下に並んだ兄弟（子）を判定してください。最初の行が親、続く各行が「番号. [種別] 本文」の子です。
 兄弟は「同じ親について並ぶ、別々の中身（同じ論点への別の案、同じ議題の別の紹介、同じ要点の別の具体例）」であるべきです。
 各子が次のどれに当たるかを、1 つだけ選んでください。
@@ -17,7 +16,6 @@ const PROMPT = `会議のマインドマップで、1 つの親の下に並ん�
 
 const SECRETS = (refs: readonly string[]) => [TITLE, REMARK_TEXT, ...refs.map(parentText), ...refs.map(childText)];
 
-// 親の本文ごとに「その親への n 回目の呼び出し」へ返す応答を決める偽の判定器。未登録の親（ルートなど）が渡されたら失敗させる。
 type Handler = (call: number, children: number) => string;
 function fakeJudge(handlers: Record<string, Handler>) {
   const calls = new Map<string, number>();
@@ -35,11 +33,9 @@ function fakeJudge(handlers: Record<string, Handler>) {
   return { judge, prompts, calls: (ref: string) => calls.get(parentText(ref)) ?? 0, total: () => prompts.length };
 }
 const labels = (...values: string[]) => JSON.stringify(values);
-// 先頭から notSeparate 個を「具体化」、残りを「別」にした n 件の応答
 const withNotSeparate = (notSeparate: number, n: number) =>
   JSON.stringify(Array.from({ length: n }, (_, i) => (i < notSeparate ? "具体化" : "別")));
 
-// ルートに議題 5 個。T1 の下に論点 A（案 4 + 済みの論点 1）と論点 B（案 4）。
 function baseMap(): Built {
   const specs: Spec[] = [
     ...["T1", "T2", "T3", "T4", "T5"].map((ref): Spec => ({ ref, parent: "root", kind: "議題" })),
@@ -114,7 +110,6 @@ describe("兄弟の意味の判定: 全体とラベル件数", () => {
     const map = baseMap();
     const fake = fakeJudge({ [parentText("A")]: () => JSON.stringify(A_LABELS) });
     const result = yield* judgeSiblings(map.events, fake.judge);
-    // ルート（子 5）、子 4 の論点 B、子 2 の T1 は判定器に渡らない。子の数に済みの論点を含む 5 件の A だけ。
     expect(fake.prompts).toEqual([[
       PROMPT, "",
       `親 [論点] ${parentText("A")}`,
@@ -200,11 +195,9 @@ describe("兄弟の意味の判定: 指定した親の直下", () => {
   }));
 });
 
-// ルートに議題 T の下へ論点 P（案 cases 個。うち withPoints 個に要点 4 個ずつ）と、判定対象の論点 Q（案 5 個）。
 function groupMap(cases: number, withPoints: number): Built {
   return build([...bigGroup({ cases, withPoints }), { ref: "Q", parent: "T", kind: "論点" }, ...kids("Q", "案", 5)]);
 }
-// P への 1 回目は全体用（別でない 2 件）、2 回目以降が合否用の 5 回。Q の別でないは 1 件（全体 15 件中 3 件 = 1/5）。
 function passFake(runs: readonly number[]) {
   return fakeJudge({
     [parentText("P")]: (call, n) => withNotSeparate(call === 0 ? 2 : runs[call - 1] ?? 0, n),
@@ -214,7 +207,7 @@ function passFake(runs: readonly number[]) {
 
 describe("最大のまとまりの合否の補助", () => {
   it.effect("C3: 40 を超えたら直下の子を 5 回判定し、中央値が閾値（全体の割合 × 子の数 + 1）ちょうどなら通す", () => Effect.gen(function* () {
-    const map = groupMap(10, 10); // P は 案 10 + 要点 40 = 50
+    const map = groupMap(10, 10);
     const fake = passFake([1, 4, 2, 5, 3]);
     const result = yield* judgeSiblings(map.events, fake.judge);
     expect(result).toMatchObject({ total: 15, notSeparate: 3 });
@@ -259,7 +252,7 @@ describe("最大のまとまりの合否の補助", () => {
   }));
 
   it.effect("C3: 最大のまとまりがちょうど 40 なら 5 回の判定をせず、合否は不要", () => Effect.gen(function* () {
-    const map = groupMap(8, 8); // P は 案 8 + 要点 32 = 40
+    const map = groupMap(8, 8);
     const fake = passFake([]);
     const result = yield* judgeSiblings(map.events, fake.judge);
     expect(fake.calls("P")).toBe(1);
@@ -268,7 +261,7 @@ describe("最大のまとまりの合否の補助", () => {
 
   it.effect("C3: 41 なら 5 回の判定をする", () => Effect.gen(function* () {
     const fake = passFake([0, 0, 0, 0, 0]);
-    const result = yield* judgeSiblings(groupMap(9, 8).events, fake.judge); // 案 9 + 要点 32 = 41
+    const result = yield* judgeSiblings(groupMap(9, 8).events, fake.judge);
     expect(fake.calls("P")).toBe(6);
     expect(result.maxGroup).toMatchObject({ size: 41 });
     expect(result.maxGroup!.check!.runs).toHaveLength(5);
@@ -278,7 +271,6 @@ describe("最大のまとまりの合否の補助", () => {
     { name: "別でない 1 件（境目ちょうど）", perRun: 1, pass: true },
     { name: "別でない 2 件（1 件超え）", perRun: 2, pass: false },
   ])("C3: 全体の判定対象が 0 件なら閾値は 1 件。$name", ({ perRun, pass }) => Effect.gen(function* () {
-    // 議題 T の下に案 X（要点 4 個 × 4 個 × 4 個）と案 Y。子が 5 以上の親は無く、T が最大（2 + 4 + 16 + 64 = 86）。
     const specs: Spec[] = [{ ref: "T", parent: "root", kind: "議題" }, { ref: "X", parent: "T", kind: "案" }, { ref: "Y", parent: "T", kind: "案" }];
     const level1 = kids("X", "要点", 4);
     const level2 = level1.flatMap((s) => kids(s.ref, "要点", 4));
@@ -396,7 +388,6 @@ describe("最大のまとまりの求め方（mapShape と共有）", () => {
       { ref: "P1", parent: "T", kind: "論点" }, ...kids("P1", "案", 3),
       { ref: "P2", parent: "T", kind: "論点" }, ...kids("P2", "案", 3),
     ]);
-    // 議題 T は論点を 1 と数え、論点の配下は数えないので 2。P1・P2 は 3 で同点。
     expect(largestGroup(nodesOf(map))).toEqual({ id: map.id("P1"), size: 3 });
   });
 

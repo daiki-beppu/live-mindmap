@@ -2,15 +2,12 @@ import Foundation
 import Testing
 import HelperCore
 
-// WebSocket に流すイベントの形（ADR 0002）。項目名はサーバーの Remark（server/src/core/session.ts）に合わせる。
-
 private func decode(_ event: HelperEvent) throws -> [String: Any] {
     let json = try event.jsonString()
     let object = try JSONSerialization.jsonObject(with: Data(json.utf8))
     return try #require(object as? [String: Any])
 }
 
-// 固定の語。実際のトークナイザは通さない（純粋な運搬と JSON の形だけを確かめる。トークナイザは WordsITTests）
 private let fixedWords = [
     Word(surface: "こんにちは", romaji: "konnichiwa", location: 0, length: 5),
     Word(surface: "𠮷", romaji: "", location: 5, length: 2),
@@ -46,7 +43,6 @@ private let helperEventExamples: [HelperEvent] = [
     .speakerCentroid(track: .相手, slot: 2, centroid: [0.25, -0.5, 1]),
 ]
 
-// case を追加したときは、見本も追加する。default で吸収しない。
 private func exampleCaseName(_ event: HelperEvent) -> String {
     switch event {
     case .remark: return "remark"
@@ -181,7 +177,6 @@ struct EventsTests {
         #expect(a != b)
     }
 
-    // Issue #1019: 語ごとの区間。STT の run ごとの区間を、本文の UTF-16 位置と会議の原点基準の秒で載せる
     private static let fixedWordTimes = [
         WordTime(location: 0, length: 5, start: 1.5, end: 2.25),
         WordTime(location: 5, length: 2, start: 2.25, end: 3),
@@ -245,7 +240,6 @@ struct EventsTests {
         #expect(json["id"] == nil)
     }
 
-    // Issue #161: 原点（host time）の通知。64 bit の値は JSON の number では桁が落ちるので、文字列として積む（要件 #22）
     @Test("origin は hostTime を持つ。JSON では文字列として積み、2^53 を超える値でも桁が落ちない")
     func originCarriesHostTimeAsString() throws {
         let event = HelperEvent.origin(hostTime: 9_007_199_254_740_993)
@@ -261,7 +255,6 @@ struct EventsTests {
         #expect(HelperEvent.origin(hostTime: 1) != HelperEvent.origin(hostTime: 2))
     }
 
-    // Issue #278: 共有画面の変化。start は origin と同じ原点からの秒、image は JPEG の base64（ウィンドウが無くなったら null）
     @Test("screen は type・start・image を持ち、image は JPEG の base64 文字列のまま積む")
     func screenCarriesStartAndImage() throws {
         let json = try decode(.screen(start: 12.5, image: "/9j/4AAQSkZJRg==", lines: nil))
@@ -271,7 +264,6 @@ struct EventsTests {
         #expect(json["image"] as? String == "/9j/4AAQSkZJRg==")
     }
 
-    // Issue #643: 送る画面には Vision で読んだ行を lines（文字列の配列）として載せる
     @Test("lines つきの screen は type・start・image・lines を持ち、lines は文字列の配列のまま積む")
     func screenCarriesLines() throws {
         let json = try decode(.screen(start: 12.5, image: "/9j/4AAQSkZJRg==", lines: ["港南店", "Zendesk"]))
@@ -319,7 +311,6 @@ struct EventsTests {
         #expect(HelperEvent.screen(start: 1, image: "AA==", lines: nil) != HelperEvent.screen(start: 1, image: nil, lines: nil))
     }
 
-    // Issue #280: 画面収録の許可が無いときの screen-off。start は origin と同じ原点からの秒
     @Test("screen-off は type・start・reason を持ち、reason は「許可なし」")
     func screenOffCarriesStartAndReason() throws {
         let json = try decode(.screenOff(start: 4.5, reason: .許可なし))
@@ -334,7 +325,6 @@ struct EventsTests {
         #expect(try HelperEvent.screenOff(start: 0, reason: .許可なし).jsonString() == "{\"reason\":\"許可なし\",\"start\":0,\"type\":\"screen-off\"}")
     }
 
-    // Issue #863: タップに音声が届かないときの tap-silent。start は origin と同じ原点からの秒
     @Test("tap-silent は type と start だけを持つ")
     func tapSilentCarriesStart() throws {
         let json = try decode(.tapSilent(start: 10.5))
@@ -355,7 +345,6 @@ struct EventsTests {
         #expect(HelperEvent.screenOff(start: 1, reason: .許可なし) != HelperEvent.screen(start: 1, image: nil, lines: nil))
     }
 
-    // Issue #1069・#1071: 自分の休止の状態が変わるたびに流すイベント。reason は手動・自動・判定できないのどれか。start は origin からの秒
     @Test("self-pause は paused・reason・start を持ち、休止にも再開にも同じ形で使える")
     func selfPauseEventShape() throws {
         for paused in [true, false] {
@@ -391,7 +380,6 @@ struct EventsTests {
             == "{\"basis\":\"unknown\",\"idleFor\":0,\"lastKnown\":\"unknown\",\"manual\":\"none\",\"type\":\"self-pause-state\"}")
     }
 
-    // Issue #1020: 話者の区間。STT とは別のイベントで、仮と確定は final で見分ける。slot は Sortformer の出力の番号
     @Test("speaker は type・track・start・end・slot・final だけを持つ")
     func speakerCarriesSegmentFields() throws {
         let json = try decode(.speaker(track: .相手, start: 1.5, end: 2.75, slot: 2, isFinal: true))
@@ -444,7 +432,6 @@ struct EventsTests {
         #expect(event(from: .settled(to: 3), track: .相手) == .speakerSettled(track: .相手, to: 3))
     }
 
-    // Issue #1024: 枠への混入。slot は Sortformer の出力の番号、start は混入を判定した確定区間の終わり（origin を 0 とする秒）
     @Test("speaker-mixed は type・track・slot・start だけを持ち、JSON 文字列は固定のキー順")
     func speakerMixedCarriesSlotAndStart() throws {
         let json = try decode(.speakerMixed(track: .相手, slot: 2, start: 95.5))
@@ -462,8 +449,6 @@ struct EventsTests {
         #expect(event(from: .mixed(slot: 2, at: 95.5), track: .相手) == .speakerMixed(track: .相手, slot: 2, start: 95.5))
     }
 
-    // Issue #1025: 枠ごとの主な塊の声の埋め込みの重心。サーバーが、起動し直しをまたいで枠とラベルをつなぎ直すのに使う。
-    // slot は Sortformer の出力の番号、centroid は長さ 1 の埋め込み（ヘルパーはプロセスをまたぐ状態を持たないので、毎回その回の値を流す）
     @Test("speaker-centroid は type・track・slot・centroid だけを持ち、JSON 文字列は固定のキー順")
     func speakerCentroidCarriesSlotAndCentroid() throws {
         let event = HelperEvent.speakerCentroid(track: .相手, slot: 2, centroid: [0.25, -0.5, 1])

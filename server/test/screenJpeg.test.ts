@@ -3,8 +3,6 @@ import { Effect, FileSystem, Layer, Result } from "effect";
 import { fitSize, ScreenJpeg, ScreenJpegFailed } from "../src/screenJpeg.ts";
 import { fakeSpawner } from "./fixtures/fakeSpawner.ts";
 
-// fitSize が、縦横の比を保ったまま 1280×720 に収まる大きさを返すこと（拡大はしない）。
-// 本物の ScreenJpeg の Layer は、sips が失敗したら ScreenJpegFailed で失敗すること（偽の ChildProcessSpawner。sips は起動しない）
 describe("fitSize", () => {
   it.each([
     ["16:9 で大きい", 2560, 1440, 1280, 720],

@@ -70,7 +70,6 @@ export const getViewportForBounds = (bounds: Bounds, width: number, height: numb
 };
 
 const getBezierEdgeCenter = ({ sourceX, sourceY, targetX, targetY, sourceControlX, sourceControlY, targetControlX, targetControlY }: Record<string, number>) => {
-  // cubic bezier t=0.5 mid point, not the actual mid point, but easy to calculate
   const centerX = sourceX! * 0.125 + sourceControlX! * 0.375 + targetControlX! * 0.375 + targetX! * 0.125;
   const centerY = sourceY! * 0.125 + sourceControlY! * 0.375 + targetControlY! * 0.375 + targetY! * 0.125;
   const offsetX = Math.abs(centerX - sourceX!);

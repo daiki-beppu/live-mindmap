@@ -11,11 +11,6 @@ import { init, snapshotOf } from "../src/app/review/main.ts";
 import { appOf, audioApp, audioContext, hasClass, plainApp, plainContext, settle, stateAt, tagOf, type Sim } from "./reviewHarness.ts";
 import { attrOf, elementsOf, one, type VNode } from "./sceneTree.ts";
 
-// 見返しを 1 つのプログラムに組み上げた（Issue #826）Scene。描いた view から入り、
-// .review > .review__session > .layout > [.map > [.map-surface, 見る状態の知らせ, キーの一覧], 字幕, .side]、.review-controls、<audio> の並びで、
-// 字幕・右の列・見る状態の知らせが時刻と見る状態に追従することを見る。並びは React の版と同じ。
-// キー・時刻の動きは文書の keydown（描いた木の外）から届くので Subscription.emit で流す。会議の長さは 200 秒
-
 const NO_MODIFIERS = { metaKey: false, ctrlKey: false, altKey: false };
 const press = (key: string) => Subscription.emit(Message.PressedKey({ key: key as never, ...NO_MODIFIERS }));
 const labelSel = (label: string) => selector(`[aria-label="${label}"]`);
@@ -122,7 +117,6 @@ describe("見返しの Scene: 字幕は時刻の発言に追従し、C と字幕
   });
 });
 
-// 話者と名前の入ったログ。名前の行は、字幕に出る発言よりログの後ろにある（最後に付いた名前は、名前が付く前の時刻にも出る）
 const spoken = (id: string, track: "相手" | "自分", start: number, end: number, text: string, speaker?: string) => ({ at: "x", type: "remark", remark: { id, track, start, end, text, ...(speaker !== undefined ? { speaker } : {}) } });
 const nameRow = (label: string, name: string, source: string) => ({ at: "x", type: "speaker-name", label, name, source });
 const speakerEvents: unknown[] = [
@@ -340,7 +334,6 @@ describe("見返しの Scene: 右の列は表示面の見る状態に従い、E 
   });
 
   it("変わったことの項目を押すと、そのノードが選ばれて根拠のパネルに出る（右の列が表示面の選択とつながる）", () => {
-    // 時刻 10 のマップの変わったことは 1 件（議題 A の追加）だけ
     const changes = snapshotOf(plainContext, stateAt(plainContext, 10)).changes;
     expect(changes).toHaveLength(1);
     scene(

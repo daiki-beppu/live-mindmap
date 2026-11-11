@@ -2,12 +2,10 @@ import { describe, expect, it } from "vitest";
 import { reviewHotkeyYieldsToFocus, reviewKeyEvent, SKIP_SECONDS, type ReviewKeyAction } from "../src/reviewKeys.ts";
 import { initialPlayback, playbackReducer, type PlaybackEvent } from "../src/reviewPlayback.ts";
 
-// 見返しのキーから再生の出来事への対応（DOM なし）。
 const none = { meta: false, ctrl: false, alt: false };
 const ctx = { duration: 100, reflectionTimes: [10, 40, 70], rates: [10, 30, 60, 120] };
 const ev = (action: ReviewKeyAction, time = 50, duration = 100) => reviewKeyEvent(action, none, time, duration);
 
-// 見返しのキーのバインディング（どのキーがどの動きか）は、キーの表（app/keys/table.ts）が持つ。ここは動きから再生の出来事への対応だけを見る
 const ACTIONS: readonly ReviewKeyAction[] = ["toggle", "back", "forward", "prev", "next", "slower", "faster", "start", "end", "mute"];
 
 describe("飛ばす秒数", () => {
@@ -122,7 +120,6 @@ describe("M（ミュート）", () => {
 
 
 describe("reviewHotkeyYieldsToFocus: Space を開閉の丸のボタンに譲るか", () => {
-  // closest に渡るセレクタに、押せる丸のクラスが含まれていれば祖先に見つかる代役
   const within = (...classes: string[]) => ({ closest: (selector: string) => (classes.some((c) => selector.includes(c)) ? {} : null) });
   const COUNT = within("map-node__count--pressable");
   const FOLD_DOT = within("map-node__fold-dot");

@@ -50,7 +50,6 @@ export async function sealWithPassphrase(plaintext: string, passphrase: string):
   return { salt: bytesToBase64(salt), iv: bytesToBase64(iv), data: bytesToBase64(new Uint8Array(encrypted)) };
 }
 
-// 合言葉が違う・暗号文が壊れているときは reject する（GCM の認証タグの検証で失敗する）
 export async function openSealed(sealed: Sealed, passphrase: string): Promise<string> {
   const key = await deriveKey(passphrase, base64ToBytes(sealed.salt));
   const decrypted = await crypto.subtle.decrypt({ name: "AES-GCM", iv: base64ToBytes(sealed.iv) as BufferSource }, key, base64ToBytes(sealed.data) as BufferSource);

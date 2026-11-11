@@ -6,7 +6,6 @@ import Testing
 
 private struct StubFailure: Error, Equatable {}
 
-/// 440 Hz のサイン波を `seconds` 秒分入れたバッファ。
 private func tone(sampleRate: Double, channels: AVAudioChannelCount, seconds: Double) throws -> AVAudioPCMBuffer {
     let format = try #require(AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: channels))
     let frames = AVAudioFrameCount(sampleRate * seconds)
@@ -23,7 +22,6 @@ private func tone(sampleRate: Double, channels: AVAudioChannelCount, seconds: Do
 struct RecordingStreamTests {
     private struct FinishFailure: Error, Equatable {}
 
-    /// `finish` だけを失敗させる差し替え用の recorder。
     private struct FailingFinishRecorder: TrackRecording {
         func write(_ audio: CapturedAudio) throws {}
         func finish() throws { throw FinishFailure() }
@@ -60,7 +58,6 @@ struct RecordingStreamTests {
         #expect(throws: FinishFailure.self) { try result.get() }
     }
 
-    /// `write` を失敗させ、`finish` が呼ばれた回数を数える差し替え用の recorder。
     private final class FailingWriteRecorder: TrackRecording, @unchecked Sendable {
         private let lock = NSLock()
         private var finishCalls = 0

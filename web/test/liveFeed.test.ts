@@ -4,9 +4,6 @@ import { applyClose, applyFrame, applyOpen, createFeedState, type FeedState } fr
 import { intakeNoticeText } from "../src/intake.ts";
 import { spoken, spokenFrame } from "./fixtures/captions.ts";
 
-// Issue #161: frame の分類（type の有無・値）による状態更新と、再接続時の扱い。
-// frame の分類と状態の更新の規則（web/src/liveFeed.ts。Foldkit の受信 web/src/app/liveFeed/main.ts の update が使う）を、実コードとして直接検証する（CT-FRAME-DISPATCH）。
-
 const snapshot: Snapshot = { nodes: [{ id: "root", parent: null, kind: "会議", text: "定例", evidence: [] }], round: 0, changes: [], remarks: [] };
 
 describe("applyFrame（frame の分類と状態更新）", () => {
@@ -29,7 +26,7 @@ describe("applyFrame（frame の分類と状態更新）", () => {
   it("[SCN-U-D-N2] captions のフレームは字幕の吹き出しだけを変える", () => {
     const state: FeedState = { diffUpdate: null, snapshot, captions: spoken("", "まえのはつわ"), intake: "running", screenNotice: null, tapNotice: null, discussionNotice: null, local: false, selfPaused: false, speakerNames: {} };
     const next = applyFrame(state, spokenFrame("あ", "相手"), 0);
-    expect(next.captions).toEqual(spoken("あ", "")); // フレームは吹き出しの並びの全体なので、前の吹き出しは置き換わる
+    expect(next.captions).toEqual(spoken("あ", ""));
     expect(next.snapshot).toEqual(snapshot);
     expect(next.intake).toBe("running");
   });
@@ -39,7 +36,7 @@ describe("applyOpen（再接続直後の扱い）", () => {
   it("[SCN-U-A-P1] 再接続しても途切れの一言が途切れない（intake を保つ）", () => {
     const state: FeedState = { diffUpdate: null, snapshot, captions: spoken("のこり", ""), intake: "interrupted", screenNotice: null, tapNotice: null, discussionNotice: null, local: false, selfPaused: false, speakerNames: {} };
     const next = applyOpen(state);
-    expect(next.intake).toBe("interrupted"); // 旧コード（intake を既定値へ戻す）だと "running" になり、ここが赤くなる
+    expect(next.intake).toBe("interrupted");
   });
 
   it("[SCN-U-A-N1] 再接続は字幕だけを空に戻す", () => {
@@ -120,7 +117,6 @@ describe("createFeedState（初期値）", () => {
   });
 });
 
-// mode 通知は独立した状態。変更前の字幕・マップを保持したまま同じ feed で表示を出し入れする。
 describe("ローカルモードの通知", () => {
   it("開始・切断・再接続の再送・終了へ追従し、他の配信状態を変えない", () => {
     let state: FeedState = { ...createFeedState(), snapshot, captions: spoken("字幕", ""), intake: "interrupted" };
@@ -141,7 +137,6 @@ describe("ローカルモードの通知", () => {
   });
 });
 
-// Issue #1069・#1071: 自分の休止。休止中は出し続ける独立した状態で、休止中は frame の理由（手動 / 自動）、再開では false に追従し、つなぎ直しでは false に戻る
 describe("applyFrame: self-pause（自分の休止）", () => {
   it("休止の frame で理由になり、休止中に理由だけ変わればその理由に置き換わり、再開の frame で false に戻る（同じ状態の上で連続して観測する）", () => {
     let state: FeedState = createFeedState();
@@ -176,36 +171,25 @@ describe("applyFrame: self-pause（自分の休止）", () => {
   });
 });
 
-// Issue #161 U-G: 切断中にセッションが終わった場合、再接続したブラウザの一言が無期限に残らないこと。
-// applyFrame/applyOpen が作る FeedState の系列と、取り込みの状態から一言を決める規則（intakeNoticeText）で、
-// 変化前（途切れの一言が出ている）→ 再接続（applyOpen）→ まだ none を受け取っていない間 → none を受け取った後
-// を一続きに観測する（CODING_STANDARDS.md「Negative tests」に従い、守っている状態に到達してから見る）。
-// 画面まで届くこと（Foldkit の会議中の画面の上で）は meeting.story.test.ts・meeting.scene.test.ts が見る
 describe("再接続からセッション終了までの一言（Issue #161 U-G）", () => {
   const noticeOf = (state: FeedState): string | null => intakeNoticeText({ previous: null, current: state.intake, msSinceChange: 0 });
 
   it("[SCN-U-G-P2][SCN-U-G-N2] 再接続だけでは一言は消えず、保持されていた {type:\"intake\",status:\"none\"} を受け取ると消える", () => {
     let state: FeedState = createFeedState();
 
-    // 取り込みが途切れ、一言が出ている（守っている状態に先に到達する）
     state = applyFrame(state, { type: "intake", status: "interrupted" }, 0);
     expect(noticeOf(state)).toBe("音声の取り込みが途切れました。再開しています");
 
-    // 接続し直す（applyOpen）。intake は直前の値のまま保たれる
     state = applyOpen(state);
     expect(noticeOf(state)).toBe("音声の取り込みが途切れました。再開しています");
 
-    // [SCN-U-G-N2] まだ取り込みの状態のフレームを 1 件も受け取っていない間は、一言は残り続ける
     expect(noticeOf(state)).toBe("音声の取り込みが途切れました。再開しています");
 
-    // [SCN-U-G-P2] サーバーが保持していた {type:"intake",status:"none"} を受け取ると、一言が無くなる
     state = applyFrame(state, { type: "intake", status: "none" }, 0);
     expect(noticeOf(state)).toBeNull();
   });
 });
 
-// Issue #863: 相手の音声が届かない一文。共有画面の一文（screen-notice）とは別の値で、10 秒では消えず、
-// 文 → null（新しい origin・stop）のフレームで消える。同じ状態の上で続けて観測する。
 describe("applyFrame: tap-notice（相手の音声が届かない一文）", () => {
   const text = "相手の音声が届いていません";
 
@@ -244,8 +228,6 @@ describe("applyFrame: tap-notice（相手の音声が届かない一文）", () 
   });
 });
 
-// Issue #1026: 話者の名前のフレーム { type: "speaker-names", names: [{ label, name }] }。サーバーは名前の表の全体を送る。
-// web は ラベル → 名前 の表（speakerNames）として持ち、字幕とノードの表示名をそこから毎回導く
 describe("applyFrame: speaker-names（話者の名前）", () => {
   const names = (...rows: Array<[string, string]>) => ({ type: "speaker-names" as const, names: rows.map(([label, name]) => ({ label, name })) });
 

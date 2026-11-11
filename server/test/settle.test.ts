@@ -1,20 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { createRemarkSettler, SETTLE_QUIET_MS, SETTLE_SENTENCE_MS, type HelperPartial, type SettledRemark } from "../src/core/index.ts";
 
-// 途中結果が T 秒変わらなければ発言として出す規則（Issue #99）。
-// 発言を締める時計は、届いた結果の end の最大値（会議の音声の時刻。Issue #1083）。壁時計も、結果が届いた時刻も使わない。
-// 時計は partial / final が受け取る結果の end（秒）でだけ進む（中核は実行環境のタイマーを使わない。ADR 0003）。テストでは、自分の途中結果（発言にならない）で時計だけを進める。
-// partial / final は、時計を進めて期限の来た発話を出してから、入力を当てはめる。出た発言は戻り値で返す。
 const T = SETTLE_QUIET_MS;
 const S = SETTLE_SENTENCE_MS;
 
-// 音声の時刻（ミリ秒）を結果の end（秒）に直す。*1000 で元のミリ秒に戻らない値は、期限の判定が丸め誤差で決まるので使わない
 const sec = (ms: number): number => {
   const value = ms / 1000;
   if (value * 1000 !== ms) throw new Error(`${ms} ms は秒に直すと *1000 で戻らない`);
   return value;
 };
-// 結果の end（秒）から T 経った音声の時刻（ミリ秒）
 const quiet = (end: number) => end * 1000 + T;
 
 const partial = (track: HelperPartial["track"], start: number, end: number, text: string): HelperPartial => ({ track, start, end, text, duplicate: false });
@@ -25,14 +19,12 @@ const final = (track: SettledRemark["track"], start: number, end: number, text: 
   text,
   ...extra,
 });
-// 音声の時計だけを ms（ミリ秒）まで進める。自分の途中結果は発言にならず、時計だけを進める
 const tick = (s: ReturnType<typeof createRemarkSettler>, ms: number): SettledRemark[] => {
   let end = ms / 1000;
-  while (end * 1000 < ms) end *= 1 + Number.EPSILON; // *1000 で ms に届かない丸め誤差を、1 ulp ずつ上げて消す
+  while (end * 1000 < ms) end *= 1 + Number.EPSILON;
   return s.partial(partial("自分", 0, end, "x"));
 };
 const brief = (rs: SettledRemark[]) => rs.map((r) => [r.track, r.start, r.end, r.text]);
-// start・end をミリ秒に丸めた形。文の終わりまでの発言の end は区間の比例配分で、2 進数の誤差を持つ
 const rounded = (rs: SettledRemark[]) => rs.map((r) => [r.track, Math.round(r.start * 1000) / 1000, Math.round(r.end * 1000) / 1000, r.text]);
 
 describe("途中結果から発言を出す時刻", () => {
@@ -46,9 +38,9 @@ describe("途中結果から発言を出す時刻", () => {
     expect(s.partial(partial("相手", 10, 11.5, "あい"))).toEqual([]);
     expect(s.partial(partial("相手", 10, 12.25, "あいう"))).toEqual([]);
 
-    expect(tick(s, quiet(12.25) - 1)).toEqual([]); // 最後の end から T に 1ms 足りない
+    expect(tick(s, quiet(12.25) - 1)).toEqual([]);
     expect(brief(tick(s, quiet(12.25)))).toEqual([["相手", 10, 12.25, "あいう"]]);
-    expect(tick(s, quiet(12.25) * 5)).toEqual([]); // 出した発話は二度と出ない
+    expect(tick(s, quiet(12.25) * 5)).toEqual([]);
   });
 
   it("時計は届いた結果の end の最大値。古い end の結果で戻らない", () => {
@@ -78,7 +70,7 @@ describe("途中結果から発言を出す時刻", () => {
 
     const fired = s.partial(partial("相手", 12, 13, "い"));
 
-    expect(brief(fired)).toEqual([["相手", 10, 11, "あ"]]); // 13000 - 11000 > T で期限
+    expect(brief(fired)).toEqual([["相手", 10, 11, "あ"]]);
     expect(brief(tick(s, quiet(13)))).toEqual([["相手", 12, 13, "い"]]);
   });
 
@@ -137,12 +129,10 @@ describe("途中結果から発言を出す時刻", () => {
     s.partial(partial("自分", 10, 11, "自分の本文"));
     s.partial(partial("相手", 10, 11.5, "相手の本文の続き"));
 
-    // 自分の途中結果は発言にならない（下の「自分トラック」）。相手の発話は最後の本文で 1 件だけ
     expect(brief(tick(s, quiet(11.5)))).toEqual([["相手", 10, 11.5, "相手の本文の続き"]]);
   });
 });
 
-// Issue #1083: 時計は届いた結果の end の最大値。結果が届く間隔を詰めても延ばしても、同じ結果の列から同じ発言の列ができる
 describe("発言を締める時計は結果の end（Issue #1083）", () => {
   it("他のトラックの結果の end でも時計が進む: 自分の確定結果の end で、相手の途中結果が 1 秒の規則で出る", () => {
     const s = createRemarkSettler();
@@ -153,7 +143,7 @@ describe("発言を締める時計は結果の end（Issue #1083）", () => {
     expect(brief(own)).toEqual([
       ["相手", 10, 11, "あ"],
       ["自分", 0, 12, "自分の確定。"],
-    ]); // 期限の来た発話が先、自分の確定結果が後
+    ]);
   });
 
   it("他のトラックの結果の end でも時計が進む: 自分の途中結果の end で、相手の途中結果が出る（自分の途中結果自体は発言にならない）", () => {
@@ -217,7 +207,7 @@ describe("発言を締める時計は結果の end（Issue #1083）", () => {
 
     expect(fired).toEqual([]);
     expect(tick(s, 15040 + S)).toEqual([]);
-    expect(brief(tick(s, 15040 + T))).toEqual([["相手", 10, sec(15040), "あいうえお"]]); // 取り消された文の終わりは残らない
+    expect(brief(tick(s, 15040 + T))).toEqual([["相手", 10, sec(15040), "あいうえお"]]);
   });
 
   it("確定結果の end が文の終わりの期限を越えていたら、文の終わりまでが先に出て、確定結果は残りだけを出す", () => {
@@ -232,42 +222,32 @@ describe("発言を締める時計は結果の end（Issue #1083）", () => {
     ]);
   });
 
-  // 届く間隔を詰めても延ばしても同じ発言の列になる。間隔を延ばした結果は、期限の順に一つずつ進めたのと同じになる
   describe("同じ結果の列から、届く間隔によらず同じ発言の列ができる", () => {
     type Step = { kind: "partial"; p: HelperPartial } | { kind: "final"; r: SettledRemark };
     const steps: Step[] = [
-      // 文の終わり → 同じ発話の続き → 1 秒（間隔が長い結果が次に届く）
       { kind: "partial", p: partial("相手", 10, 11, "あい") },
       { kind: "partial", p: partial("相手", 10, 11.25, "あいう。え") },
       { kind: "partial", p: partial("相手", 10, 11.5, "あいう。えお") },
-      // 別の発話の途中結果。長い空きのあとに届く
       { kind: "partial", p: partial("相手", 30, 30.5, "べつの発話") },
       { kind: "partial", p: partial("相手", 30, 30.75, "べつの発話です。") },
-      // 他のトラックの確定結果が時計を進める
       { kind: "final", r: final("自分", 31, 33, "自分の確定。") },
-      // 先の発話の期限が後の発話より遅くなる（後の発話が先に出る）
       { kind: "partial", p: partial("相手", 40, 41, "ひとつめ") },
       { kind: "partial", p: partial("相手", 41, 41.25, "ふたつめ") },
       { kind: "partial", p: partial("相手", 40, 41.5, "ひとつめの続き") },
-      // 覆われない確定結果が、長い空きのあとに届く
       { kind: "final", r: final("相手", 60, 62, "確定だけ。") },
-      // 途中結果を確定結果が覆う（確定結果の end が期限の前）
       { kind: "partial", p: partial("相手", 70, 71, "覆われる") },
       { kind: "final", r: final("相手", 69.5, 71.5, "覆われる。") },
-      // 古い end の結果は時計を戻さない
       { kind: "final", r: final("自分", 0, 5, "古い end") },
       { kind: "partial", p: partial("相手", 80, 81, "最後") },
     ];
     const endOf = (step: Step) => (step.kind === "partial" ? step.p.end : step.r.end);
     const feed = (s: ReturnType<typeof createRemarkSettler>, step: Step) => (step.kind === "partial" ? s.partial(step.p) : s.final(step.r));
 
-    // 結果だけを順に渡す（間隔を詰める）
     const compressed = () => {
       const s = createRemarkSettler();
       const out = steps.flatMap((step) => feed(s, step));
       return [...out, ...s.drain()];
     };
-    // 次の結果の end まで、自分の途中結果で時計を細かく進める（間隔を音声の時刻どおりに延ばす）
     const stretched = () => {
       const s = createRemarkSettler();
       const out: SettledRemark[] = [];
@@ -302,7 +282,7 @@ describe("発言を締める時計は結果の end（Issue #1083）", () => {
       const s = createRemarkSettler();
       s.partial(partial("相手", 40, 41, "ひとつめ"));
       s.partial(partial("相手", 41, 41.25, "ふたつめ"));
-      s.partial(partial("相手", 40, 41.5, "ひとつめの続き")); // ひとつめの期限は 42500、ふたつめは 42250
+      s.partial(partial("相手", 40, 41.5, "ひとつめの続き"));
 
       const out = s.final(final("自分", 0, 100, "自分"));
 
@@ -316,7 +296,7 @@ describe("確定結果が先に届いた発話", () => {
     const s = createRemarkSettler();
     s.partial(partial("相手", 10, 12, "あい"));
 
-    const finals = s.final(final("相手", 10.5, 12.5, "あいう。")); // 12500 は途中結果の期限（13000）の前
+    const finals = s.final(final("相手", 10.5, 12.5, "あいう。"));
 
     expect(brief(finals)).toEqual([["相手", 10.5, 12.5, "あいう。"]]);
     expect(tick(s, quiet(12.5) * 10)).toEqual([]);
@@ -325,17 +305,14 @@ describe("確定結果が先に届いた発話", () => {
 
   it("確定結果が覆うのは、同じトラックで区間の中央が確定結果の区間に入る発話だけ", () => {
     const s = createRemarkSettler();
-    // 手前で外れる発話は、確定結果より先に出しておく（出した発言より前の区間は発言にならないため。issue #186）
-    s.partial(partial("相手", 9, 10, "手前で外れる")); // 中央 9.5 は [10.5, 13] の手前
+    s.partial(partial("相手", 9, 10, "手前で外れる"));
     expect(brief(tick(s, quiet(10)))).toEqual([["相手", 9, 10, "手前で外れる"]]);
-    s.partial(partial("相手", 11, 12.5, "覆われる")); // 中央 11.75 は内側
-    s.partial(partial("相手", 13, 13.25, "後ろで外れる")); // 中央 13.125 は [10.5, 13] の後ろ
+    s.partial(partial("相手", 11, 12.5, "覆われる"));
+    s.partial(partial("相手", 13, 13.25, "後ろで外れる"));
 
-    const finals = s.final(final("相手", 10.5, 13, "確定")); // 13000 は覆われる発話の期限（13500）の前
+    const finals = s.final(final("相手", 10.5, 13, "確定"));
 
-    // 手前の発話は覆われていないので、確定結果が捨てられずそのまま出る
     expect(brief(finals)).toEqual([["相手", 10.5, 13, "確定"]]);
-    // 覆われなかった後ろの発話だけが、T 経って出る
     expect(brief(tick(s, quiet(13.25)))).toEqual([["相手", 13, 13.25, "後ろで外れる"]]);
   });
 
@@ -373,13 +350,13 @@ describe("出した後に届いた確定結果", () => {
   it("区間の一部だけが先に出ていた確定結果は、確定結果を捨て、出ていない発話を途中結果の本文で、確定結果の end の時点に出す", () => {
     const s = createRemarkSettler();
     s.partial(partial("相手", 10, 11, "ひとつめ"));
-    s.partial(partial("相手", 11, 11.75, "ふたつめ")); // ひとつめが出る時（12000）に、まだ T 経っていない（期限は 12750）
+    s.partial(partial("相手", 11, 11.75, "ふたつめ"));
     expect(brief(tick(s, quiet(11)))).toEqual([["相手", 10, 11, "ひとつめ"]]);
 
     const finals = s.final(final("相手", 10, 12.5, "ひとつめ、ふたつめ。"));
 
-    expect(brief(finals)).toEqual([["相手", 11, 11.75, "ふたつめ"]]); // 確定結果の本文は出ない
-    expect(tick(s, quiet(12.5) * 10)).toEqual([]); // 出した発話は T 経っても再び出ない
+    expect(brief(finals)).toEqual([["相手", 11, 11.75, "ふたつめ"]]);
+    expect(tick(s, quiet(12.5) * 10)).toEqual([]);
   });
 
   it("確定結果に覆われた発話は 1 回の確定結果で使い切る。同じ区間の次の確定結果は、覆うものがないので 1 件として出る", () => {
@@ -388,20 +365,17 @@ describe("出した後に届いた確定結果", () => {
     expect(brief(tick(s, quiet(12)))).toEqual([["相手", 10, 12, "あ"]]);
     expect(s.final(final("相手", 10, 12, "あ。"))).toEqual([]);
 
-    // 覆うものがないので捨てられず、出した分（"あ"）を除いた残りが発言になる
     expect(brief(s.final(final("相手", 10, 14, "あ。もう一度")))).toEqual([["相手", 12, 14, "もう一度"]]);
   });
 });
 
-// 同じトラックの発言どうしは会議の中の時刻が重ならず、出した本文と重なる分は出さない（Issue #186、GLOSSARY.md の「発言」）。
-// 「直前に出した発言」はトラックごとに 1 件なので、どのケースも 1 個の settler 上で「出す → 次が届く」を続けて観測する。
 describe("出した発言と重なる発言", () => {
   it("直前に出した発言の end と同じ時刻から始まる発言は、本文が重なって見えても切らない", () => {
     const s = createRemarkSettler();
     s.partial(partial("相手", 10, 12, "あいう"));
     expect(brief(tick(s, quiet(12)))).toEqual([["相手", 10, 12, "あいう"]]);
 
-    s.partial(partial("相手", 12, 15, "あいうえお")); // start 12 は直前の end より前ではない
+    s.partial(partial("相手", 12, 15, "あいうえお"));
 
     expect(brief(tick(s, quiet(15)))).toEqual([["相手", 12, 15, "あいうえお"]]);
   });
@@ -416,8 +390,6 @@ describe("出した発言と重なる発言", () => {
     expect(brief(tick(s, quiet(15)))).toEqual([["相手", 12, 15, "えお"]]);
   });
 
-  // SpeechAnalyzer は区間の始まりから全文を送り直す。関所が覚えるのは出した残りではなく届いた全文でなければ、
-  // 3 回目の全文が残りと重ならず、出した本文がもう一度出る（Issue #458）
   it("同じ始まりで全文を送り直す途中結果が 3 回続いても、出した本文を二度と出さない", () => {
     const s = createRemarkSettler();
     s.partial(partial("相手", 10, 12, "あいう"));
@@ -452,7 +424,6 @@ describe("出した発言と重なる発言", () => {
     expect(brief(tick(s, quiet(18)))).toEqual([["相手", 15, 18, "ね明日"]]);
   });
 
-  // 短い完全一致（末尾と頭が一致）があっても、その先に書き換えを含む長い重なりがあれば、既出の部分を出さない
   it.each([
     { name: "ABC", first: "ABC案はABC", second: "ABCS案はABC続き", expected: "続き", unchangedSecond: "ABC案はABC続き" },
     { name: "今日", first: "今日の予定は今日", second: "今日の予定は明日です", expected: "です", unchangedSecond: undefined },
@@ -476,12 +447,9 @@ describe("出した発言と重なる発言", () => {
     expect(tick(s, quiet(14))).toEqual([]);
 
     s.partial(partial("相手", 10, 16, "今日はシ子度です"));
-    // 直前は end 12 のまま。抑制した発言の end 14 から始まらない
     expect(brief(tick(s, quiet(16)))).toEqual([["相手", 12, 16, "です"]]);
   });
 
-  // 補助平面の文字（"𠮷" など）は 1 文字が UTF-16 の 2 コード単位になる。切り出し位置を文字数で数えると、
-  // 出した本文をもう一度出したり、出していない文字を落としたりする
   it("補助平面の文字を含む本文でも、直前に出した本文の分を除いた残りが出る", () => {
     const s = createRemarkSettler();
     s.partial(partial("相手", 10, 12, "𠮷"));
@@ -533,7 +501,7 @@ describe("出した発言と重なる発言", () => {
           expect(tick(s, quiet(15))).toEqual(out);
           break;
         case "final の途中結果出力":
-          expect(s.final(final("相手", 9.5, 15.5, `${second}。`))).toEqual(out); // 15500 は途中結果の期限（16000）の前
+          expect(s.final(final("相手", 9.5, 15.5, `${second}。`))).toEqual(out);
           break;
         case "final の確定結果出力":
           expect(s.final(final("相手", 10, 15, second))).toEqual(out);
@@ -555,7 +523,7 @@ describe("出した発言と重なる発言", () => {
   it("1 回の結果で 2 件出るときも、先に出た発言が後の発言の「直前」になる", () => {
     const s = createRemarkSettler();
     s.partial(partial("相手", 10, 15, "あいうえお"));
-    s.partial(partial("相手", 14, 15.5, "えおかき")); // 先の発話の期限（16000）の前
+    s.partial(partial("相手", 14, 15.5, "えおかき"));
 
     expect(brief(tick(s, quiet(15.5)))).toEqual([
       ["相手", 10, 15, "あいうえお"],
@@ -566,9 +534,9 @@ describe("出した発言と重なる発言", () => {
   it("出した発言の本文に丸ごと含まれる発言は出さない", () => {
     const s = createRemarkSettler();
     s.partial(partial("相手", 10, 15, "あいうえお"));
-    expect(brief(tick(s, quiet(15)))).toEqual([["相手", 10, 15, "あいうえお"]]); // 守っている状態（直前の発言が出ている）に到達したことを先に確かめる
+    expect(brief(tick(s, quiet(15)))).toEqual([["相手", 10, 15, "あいうえお"]]);
 
-    s.partial(partial("相手", 12, 14, "うえ")); // 時計は 16000。期限はそこから T
+    s.partial(partial("相手", 12, 14, "うえ"));
 
     expect(tick(s, 17000)).toEqual([]);
   });
@@ -578,7 +546,7 @@ describe("出した発言と重なる発言", () => {
     s.partial(partial("相手", 10, 15, "あいうえお"));
     expect(brief(tick(s, quiet(15)))).toEqual([["相手", 10, 15, "あいうえお"]]);
 
-    s.partial(partial("相手", 12, 14, "かきく")); // 本文は重ならないが、区間が直前の発言の中に収まる
+    s.partial(partial("相手", 12, 14, "かきく"));
 
     expect(tick(s, 17000)).toEqual([]);
   });
@@ -588,7 +556,7 @@ describe("出した発言と重なる発言", () => {
     s.partial(partial("相手", 10, 15, "あいうえお"));
     expect(brief(tick(s, quiet(15)))).toEqual([["相手", 10, 15, "あいうえお"]]);
 
-    s.partial(partial("相手", 12.5, 15, "かきく")); // ずらすと start も end も 15 になる
+    s.partial(partial("相手", 12.5, 15, "かきく"));
 
     expect(tick(s, 17000)).toEqual([]);
   });
@@ -637,7 +605,7 @@ describe("出した発言と重なる発言", () => {
     const s = createRemarkSettler();
     s.partial(partial("相手", 10, 12, "あいう"));
     expect(brief(tick(s, quiet(12)))).toEqual([["相手", 10, 12, "あいう"]]);
-    s.partial(partial("相手", 10, 15, "あいうえお")); // まだ出ていない。確定結果がこれと出した発話の両方を覆う
+    s.partial(partial("相手", 10, 15, "あいうえお"));
 
     expect(brief(s.final(final("相手", 9.5, 15.5, "あいうえお。")))).toEqual([["相手", 12, 15, "えお"]]);
   });
@@ -668,7 +636,6 @@ describe("出した発言と重なる発言", () => {
 
     s.partial(partial("相手", 14, 18, "えおかき"));
 
-    // 出さなかった (12, 14, "うえ") が「直前」なら、start 14 は重ならず (14, 18, "えおかき") のまま出る
     expect(brief(tick(s, quiet(18)))).toEqual([["相手", 15, 18, "かき"]]);
   });
 
@@ -702,9 +669,9 @@ describe("出した発言と重なる発言", () => {
     const theirsSecond = s.final(final("相手", 12, 16, "うえおかき"));
 
     expect(brief(mineFirst)).toEqual([["自分", 10, 15, "あいうえお"]]);
-    expect(brief(mineSecond)).toEqual([["自分", 12, 16, "うえおかき"]]); // 本文も時刻もそのまま
+    expect(brief(mineSecond)).toEqual([["自分", 12, 16, "うえおかき"]]);
     expect(brief(theirsFirst)).toEqual([["相手", 10, 15, "あいうえお"]]);
-    expect(brief(theirsSecond)).toEqual([["相手", 15, 16, "かき"]]); // 同じ入力でも相手は切られる
+    expect(brief(theirsSecond)).toEqual([["相手", 15, 16, "かき"]]);
   });
 });
 
@@ -714,7 +681,6 @@ describe("自分トラック", () => {
     s.partial(partial("相手", 10, 11, "あ"));
     s.partial(partial("自分", 10, 11, "あ"));
 
-    // 守っている状態に到達したことを先に確かめる: 時間が進めば相手は出る
     expect(brief(tick(s, quiet(11) * 10))).toEqual([["相手", 10, 11, "あ"]]);
     expect(tick(s, quiet(11) * 20)).toEqual([]);
     expect(s.drain()).toEqual([]);
@@ -733,11 +699,10 @@ describe("自分トラック", () => {
 describe("停止時（drain）", () => {
   it("まだ出ていない発話を、T を待たずにすべて出す。出したものは再び出ない", () => {
     const s = createRemarkSettler();
-    // 覆われる発話を会議の中で最初に置く（出した発言より前の区間は発言にならないため。issue #186）
     s.partial(partial("相手", 10, 11, "覆われる"));
     s.partial(partial("相手", 11, 11.25, "あ"));
     s.partial(partial("相手", 11.25, 11.5, "い"));
-    s.final(final("相手", 10, 11, "確定")); // 10 の発話は確定結果が出る
+    s.final(final("相手", 10, 11, "確定"));
 
     expect(brief(s.drain())).toEqual([
       ["相手", 11, 11.25, "あ"],
@@ -756,12 +721,8 @@ describe("停止時（drain）", () => {
   });
 });
 
-// Issue #639: 語ごとの読み（words）を発言まで運ぶ。位置と長さは UTF-16 コード単位。
-// 出す発言の本文と words は同じ切り位置から作り、残った words の位置は切った後の本文に合う。
-// words を持たない入力からは、words のキーを持つ発言を作らない
 type TestWord = { surface: string; romaji: string; location: number; length: number };
 const w = (surface: string, location: number): TestWord => ({ surface, romaji: `r:${surface}`, location, length: surface.length });
-// 本文を表記の列に区切って words にする（位置は UTF-16 の連続した位置）
 const wordsOf = (...surfaces: string[]): TestWord[] => {
   let at = 0;
   return surfaces.map((surface) => {
@@ -777,7 +738,6 @@ const partialW = (track: HelperPartial["track"], start: number, end: number, tex
 const finalW = (track: SettledRemark["track"], start: number, end: number, text: string, words?: TestWord[]) =>
   final(track, start, end, text, words === undefined ? {} : ({ words } as Partial<SettledRemark>));
 const wordsOfRemark = (r: SettledRemark | undefined) => (r as { words?: TestWord[] } | undefined)?.words;
-// 残った words は、切った後の本文の上で、位置と長さが表記と一致する
 const expectWordsFitText = (r: SettledRemark | undefined) => {
   expect(r).toBeDefined();
   const words = wordsOfRemark(r);
@@ -832,7 +792,6 @@ describe("words の運搬（Issue #639）", () => {
     it("final（途中結果の期限を越えた end の確定結果の分岐）: 出す未出の発話に、その途中結果の words が付く", () => {
       const s = createRemarkSettler();
       s.partial(partialW("相手", 10, 12, "あいう", wordsOf("あい", "う")));
-      // 確定結果の end が途中結果の期限（13000）に届いている: 確定結果は捨て、途中結果からの発言を出す
       const out = s.final(finalW("相手", 10, 13, "別の確定", wordsOf("別", "の", "確定")));
 
       expect(brief(out)).toEqual([["相手", 10, 12, "あいう"]]);
@@ -877,10 +836,7 @@ describe("words の運搬（Issue #639）", () => {
     });
   });
 
-  // 関所が頭を切るとき、本文と words は同じ位置で切る。完全に残る語だけを残して位置をずらし、途中で切れた語は落とす。
-  // 組み立て方は上の「前の部分が書き換わった全文」のテストに倣う（同じ始まりから全文を送り直す途中結果）
   describe("関所が頭を切った発言の words", () => {
-    // 先に first を出し（end 12）、続けて second を同じ始まりの全文として送って、2 件目の発言を返す
     const secondRemark = (first: string, second: string, secondWords: TestWord[] | undefined) => {
       const s = createRemarkSettler();
       s.partial(partialW("相手", 10, 12, first, wordsOf(first)));
@@ -908,7 +864,6 @@ describe("words の運搬（Issue #639）", () => {
     });
 
     it("語の途中で切れたとき、その語は落とし、読みを残った本文に流用しない", () => {
-      // 切る位置は 3。"うえ"（位置 2〜4）は途中で切れるので落ちる。"お"（位置 4）は残る
       const r = secondRemark("あいう", "あいうえお", wordsOf("あい", "うえ", "お"));
 
       expect(r.text).toBe("えお");
@@ -917,7 +872,6 @@ describe("words の運搬（Issue #639）", () => {
     });
 
     it("書き換えを含む重なりで、切る位置をまたぐ語は落ちる", () => {
-      // 切る位置は 6。"シ子度で"（位置 3〜7）は途中で切れるので落ちる。"す"（位置 7）は残る
       const r = secondRemark("今日はシ子ど", "今日はシ子度です", wordsOf("今日は", "シ子度で", "す"));
 
       expect(r.text).toBe("です");
@@ -969,7 +923,7 @@ describe("words の運搬（Issue #639）", () => {
       const secondWords = wordsOf("かき", "く");
       expect(wordsOfRemark(s.final(finalW("相手", 10, 12, "あいう", firstWords))[0])).toEqual(firstWords);
 
-      const out = s.final(finalW("相手", 12, 14, "かきく", secondWords)); // 時刻が重ならない
+      const out = s.final(finalW("相手", 12, 14, "かきく", secondWords));
 
       expect(wordsOfRemark(out[0])).toEqual(secondWords);
     });
@@ -1012,14 +966,8 @@ describe("words の運搬（Issue #639）", () => {
   });
 });
 
-// Issue #996: 相手の途中結果で、文の終わり（。？！ ? !）までの本文が S ミリ秒変わらなければ、そこまでを発言にする。
-// 文の終わりの無い途中結果は、従来どおり T 更新されなければ出す。出した後に同じ発話の続きが届いたら、出した分の後ろだけを出す。
-// Issue #1083: S も、結果の end（音声の時刻）で測る。
-// 以下は、本文の長さ = 区間の長さ（start 10）になる end（秒）を基準に作り、文の終わりまでの発言の end が文の終わりの位置になるようにする。
-// ミリ秒単位の間隔は、end を sec(音声の時刻のミリ秒) で書く
 describe("文の終わりが落ち着いたら出す（Issue #996）", () => {
   const texts = (rs: SettledRemark[]) => rs.map((r) => r.text);
-  // 同じ発話（相手・start 10）の途中結果。SpeechAnalyzer は区間の始まりから全文を送り直す。end は音声の時刻（ミリ秒）で渡す
   const pt = (text: string, endMs: number) => partial("相手", 10, sec(endMs), text);
 
   it("S は 50 ミリ秒", () => {
@@ -1128,7 +1076,7 @@ describe("文の終わりが落ち着いたら出す（Issue #996）", () => {
       expect(rounded(tick(s, 13000 + S))).toEqual([["相手", 10, 11.52, "あ。"]]);
       expect(tick(s, 13040 + S - 1)).toEqual([]);
       expect(rounded(tick(s, 13040 + S))).toEqual([["相手", 11.52, 13.04, "い。"]]);
-      expect(tick(s, 13040 + T * 10)).toEqual([]); // 出し終えた本文は T 経っても出ない
+      expect(tick(s, 13040 + T * 10)).toEqual([]);
     });
 
     it("文の終わりの期限と T を一度の結果でまたいでも、期限の順に、文の終わりまでと残りが 1 件ずつ出る。重ならず、二度は出ない", () => {
@@ -1138,13 +1086,13 @@ describe("文の終わりが落ち着いたら出す（Issue #996）", () => {
       expect(brief(tick(s, 15000 + T))).toEqual([
         ["相手", 10, 14, "あいう。"],
         ["相手", 14, 15, "え"],
-      ]); // 一つずつ時計を進めた（S のとき・T のとき）のと同じ列
+      ]);
       expect(tick(s, 15000 + T * 10)).toEqual([]);
     });
 
     it("文の終わりで切った発言の end は、発話の区間を文字の位置で比例配分した時刻", () => {
       const s = createRemarkSettler();
-      s.partial(partial("相手", 10, 15, "あいう。え")); // 長さ 5 の本文に区間 5 秒
+      s.partial(partial("相手", 10, 15, "あいう。え"));
 
       expect(brief(tick(s, 15000 + S))).toEqual([["相手", 10, 14, "あいう。"]]);
     });
@@ -1191,7 +1139,7 @@ describe("文の終わりが落ち着いたら出す（Issue #996）", () => {
       s.partial(partial("相手", 13.5, sec(14100), "べつ。"));
       expect(texts(tick(s, 14100 + S))).toEqual(["べつ。"]);
 
-      s.partial(partial("相手", 10, 14.25, "あい。うえお。")); // 区間は、間に出た発言（〜14.1）の end より後ろまで延びる
+      s.partial(partial("相手", 10, 14.25, "あい。うえお。"));
 
       expect(brief([...tick(s, 14250 + S), ...tick(s, 14250 + T)])).toEqual([["相手", 14.1, 14.25, "うえお。"]]);
     });
@@ -1211,7 +1159,7 @@ describe("文の終わりが落ち着いたら出す（Issue #996）", () => {
     it("1 秒の経路: 捨てられた途中結果の後の発言は、確定結果の end の後ろから全文が出る", () => {
       const s = createRemarkSettler();
       expect(texts(s.final(final("相手", 10, 15, "あいうえお")))).toEqual(["あいうえお"]);
-      s.partial(partial("相手", 12, 14, "かきく")); // end は時計（15000）より古い。期限は時計から T
+      s.partial(partial("相手", 12, 14, "かきく"));
       expect(tick(s, 15000 + T)).toEqual([]);
       s.partial(partial("相手", 12, 18, "かきくけこ"));
 
@@ -1235,7 +1183,7 @@ describe("文の終わりが落ち着いたら出す（Issue #996）", () => {
       s.partial(partial("相手", 30, 32, "別件。"));
       expect(texts(tick(s, 32000 + S))).toEqual(["別件。"]);
       s.partial(partial("相手", 10, 31, "はい。続き。"));
-      expect(tick(s, 32100)).toEqual([]); // end 31 <= 32 で関所が捨てる
+      expect(tick(s, 32100)).toEqual([]);
       s.partial(partial("相手", 10, 40, "はい。続き。末尾。"));
 
       const out = [...tick(s, 40000 + S), ...tick(s, 40000 + T), ...s.drain()].map((r) => r.text).join("");
@@ -1315,7 +1263,7 @@ describe("文の終わりが落ち着いたら出す（Issue #996）", () => {
       s.partial(partial("相手", 10, 15, "あいう。え"));
       expect(texts(tick(s, 15000 + S))).toEqual(["あいう。"]);
 
-      const finals = s.final(final("相手", 9.5, 15.5, "あいう。えお。")); // 15500 は残りの期限（16000）の前
+      const finals = s.final(final("相手", 9.5, 15.5, "あいう。えお。"));
 
       expect(brief(finals)).toEqual([["相手", 14, 15, "え"]]);
       expect(tick(s, 30000)).toEqual([]);
@@ -1413,10 +1361,7 @@ describe("文の終わりが落ち着いたら出す（Issue #996）", () => {
   });
 });
 
-// Issue #1019: 語ごとの区間（wordTimes）を発言まで運ぶ。words と同じ位置（UTF-16）で本文と一緒に切る。
-// wordTimes を持たない入力からは、wordTimes のキーを持つ発言を作らない
 type TestWordTime = { location: number; length: number; start: number; end: number };
-// 1 文字ずつ 1 秒の区間（位置 i の文字は start = base + i、end = base + i + 1）
 const timesOf = (text: string, base = 10): TestWordTime[] =>
   [...text].map((c, i) => ({ location: i, length: c.length, start: base + i, end: base + i + 1 }));
 const partialT = (track: HelperPartial["track"], start: number, end: number, text: string, wordTimes?: TestWordTime[]): HelperPartial => ({
@@ -1460,7 +1405,6 @@ describe("wordTimes の運搬（Issue #1019）", () => {
     it("final（途中結果の期限を越えた end の確定結果の分岐）: 出す未出の発話に、その途中結果の wordTimes が付く", () => {
       const s = createRemarkSettler();
       s.partial(partialT("相手", 10, 12, "あいう", timesOf("あいう")));
-      // 確定結果の end が途中結果の期限（13000）に届いている: 確定結果は捨て、途中結果からの発言を出す
       const out = s.final(finalT("相手", 10, 13, "別の確定", timesOf("別の確定", 20)));
 
       expect(brief(out)).toEqual([["相手", 10, 12, "あいう"]]);
@@ -1500,7 +1444,6 @@ describe("wordTimes の運搬（Issue #1019）", () => {
     });
   });
 
-  // 文の終わりで先に出す経路と、同じ発話の更新で頭に挿入が入る経路でも、本文・words と同じ位置で切る
   describe("文の終わりで切った発言・頭の挿入を切った発言の wordTimes", () => {
     const texts = (rs: SettledRemark[]) => rs.map((r) => r.text);
 
@@ -1547,7 +1490,6 @@ describe("wordTimes の運搬（Issue #1019）", () => {
     });
   });
 
-  // 関所が頭を切るとき、本文・words・wordTimes は同じ位置で切る。完全に残る区間だけを残して位置をずらす（秒はそのまま）。
   describe("関所が頭を切った発言の wordTimes", () => {
     const secondRemark = (first: string, second: string, secondTimes: TestWordTime[] | undefined, secondWords?: TestWord[]) => {
       const s = createRemarkSettler();
@@ -1570,7 +1512,6 @@ describe("wordTimes の運搬（Issue #1019）", () => {
     });
 
     it("切る位置をまたぐ区間は落ちる（words と同じ規則）", () => {
-      // 切る位置は 3。"うえ"（位置 2〜4）は途中で切れるので落ち、"お"（位置 4）は位置 1 になる
       const times: TestWordTime[] = [
         { location: 0, length: 2, start: 10, end: 11 },
         { location: 2, length: 2, start: 11, end: 12 },
@@ -1600,7 +1541,6 @@ describe("wordTimes の運搬（Issue #1019）", () => {
   });
 });
 
-// Issue #1222: 字幕へ渡す途中結果（unemittedTail）は、発言を出すときと同じ規則（出した分の記録・トラック全体の関所）で、もう発言になった分を除く。状態は変えない
 describe("unemittedTail（字幕へ渡す、まだ発言になっていない分）", () => {
   it("同じ発話で出した分の後ろだけを返し、呼んでも発言の記録は進まない（同じ途中結果が後で発言になるときは、同じ後ろが出る）", () => {
     const s = createRemarkSettler();

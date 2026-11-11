@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { MAP_NODE_BUTTON_CLASS, enterFoldsSelection } from "../src/enterFold.ts";
 
-// DOM を持たないので、closest だけを持つ代役の要素で見る。祖先に一致するセレクタ（完全一致）を渡す
 const focusedIn = (...matches: string[]) => ({ closest: (selector: string) => (matches.includes(selector) ? {} : null) });
 const NODE = `.${MAP_NODE_BUTTON_CLASS}`;
 const ANY_BUTTON = "button, a[href]";
@@ -28,7 +27,6 @@ describe("enterFoldsSelection: Enter を選んだノードの開閉に使うか"
   });
 });
 
-// 開閉の丸の button（ノード本体の外にある button）の代役。祖先に button はあるが、ノード本体のボタンではない
 describe("enterFoldsSelection: 開閉の丸の button にフォーカスがあるとき", () => {
   const dotButton = (cls: string) => ({
     closest: (selector: string) => (selector === "button, a[href]" || selector === `.${cls}` ? {} : null),

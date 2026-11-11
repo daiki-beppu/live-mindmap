@@ -18,7 +18,6 @@ type Worker = {
   error: Error | undefined;
 };
 
-// このテストが所有する資源は、テスト本体と終了フックで同じcleanupを待つ。
 class AuthResources {
   readonly changes = new EventEmitter();
   readonly workers: Worker[] = [];
@@ -163,7 +162,6 @@ class AuthResources {
   }
 
   private async dispose() {
-    // 取得中にtimeoutしても、取得完了後の資源を回収する。取得失敗は本体が報告する。
     await Promise.allSettled([this.ready]);
     const results = await Promise.allSettled([
       ...this.workers.map(async (worker) => {
@@ -205,8 +203,6 @@ async function expectReleased(resources: AuthResources) {
   await expect(readFile(resources.home)).rejects.toMatchObject({ code: "ENOENT" });
 }
 
-// 契約の正本は C02（認証ストアのプロセス間排他）。偽の FileSystem・同一プロセスの chatgptAuthStore.test.ts では、
-// 別プロセスの更新が直列化されないこと、SIGKILL の後に lock が残ることを捕まえられない。
 describe("認証ストアのプロセス間排他（C02）", () => {
   it("別プロセスの更新を直列化し、強制終了の後に lock が残る", async (context) => {
     const resources = new AuthResources(context, context.signal);

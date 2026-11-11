@@ -8,9 +8,6 @@ import { ObserveAudio } from "../src/app/review/mount.ts";
 import { makeSubscriptions } from "../src/app/review/subscription.ts";
 import { initialPlayback } from "../src/reviewPlayback.ts";
 
-// DOM が無い unit 環境で、<audio> に書く Command・Mount の中身・Subscription の開く条件を偽の要素で確かめる（Issue #824）。
-// 実ブラウザの <audio> そのものは未確認
-
 class FakeAudio extends EventTarget {
   paused = true;
   currentTime = 0;
@@ -81,7 +78,6 @@ describe("ObserveAudio（Mount）の中身", () => {
 
   const flush = () => new Promise((r) => setTimeout(r, 0));
 
-  // Stream を購読して Message を集める。close は購読を中断して release を走らせる
   const observe = async () => {
     const got: Array<{ _tag: string; time?: number }> = [];
     const stream = (ObserveAudio() as unknown as { f: (element: unknown, viewStateChanges: unknown) => Stream.Stream<{ _tag: string; time?: number }> }).f(audio, Stream.empty);

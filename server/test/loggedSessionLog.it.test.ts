@@ -35,11 +35,6 @@ it.effect("堂々巡りの frame は通知行をファイルに保存してか�
   expect(sent).toEqual([{ type: "discussion-notice", text: "「進め方」が 11 分決まっていません。何を重視して決めるかを先に確かめませんか" }]);
 }));
 
-// セッションのフォルダへの書き込み（log.jsonl の追記・export.json・フォルダ名）の契約。
-// 書き込みは FileSystem 経由の非同期になるので、同期の書き込みで自然に成り立っていた次の性質を固定する:
-// 呼んだ順に行が並ぶこと、最後に書かれた export.json が最新であること、時刻は Effect を実行した時点の実時刻であること、
-// 保存できないときは、パスと元のエラーを持つ型付き失敗になること。
-
 const sessionsDir = Effect.acquireRelease(
   Effect.tryPromise(() => mkdtemp(join(tmpdir(), "live-mindmap-log-"))),
   (path) => Effect.promise(() => rm(path, { recursive: true, force: true })),
@@ -357,11 +352,11 @@ describe("openLoggedSession のログと export.json", () => {
 
       const [first] = lines();
       expect(first).toMatchObject({ type: "start", title: "定例" });
-      expect(new Date(first!.at as string).toISOString()).toBe(first!.at); // ISO 文字列
+      expect(new Date(first!.at as string).toISOString()).toBe(first!.at);
       expect(Date.parse(first!.at as string)).toBeGreaterThanOrEqual(before - 1);
       expect(Date.parse(first!.at as string)).toBeLessThanOrEqual(Date.now() + 1);
       expect(exported()).toEqual(JSON.parse(JSON.stringify(yield* session.exportJson)));
-      expect(published).toHaveLength(1); // 最初のルート
+      expect(published).toHaveLength(1);
       expect(frames.filter((frame) => "type" in frame && frame.type === "speaker-names")).toEqual([
         { type: "speaker-names", names: [] },
       ]);
@@ -389,7 +384,6 @@ describe("openLoggedSession のログと export.json", () => {
       const call = diff.call as { startedAt: string; endedAt: string };
       const times = [...lines.map((l) => l.at as string), call.startedAt, call.endedAt].map((t) => Date.parse(t));
       expect(lines.map((l) => l.type)).toEqual(["start", "remark", "diff", "intake-stopped"]);
-      // どの時刻も、実行の間の実時刻から 3 日前にずれている（at だけでなく call も）
       for (const time of times) {
         expect(time).toBeGreaterThanOrEqual(Date.parse(lines[0]!.at as string));
         expect(time).toBeLessThanOrEqual(after + shift + 1);

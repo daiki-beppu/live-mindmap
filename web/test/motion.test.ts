@@ -14,7 +14,6 @@ const node = (id: string, parent: string | null): Exclude<SnapshotNode, { kind: 
 type Positions = Record<string, Position>;
 
 describe("startPositions: 位置の変化の出発点", () => {
-  // 目標: root → A → A1 → A2。A1 と A2 は今回新しく増えた
   const nodes = [node("root", null), node("A", "root"), node("A1", "A"), node("A2", "A1")];
   const target: Positions = { root: { x: 0, y: 100 }, A: { x: 260, y: 50 }, A1: { x: 520, y: 0 }, A2: { x: 780, y: 0 } };
 

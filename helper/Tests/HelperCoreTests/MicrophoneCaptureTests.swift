@@ -3,9 +3,6 @@ import Foundation
 import Testing
 @testable import HelperCore
 
-// マイクに触れずに確かめられる開始・停止の契約（ProcessTap と同じ）。
-// 音声処理（エコーキャンセル）を使わないことは、Microphone.swift に setVoiceProcessingEnabled の呼び出しがないことで確かめる。
-
 @Suite("マイク取得の開始と停止", .timeLimit(.minutes(1)))
 struct MicrophoneCaptureTests {
     @Test("start より前に stop が呼ばれたら、start は何も作らず、要素のない終わった流れを返す")
@@ -26,8 +23,6 @@ struct MicrophoneCaptureTests {
     }
 }
 
-// 入力の機器の切り替え（AVAudioEngineConfigurationChange）の扱い（Issue #232）。
-// 通知の送り元をテストのオブジェクトにし、専用の NotificationCenter から送る。
 @Suite("マイク取得中の構成の変化", .timeLimit(.minutes(1)))
 struct MicrophoneConfigurationChangeTests {
     @Test("構成の変化を受けたら、流れが configurationChanged のエラーで終わる")
@@ -54,7 +49,6 @@ struct MicrophoneConfigurationChangeTests {
         let stream = microphone.startWithoutMicrophone(configurationSource: source)
         center.post(name: .AVAudioEngineConfigurationChange, object: NSObject())
         microphone.stop()
-        // stop で正常に終わる（別の送り元の通知でエラーになっていない）。
         for try await _ in stream {}
     }
 

@@ -2,9 +2,6 @@ import Foundation
 import Testing
 @testable import HelperCore
 
-// `run` が終わるときのヘルパーの終了コード。マイクの入力の構成の変化（MicrophoneError.configurationChanged）は 75
-// （sysexits.h の EX_TEMPFAIL）で終わり、サーバーは失敗の連続に数えずに起動し直す。
-// 75 はサーバーの HELPER_EXIT_CONFIGURATION_CHANGED（server/src/core/intake.ts）と同じ値で、両側のテストで値を固定して合わせる。
 @Suite("終了コード", .timeLimit(.minutes(1)))
 struct ExitCodeTests {
     private struct UnrelatedError: Error {}

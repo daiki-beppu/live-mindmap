@@ -2,11 +2,9 @@ import AVFoundation
 import Foundation
 import HelperCore
 
-// `stt-bench echo` の本体（Issue #118）。wav の入出力と、条件ごとの実行・JSONL の出力。数字の計算は Echo.swift。
-
 private let echoRate = Double(echoSampleRate)
 private let targetRmsDbfs = -20.0
-private let tailSeconds = 0.2  // 最後の行の end のあとに残す無音
+private let tailSeconds = 0.2
 
 struct EchoOptions {
     var meeting: URL
@@ -20,8 +18,6 @@ struct EchoOptions {
     var out: URL?
 }
 
-/// `baseline` は #118 の既定値、`production` は本番設定。追加の三候補は production の一項目だけを変える。
-/// `bypass-<秒>` は baseline で動かし、開始から N 秒は AEC の出力を使わない。
 enum EchoCandidate: Equatable {
     case baseline
     case bypass(seconds: Double)
@@ -89,10 +85,8 @@ struct EchoResultLine: Encodable {
     var outputDelaySamples: Int
 }
 
-/// JSON に書けない値（nan・inf）は null にする。
 private func finite(_ value: Double) -> Double? { value.isFinite ? value : nil }
 
-/// wav を 48 kHz・モノラルの Float にする（オフラインの一括変換）。
 func readMono48k(_ url: URL) throws -> [Float] {
     let file = try AVAudioFile(forReading: url)
     guard let target = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: echoRate, channels: 1, interleaved: false),
@@ -134,7 +128,6 @@ func runEcho(_ options: EchoOptions) throws {
         return
     }
 
-    // 参照は全体の RMS を −20 dBFS、発話は発話区間（最初の行の start〜最後の行の end）の RMS を −20 dBFS にそろえる。
     let target = pow(10, targetRmsDbfs / 20)
     var reference = try readMono48k(options.meeting)
     reference = try scaleTo(target, reference, over: reference.indices)
@@ -234,7 +227,6 @@ private func runRecordedEcho(_ options: EchoOptions, microphone microphoneURL: U
         (db: db, samples: try scaleTo(pow(10, db / 20), voice, over: speech))
     }
     let insertAt = insertionSamples(atSeconds: options.atSeconds, firstLineStartSeconds: first.start, sampleRate: echoSampleRate)
-    // 配置の失敗は、処理・JSONL・保存音声を書き始める前に検出する。
     _ = try buildMicrophone(reference: reference, microphone: microphone, utterance: voice, insertAt: insertAt)
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]

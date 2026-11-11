@@ -1,18 +1,12 @@
 import Foundation
 
-// `run` サブコマンドの引数の解釈。純粋関数にして `HelperCoreTests` から検証できるようにする
-// （`live-mindmap-helper` の実行ターゲットにはテストターゲットがないため）。Issue #161。
-
-/// `run` サブコマンドの引数を解釈した結果。
 public struct RunArguments: Equatable {
     public var app: String
     public var port: UInt16
     public var audioDir: String?
     public var origin: UInt64?
     public var audioIndex: Int
-    /// 共有画面を取り込まない（`--no-screen`。値は取らない）。既定は取り込む。
     public var noScreen: Bool
-    /// `自分` の休止の規則へ引き継ぐ状態（`--self-manual`・`--self-basis`・`--self-last-known`・`--self-idle-for`）。起動し直しで、server が送り直す（Issue #1071）。無ければ初期状態。
     public var selfPauseCarryOver: SelfPauseCarryOver
 
     public init(app: String, port: UInt16 = 8765, audioDir: String? = nil, origin: UInt64? = nil, audioIndex: Int = 1, noScreen: Bool = false, selfPauseCarryOver: SelfPauseCarryOver = .initial) {
@@ -33,7 +27,6 @@ public struct RunArgumentsError: Error, Equatable {
 
 private let defaultRunPort: UInt16 = 8765
 
-/// `arguments` は `run` サブコマンドの語の後に続く引数の列（`--app` などのフラグと値）。
 public func parseRunArguments(_ arguments: [String]) -> Result<RunArguments, RunArgumentsError> {
     var app: String?
     var port = defaultRunPort

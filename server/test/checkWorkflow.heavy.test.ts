@@ -5,10 +5,6 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { jobLines, root, runScriptOf } from "./fixtures/checkWorkflow.ts";
 
-// check.yml の jq が値を決める 2 つの契約の代表。jq は OS のコマンドなので heavy に置く。
-
-// Issue #589: ruleset の必須チェック `check` は、runner を取れずに終わったジョブ（result が failure・cancelled 以外の値で渡る）を見逃して通った。
-// 「失敗を探す」から「全部が success か skipped であることを確かめる」に変える。
 const needsJson = (results: Record<string, string>): string =>
   JSON.stringify(
     Object.fromEntries(Object.entries(results).map(([job, result]) => [job, { result, outputs: {} }])),
@@ -99,8 +95,6 @@ describe("check ジョブの判定", () => {
   });
 });
 
-// Issue #562: each の同じ行を別 runner に分けると、同じテストを重複して実行してしまう。
-// heavy ジョブの run を取り出し、`pnpm` を偽物に差し替えて、list の出力に見立てた JSON を渡して割り振りを確かめる
 type Listed = { name: string; file: string; location?: { line: number; column: number } };
 
 type RunnerResult = { status: number | null; output: string; runArgs: string[] | undefined };
@@ -200,7 +194,6 @@ const targetsOf = (r: RunnerResult, groups: string[]): string[] => (r.runArgs ??
   .filter((arg) => /\.test\.ts(?::\d+)?$/.test(arg))
   .flatMap((arg) => groups.filter((group) => group === arg || group.startsWith(`${arg}:`)));
 
-// 同じ行から複数のテストができる（each）ものと、check.yml に名前の無い新しいファイルを含む。順番はばらばら
 const mixed = (cwd: string): Listed[] => [
   entry(cwd, "test/b.heavy.test.ts", 30, "b30"),
   entry(cwd, "test/a.heavy.test.ts", 56, "each 1"),

@@ -16,7 +16,6 @@ import {
 import { reflectedArrivals, replayByArrival } from "../bench/sttReplay.ts";
 import { logLayer, updaterLayer } from "./fixtures/sessionLayers.ts";
 
-// 計測結果（stt-bench run の出力）の 1 行。arrival は流し始めを 0 とする壁時計、start / end は音声ファイルの秒。
 const partial = (arrival: number, start: number, end: number, text: string, track: SttResult["track"] = "相手"): SttResult => ({
   track, arrival, isFinal: false, start, end, text,
 });
@@ -24,7 +23,7 @@ const final = (arrival: number, start: number, end: number, text: string, track:
   track, arrival, isFinal: true, start, end, text,
 });
 
-const T = 2; // 途中結果がこの秒数変わらなければ、確定したものとして扱う（しきい値の具体値は設計判断。テストでは固定して使う）
+const T = 2;
 
 describe("計測結果の読み込みと集計", () => {
   it.effect("JSONL を 1 行 1 結果として読み、空行は無視する", () => Effect.gen(function* () {
@@ -52,9 +51,9 @@ describe("計測結果の読み込みと集計", () => {
   it("確定までの遅れは、確定結果だけを数え、届いた時刻 − 発言の end で測る", () => {
     const results = [
       partial(11.0, 10.0, 10.8, "明日の"),
-      final(19.0, 10.0, 10.8, "明日の会議。"), // 8.2
+      final(19.0, 10.0, 10.8, "明日の会議。"),
       partial(20.0, 21.0, 21.5, "はい"),
-      final(23.0, 21.0, 21.5, "はい。"), // 1.5
+      final(23.0, 21.0, 21.5, "はい。"),
     ];
     expect(finalDelays(results).map((d) => Math.round(d * 10) / 10)).toEqual([8.2, 1.5]);
   });
@@ -70,7 +69,6 @@ describe("計測結果の読み込みと集計", () => {
   });
 });
 
-// 出した時刻 at は、時計を 10ms ごとに進めて期限を拾うので、期限の時刻から 10ms 以内に出る
 const near = (actual: number, expected: number) => expect(Math.abs(actual - expected)).toBeLessThanOrEqual(0.02);
 const atsOf = (remarks: readonly { at: number }[]) => remarks.map((r) => r.at);
 
@@ -201,7 +199,6 @@ describe("文ごとの話し終わりからの遅れ", () => {
 
 describe("集計の表", () => {
   it("途中結果の行は、本番の規則で作った発言の遅れ（出した時刻 − end）の件数・p50・p90 を出す。確定結果の行とは別の値", () => {
-    // 発言の遅れ: 4-2.8=1.2、14-12.5=1.5、確定結果 40-31=9。確定結果の行は 9 だけ
     const results = [partial(3.0, 2.0, 2.8, "はい"), partial(13.0, 12.0, 12.5, "いえ"), final(40, 30, 31, "あ。")];
     const rows = summarize(results, 1).trim().split("\n");
     expect(rows[1]).toBe("| 確定結果（現状） | 1 | 9.0 | 9.0 |");
@@ -210,10 +207,8 @@ describe("集計の表", () => {
 
   it("--lines があるとき、複数の文をまとめた確定結果も、各文の話し終わりから数えた遅れで、確定・途中結果の両方の行に出る。上書きの列は無い", () => {
     const lines = [{ start: 0, end: 2 }, { start: 3, end: 5 }, { start: 6, end: 8 }];
-    // 3 文が 1 件の確定結果にまとまって、arrival 20 に届く（途中結果は同じ区間を更新し続け、最後の更新が 19）
     const results = [partial(5, 0, 5, "あ"), partial(19, 0, 8, "あいう"), final(20, 0, 8, "あいう。")];
     const rows = summarize(results, T, lines).trim().split("\n");
-    // 遅れは 20-2, 20-5, 20-8 = 18, 15, 12 → p50 15.0, p90 18.0。確定結果の end（8）から数えた 12 だけではない
     expect(rows[0]).toBe("| 方式 | 件数 | 遅れ p50 (秒) | 遅れ p90 (秒) |");
     expect(rows[1]).toBe("| 確定結果（現状） | 3 | 15.0 | 18.0 |");
     expect(rows).toHaveLength(3);
@@ -282,7 +277,6 @@ describe("発言の ID から元の区間を引く", () => {
   });
 });
 
-// 仮想時計を 100 ms ずつ進めて effect を終わらせる（push の遅れで登録される sleep も、仮想時刻どおりに起きる）
 const stepToEnd = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
   Effect.gen(function* () {
     let done = false;
@@ -321,7 +315,6 @@ describe("届いた時刻で本番のセッションに流す", () => {
       ),
     );
 
-  // push の開始時刻（仮想時刻 ms）と flush を記録する session。pushTakes は発言 ID ごとの push の所要時間
   const recording = (pushTakes: Record<string, number> = {}) =>
     Effect.gen(function* () {
       const session = yield* setup([]);
@@ -361,7 +354,6 @@ describe("届いた時刻で本番のセッションに流す", () => {
     Effect.gen(function* () {
       const { wrapped, log } = yield* recording({ r1: 2_000 });
       yield* stepToEnd(replayByArrival(wrapped, items));
-      // r1 は 10000 に始まり 12000 に終わる。r2 の at(10500) は過ぎているので 12000 ちょうどに push される
       expect(pushAts(log).find(([id]) => id === "r2")).toEqual(["r2", 12_000]);
     }));
 

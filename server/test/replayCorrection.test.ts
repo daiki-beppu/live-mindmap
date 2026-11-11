@@ -101,7 +101,6 @@ describe("replayCorrection", () => {
       expect(yield* Deferred.isDone(returned)).toBe(false);
     }).pipe(Effect.ensuring(Deferred.succeed(release, undefined)));
     yield* Fiber.join(screen);
-    // 再生ではfromを付けない。画面と同時刻に終わる発言も、追加完了後は補正できる。
     yield* replay.push(remark("after", 6, 6, zendesk), zendesk);
     yield* replay.idle;
     yield* replay.push(remark("notion", 10, 12, notion), notion);

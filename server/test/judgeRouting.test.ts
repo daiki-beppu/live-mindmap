@@ -10,15 +10,11 @@ import type { AgentSdk } from "../src/claude.ts";
 import type { JudgeModel } from "../src/judgeSelection.ts";
 import { unusedApple } from "./fixtures/appleIntelligence.ts";
 
-// planLayer(plan) の分岐。routed のときだけ判定を呼び、single・鍵なしでは判定を一度も呼ばず、Sonnet 5.5 か選んだモデルだけで query を開く。
-// 鍵は planLayer で 1 回だけ確かめ、足りなければ知らせを 1 行返す（single と、鍵が揃った routed では返さない）。
-// 振り分けるかどうかの規則（名指し・claude の上書き・off・ローカルモード）は updatePlan.test.ts の resolvePlan が所有する。
 vi.mock("@anthropic-ai/claude-agent-sdk", () => ({ query: () => { throw new Error("通常依存の SDK を呼びました"); } }));
 
 const judge: JudgeModel = { name: "jev", route: "system-one", apiKeyEnv: "TYPESAFE_AI_API_KEY", url: "http://judge.invalid/systemone", timeoutMs: 1000 };
 type Claude = Extract<ExecutableModel, { route: "claude" }>;
 
-// 偽の SDK。query() に渡された model を記録し、構造化出力つきの成功を返す
 const fakeSdk = () => {
   const models: string[] = [];
   const prompts: { model: string; text: string }[] = [];
@@ -44,7 +40,6 @@ const fakeSdk = () => {
   return { models, prompts, options, deps };
 };
 
-// 判定の宛先への要求だけを数える偽の HttpClient。p は「含む」の確からしさ
 const fakeJudgeHttp = (script: number | readonly number[]) => {
   let n = 0;
   const requests: HttpClientRequest.HttpClientRequest[] = [];
@@ -93,7 +88,6 @@ effectIt.effect("確からしさが 0.3 未満なら Haiku 5.5 の query で差�
   expect(notice).toBeUndefined();
 }).pipe(Effect.scoped));
 
-// 判定を呼ばず、選んだモデルだけで query を開く場合。routed で鍵が足りないときだけ知らせを 1 行返す
 const untouched = (title: string, plan: UpdatePlan, expectedModel: string, expectedNotice: string | undefined, env?: Record<string, string>) =>
   effectIt.effect(title, () => Effect.gen(function* () {
     const { models, judgeCalls, result, notice } = yield* run(plan, 0.1, env);
@@ -119,8 +113,6 @@ for (const [label, model] of userChosen) {
   untouched(`single で利用者が選んだモデル（${label}）では判定を呼ばず、知らせも返さず、選んだモデルだけを使う`, single(model), model.model, undefined);
 }
 
-// 同じ準備済みの updater に、異なるマップで Sonnet → Haiku → Sonnet → Haiku と流す。
-// 各 query は、自分が前回送ったマップからの変更だけを受け取る（もう一方が送ったマップは基準にならない）
 effectIt.effect("振り分けの 2 本の query は、それぞれ自分の前回送ったマップからの変更だけを受け取る", () => Effect.gen(function* () {
   const sdk = fakeSdk();
   const http = fakeJudgeHttp([0.9, 0.1, 0.9, 0.1]);
@@ -147,22 +139,18 @@ effectIt.effect("振り分けの 2 本の query は、それぞれ自分の前�
   expect(sdk.prompts.map((p) => p.model)).toEqual(["claude-sonnet-5-5", "claude-haiku-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"]);
   const section = (text: string) => text.split("## 直前の発言")[0]!.split("## 前回からのマップの変更")[1] ?? "";
   const [s1, h1, s2, h2] = sdk.prompts.map((p) => p.text) as [string, string, string, string];
-  // それぞれの最初の回は全体のアウトライン
   expect(s1).toContain("## 現在のマップ");
   expect(h1).toContain("## 現在のマップ");
-  // Sonnet の 2 回目は自分が送った {AAA} から {AAA,BBB,CCC} への変更（BBB・CCC）。Haiku が送った {AAA,BBB} は基準にならない
   expect(s2).toContain("## 前回からのマップの変更");
   expect(section(s2)).toContain("BBB");
   expect(section(s2)).toContain("CCC");
   expect(section(s2)).not.toContain("AAA");
-  // Haiku の 2 回目は自分が送った {AAA,BBB} から {AAA..DDD} への変更（CCC・DDD）。Sonnet が送った {AAA,BBB,CCC} は基準にならない
   expect(h2).toContain("## 前回からのマップの変更");
   expect(section(h2)).toContain("CCC");
   expect(section(h2)).toContain("DDD");
   expect(section(h2)).not.toContain("BBB");
 }).pipe(Effect.scoped));
 
-// 振り分けの組み立てを通した各 query のモデルと effort（調整の中身は claude.test.ts が所有する, #719）
 effectIt.effect("振り分けの Haiku の query は effort low、Sonnet の query は effort medium で開く", () => Effect.gen(function* () {
   const sdk = fakeSdk();
   const http = fakeJudgeHttp([0.9, 0.1]);
@@ -182,7 +170,6 @@ effectIt.effect("振り分けの Haiku の query は effort low、Sonnet の que
   expect(haiku).toMatchObject({ model: "claude-haiku-5-5", effort: "low" });
 }).pipe(Effect.scoped));
 
-// Clef（Issue #985）: 鍵はトークンとアカウント ID の 2 つ。両方そろったときだけ判定を呼び、宛先は Workers AI
 const clefJudge: JudgeModel = { name: "clef-flash", route: "system-one", apiKeyEnv: "CLOUDFLARE_API_TOKEN", accountIdEnv: "CLOUDFLARE_ACCOUNT_ID", model: "clef-flash", timeoutMs: 2000 };
 
 effectIt.effect("Cloudflare の鍵が 2 つそろっていると、Workers AI の宛先・Bearer・モデル名で判定を呼ぶ", () => Effect.gen(function* () {

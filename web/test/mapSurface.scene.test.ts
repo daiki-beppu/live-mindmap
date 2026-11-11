@@ -13,9 +13,6 @@ import { KIND_COLOR } from "../src/kinds.ts";
 import { layout, NODE_WIDTH } from "../src/layout.ts";
 import { interpolate, startPositions } from "../src/motion.ts";
 
-// マップの表示面（Issue #814）の Scene。描いた view から入り、Mount を resolve して、ノードとエッジが今の画面（React Flow）と同じ位置に出ることを見る。
-// 比べる相手は layout が返す位置・@xyflow の getBezierPath・getViewportForBounds（fitView の式）。位置を Model に持たないので、view が毎回導く値を外から確かめる
-
 type MapSurfaceModel = typeof Model.Type;
 type VNode = Parameters<typeof textContent>[0];
 const app = { update, view: (model: Parameters<typeof view>[0], h: Parameters<typeof view>[2]) => view(model, { notice: () => null }, h) };
@@ -30,7 +27,6 @@ const node = (id: string, parent: string | null, kind: Exclude<SnapshotNode["kin
 });
 const snap = (nodes: SnapshotNode[], extra: Partial<Snapshot> = {}): Snapshot => ({ nodes, round: 3, changes: [], remarks: [], ...extra });
 
-// 会議 root > 議題 A > (論点 P, 案 D)。親子の色が全部違うので、エッジは線の色で見分けられる
 const nodes = (): SnapshotNode[] => [
   node("root", null, "会議", "定例"),
   node("A", "root", "議題", "予算"),
@@ -43,7 +39,6 @@ const SIZE = { width: 800, height: 600 };
 const modelOf = (snapshot: Snapshot, mode: MapSurfaceModel["mode"]): MapSurfaceModel => init(snapshot, mode, false);
 const measured = (nodeHeights: Record<string, number>, size = SIZE) => Mount.resolve(ObserveMapSurface, Message.MeasuredMapSurface({ ...size, nodeHeights }));
 
-// エッジの端点。出る側は親の右端から 3px 外、入る側は子の左端から 3px 外（@xyflow の .react-flow__handle の位置。実際のブラウザで測った値）
 const HANDLE_OUTSET = 3;
 const numbers = (s: string): number[] => (s.match(/-?\d+(?:\.\d+)?(?:e-?\d+)?/g) ?? []).map(Number);
 const expectNumbers = (actual: number[], expected: number[]) => {
@@ -63,13 +58,11 @@ const edgePath = (positions: ReturnType<typeof layout>, heights: Record<string, 
 const descendants = (vnode: VNode): VNode[] => [vnode, ...(vnode.children ?? []).flatMap((c) => (typeof c === "string" ? [] : descendants(c)))];
 const styleOf = (vnode: VNode, name: string): string | undefined => (vnode.data?.style as Record<string, string> | undefined)?.[name];
 
-// ノードの外側の要素の transform（translate(x px, y px)）
 const nodeTranslate = (html: VNode, id: string): number[] => {
   const wrapper = descendants(html).find((v) => (v.data?.attrs as Record<string, unknown> | undefined)?.["data-node-id"] === id);
   expect(wrapper, `node ${id}`).toBeDefined();
   return numbers(styleOf(wrapper!, "transform") ?? "");
 };
-// ビューポートは scale() の付く transform を持つ要素 1 つだけ（translate(x px, y px) scale(zoom)）
 const viewportTransform = (html: VNode): number[] => {
   const viewports = descendants(html).filter((v) => styleOf(v, "transform")?.includes("scale(") === true);
   expect(viewports).toHaveLength(1);
@@ -272,7 +265,6 @@ describe("mapSurface の Scene: 全体を収める（fitView の式）", () => {
   it("収める箱には、測れたノードだけを使う", () => {
     const all = nodes();
     const partial = { root: HEIGHTS.root, A: HEIGHTS.A };
-    // 位置は測れていないノードも含めた木全体の layout（React 版と同じ）。収める箱だけが、測れたノードに限られる
     const positions = layout(all, partial);
     const rects = all.slice(0, 2).map((n) => ({ x: positions[n.id]!.x, y: positions[n.id]!.y, width: NODE_WIDTH, height: partial[n.id as "root" | "A"] }));
     const expected = getViewportForBounds(fitBounds(rects), SIZE.width, SIZE.height, 0.02, 2, 0.1);
@@ -444,7 +436,6 @@ describe("mapSurface の Scene: 畳み（foldView）は live だけ", () => {
       expectScene(selector('[data-node-id="A1"] .map-node__text')).toHaveText("議論で更新した案"),
     );
   });
-  // 済みの議題 A（論点 A1 を持つ）と、話し中の今の議題 B
   const foldNodes = (): SnapshotNode[] => [
     node("root", null, "会議", "定例"),
     node("A", "root", "議題", "採用", { talkStatus: "済み" }),
@@ -508,7 +499,6 @@ describe("mapSurface の Scene: ノードの DOM は MapNode.tsx と同じ形・
     );
   });
 
-  // Issue #1023: 案は本文の後ろに「— 出した人」、TODO は「→ 担当者 · 期限」を薄く小さな文字で出す。色やバッジでは話者を分けない
   describe("案の出した人と TODO の担当者", () => {
     const people = () => snap([
       node("root", null, "会議", "定例"),
@@ -525,7 +515,6 @@ describe("mapSurface の Scene: ノードの DOM は MapNode.tsx と同じ形・
     ]);
     const heights = { root: 40, A: 64, P: 88, D1: 52, D2: 52, D3: 52, D4: 52, T1: 52, T2: 52, T3: 52, K: 52 };
     const person = (id: string) => selector(`[data-node-id="${id}"] .map-node__person`);
-    // ノードの中で、本文（map-node__text）と人の行（map-node__person）が出る順
     const order = (html: VNode, id: string): string[] => {
       const wrapper = descendants(html).find((v) => (v.data?.attrs as Record<string, unknown> | undefined)?.["data-node-id"] === id)!;
       return descendants(wrapper).flatMap((v) => (Option.getOrElse(attr(v, "class"), () => "").match(/map-node__(?:text|person)\b/g) ?? []));
@@ -632,7 +621,6 @@ describe("mapSurface の Scene: ノードの DOM は MapNode.tsx と同じ形・
 });
 
 describe("mapSurface の Scene: パン（ビューポートの transform が、全体を収める位置から画面上で動いた分だけずれる）", () => {
-  // Mount は 1 つの要素に 1 つで、resolve できるのは 1 回。実測は update で given の Model に入れ（自動のカメラが全体を収める）、パンの Message を resolve する 1 回に使う
   const measuredModel = (mode: MapSurfaceModel["mode"]): MapSurfaceModel => update(modelOf(snap(nodes()), mode), Message.MeasuredMapSurface({ ...SIZE, nodeHeights: HEIGHTS })).model;
   const fitOf = (mode: MapSurfaceModel["mode"]) => {
     const positions = layout(nodes(), HEIGHTS);
@@ -723,7 +711,6 @@ describe("mapSurface の Scene: パン（ビューポートの transform が、�
 });
 
 describe("mapSurface の Scene: ズーム（ビューポートの transform が、今と同じ式で変わる）", () => {
-  // Mount は 1 つの要素に 1 つで、resolve できるのは 1 回。実測は given の Model に入れ、ズームの Message を resolve する 1 回に使う
   const measuredModel = (mode: MapSurfaceModel["mode"]): MapSurfaceModel => update(modelOf(snap(nodes()), mode), Message.MeasuredMapSurface({ ...SIZE, nodeHeights: HEIGHTS })).model;
   const fitOf = (minZoom: number): { x: number; y: number; zoom: number } => {
     const positions = layout(nodes(), HEIGHTS);
@@ -820,10 +807,8 @@ describe("mapSurface の Scene: 動き（補間中の位置でノードとエッ
   const after = snap([...nodes(), node("N", "A", "案", "新しい案")], { round: 4 });
   const shownOf = (snapshot: Snapshot) => foldView(snapshot, undefined, null).nodes;
   const measuredLive: MapSurfaceModel = { ...modelOf(before, "live"), size: Option.some(SIZE), nodeHeights: HashMap.make(...Object.entries(HEIGHTS)) };
-  // 反映の直後（補間の経過 0）の Model。update を通して作る
   const changedModel = (): MapSurfaceModel => update(measuredLive, Message.ChangedSnapshot({ snapshot: after })).model;
   const tick = (deltaMs: number) => Message.TickedAnimationFrame({ deltaMs });
-  // Mount の結果は大きさだけの測定（目標は変わらず、補間の経過も戻らない）
   const mounted = Mount.resolve(ObserveMapSurface, Message.MeasuredMapSurface({ ...SIZE, nodeHeights: {} }));
 
   it("反映の直後は今までの位置、フレームを進めると途中の位置、終わると目標の位置の transform とエッジになる", () => {

@@ -27,7 +27,6 @@ describe("差分更新がモデルへ渡す補足", () => {
   });
 
   it("操作出力に誤りの指摘時だけの削除と、子・根拠の追加禁止を伝える", () => {
-    // 指示が送信されることだけを検査する。モデルによる意味判断は eval で測る。
     const rules = DIFF_SYSTEM.split(/\n/).filter((line) => line.includes("補足")).join("\n");
     expect(rules).toMatch(/会議[^\n]*誤り[^\n]*ときだけ[^\n]*(消|削除)/);
     expect(rules).toMatch(/子[^\n]*(付けない|追加しない|作らない)/);

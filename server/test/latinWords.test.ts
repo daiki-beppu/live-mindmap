@@ -1,22 +1,19 @@
 import { describe, expect, it } from "vitest";
 import { isAbbreviation, katakanaTable, wordsForKatakana } from "../src/core/index.ts";
 
-// Issue #642: 英字の語（略語でないもの）をモデルにカタカナの読みで聞くための、I/O を持たない部品。
-// 略語は大文字（A–Z）だけで 5 字以下の語。NFKC で正規化してから判定する。
-
 describe("isAbbreviation", () => {
   it.each([
     ["OJT", true],
     ["KPI", true],
     ["A", true],
-    ["ABCDE", true], // 5 字ちょうどは略語
-    ["ＯＪＴ", true], // 全角は NFKC で半角にそろえてから判定する
-    ["ABCDEF", false], // 6 字は略語ではない
+    ["ABCDE", true],
+    ["ＯＪＴ", true],
+    ["ABCDEF", false],
     ["Notion", false],
     ["notion", false],
-    ["Ojt", false], // 大文字だけではない
+    ["Ojt", false],
     ["1on1", false],
-    ["B2B", false], // 数字を含む
+    ["B2B", false],
     ["港南店", false],
     ["ノーション", false],
     ["", false],

@@ -190,7 +190,6 @@ describe("e2e serve CLI", () => {
     const app = await launch(["--web-port", String(webPort), "--events", "2"], webPort);
     const roots = new Set<string>();
     let published = false;
-    // Observe creation events even if startup fails and removes the files before the next poll.
     const temporaryFiles = watch(app.home, (_event, name) => {
       if (name?.startsWith("live-mindmap-e2e-")) roots.add(join(app.home, name));
     });
@@ -230,7 +229,6 @@ describe("e2e serve CLI", () => {
         expect(response.headers.get("content-type")).toBe(`${type}; charset=utf-8`);
         expect(await response.text()).toBe(body);
       }
-      // Encode the slash too: URL normalization must not remove the traversal before the server sees it.
       for (const path of ["/review/missing.html", "/%2e%2e%2foutside.txt"]) {
         const response = await fetch(`${base}${path}`);
         expect(response.status).toBe(404);
