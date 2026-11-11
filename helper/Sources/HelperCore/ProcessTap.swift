@@ -1,5 +1,6 @@
 import AVFoundation
 import CoreAudio
+import Synchronization
 
 func bufferHasFrames(_ buffer: AVAudioPCMBuffer) -> Bool {
     buffer.frameLength > 0
@@ -17,66 +18,66 @@ public enum ProcessTapError: Error, CustomStringConvertible {
 
 public final class ProcessTap {
 
-    private let lock = NSLock()
-    private var stopRequested = false
+    private struct Lifecycle {
+        var stopRequested = false
+        var tapID = AudioObjectID(kAudioObjectUnknown)
+        var aggregateID = AudioObjectID(kAudioObjectUnknown)
+        var ioProcID: AudioDeviceIOProcID?
+        var deviceStarted = false
+        var continuation: AsyncThrowingStream<CapturedAudio, Error>.Continuation?
+    }
+
+    private struct IOProcObservations {
+        var receivedFrames = false
+        var mainSubDeviceUID: String?
+    }
+
+    private let lifecycle = Mutex(Lifecycle())
+    private let observations = Mutex(IOProcObservations())
     private let targets: [AudioProcess]
-    private var tapID = AudioObjectID(kAudioObjectUnknown)
-    private var aggregateID = AudioObjectID(kAudioObjectUnknown)
-    private var ioProcID: AudioDeviceIOProcID?
-    private var deviceStarted = false
-    private var continuation: AsyncThrowingStream<CapturedAudio, Error>.Continuation?
     private let queue = DispatchQueue(label: "live-mindmap.process-tap")
-    private let stateLock = NSLock()
-    private var receivedFrames = false
-    private var mainSubDeviceUID: String?
 
     public init(targets: [AudioProcess]) {
         self.targets = targets
     }
 
     public var aggregateMainSubDeviceUID: String? {
-        stateLock.lock()
-        defer { stateLock.unlock() }
-        return mainSubDeviceUID
+        observations.withLock { $0.mainSubDeviceUID }
     }
 
     public var hasReceivedFrames: Bool {
-        stateLock.lock()
-        defer { stateLock.unlock() }
-        return receivedFrames
+        observations.withLock { $0.receivedFrames }
     }
 
     private func markFramesReceived() {
-        stateLock.lock()
-        receivedFrames = true
-        stateLock.unlock()
+        observations.withLock { $0.receivedFrames = true }
     }
 
     public func start() throws -> AsyncThrowingStream<CapturedAudio, Error> {
-        lock.lock()
-        defer { lock.unlock() }
-        if stopRequested {
-            let (stream, continuation) = AsyncThrowingStream.makeStream(of: CapturedAudio.self, throwing: Error.self)
-            continuation.finish()
-            return stream
-        }
-        do {
-            return try startUnchecked()
-        } catch {
-            releaseResources()
-            throw error
+        try lifecycle.withLock { state in
+            if state.stopRequested {
+                let (stream, continuation) = AsyncThrowingStream.makeStream(of: CapturedAudio.self, throwing: Error.self)
+                continuation.finish()
+                return stream
+            }
+            do {
+                return try startUnchecked(&state)
+            } catch {
+                releaseResources(&state)
+                throw error
+            }
         }
     }
 
-    private func startUnchecked() throws -> AsyncThrowingStream<CapturedAudio, Error> {
+    private func startUnchecked(_ state: inout Lifecycle) throws -> AsyncThrowingStream<CapturedAudio, Error> {
         let description = CATapDescription(stereoMixdownOfProcesses: targets.map(\.objectID))
         description.uuid = UUID()
         description.name = "live-mindmap-helper"
         description.muteBehavior = .unmuted
-        var status = AudioHardwareCreateProcessTap(description, &tapID)
+        var status = AudioHardwareCreateProcessTap(description, &state.tapID)
         guard status == noErr else { throw CoreAudioError.status("プロセスタップの作成", status) }
 
-        var asbd = try audioProperty(tapID, kAudioTapPropertyFormat, default: AudioStreamBasicDescription())
+        var asbd = try audioProperty(state.tapID, kAudioTapPropertyFormat, default: AudioStreamBasicDescription())
         guard let format = AVAudioFormat(streamDescription: &asbd) else {
             throw CoreAudioError.status("タップの音声形式の解釈", -1)
         }
@@ -86,9 +87,7 @@ public final class ProcessTap {
             default: AudioObjectID(kAudioObjectUnknown))
         let outputUID = try audioProperty(outputDevice, kAudioDevicePropertyDeviceUID, default: "" as CFString) as String
 
-        stateLock.lock()
-        mainSubDeviceUID = outputUID
-        stateLock.unlock()
+        observations.withLock { $0.mainSubDeviceUID = outputUID }
 
         let aggregate: [String: Any] = [
             kAudioAggregateDeviceNameKey: "live-mindmap-helper tap",
@@ -103,15 +102,15 @@ public final class ProcessTap {
                 kAudioSubTapUIDKey: description.uuid.uuidString,
             ]],
         ]
-        status = AudioHardwareCreateAggregateDevice(aggregate as CFDictionary, &aggregateID)
+        status = AudioHardwareCreateAggregateDevice(aggregate as CFDictionary, &state.aggregateID)
         guard status == noErr else { throw CoreAudioError.status("集約デバイスの作成", status) }
 
         let limit = downstreamBacklogLimit
         let (stream, continuation) = AsyncThrowingStream.makeStream(
             of: CapturedAudio.self, throwing: Error.self, bufferingPolicy: .bufferingOldest(limit))
-        self.continuation = continuation
+        state.continuation = continuation
 
-        status = AudioDeviceCreateIOProcIDWithBlock(&ioProcID, aggregateID, queue) { [weak self] _, input, inputTime, _, _ in
+        status = AudioDeviceCreateIOProcIDWithBlock(&state.ioProcID, state.aggregateID, queue) { [weak self] _, input, inputTime, _, _ in
             guard let copy = Self.copyBuffer(input, format: format) else { return }
             if bufferHasFrames(copy) { self?.markFramesReceived() }
             let hostTime = inputTime.pointee.mFlags.contains(.hostTimeValid) ? inputTime.pointee.mHostTime : AudioGetCurrentHostTime()
@@ -122,9 +121,9 @@ public final class ProcessTap {
         }
         guard status == noErr else { throw CoreAudioError.status("IOProc の作成", status) }
 
-        status = AudioDeviceStart(aggregateID, ioProcID)
+        status = AudioDeviceStart(state.aggregateID, state.ioProcID)
         guard status == noErr else { throw CoreAudioError.status("音声取得の開始", status) }
-        deviceStarted = true
+        state.deviceStarted = true
         return stream
     }
 
@@ -145,30 +144,30 @@ public final class ProcessTap {
     }
 
     public func stop() {
-        lock.lock()
-        defer { lock.unlock() }
-        stopRequested = true
-        releaseResources()
+        lifecycle.withLock { state in
+            state.stopRequested = true
+            releaseResources(&state)
+        }
     }
 
-    private func releaseResources() {
-        if deviceStarted, let ioProcID {
-            AudioDeviceStop(aggregateID, ioProcID)
-            deviceStarted = false
+    private func releaseResources(_ state: inout Lifecycle) {
+        if state.deviceStarted, let ioProcID = state.ioProcID {
+            AudioDeviceStop(state.aggregateID, ioProcID)
+            state.deviceStarted = false
         }
-        if let ioProcID {
-            AudioDeviceDestroyIOProcID(aggregateID, ioProcID)
-            self.ioProcID = nil
+        if let ioProcID = state.ioProcID {
+            AudioDeviceDestroyIOProcID(state.aggregateID, ioProcID)
+            state.ioProcID = nil
         }
-        if aggregateID != kAudioObjectUnknown {
-            AudioHardwareDestroyAggregateDevice(aggregateID)
-            aggregateID = AudioObjectID(kAudioObjectUnknown)
+        if state.aggregateID != kAudioObjectUnknown {
+            AudioHardwareDestroyAggregateDevice(state.aggregateID)
+            state.aggregateID = AudioObjectID(kAudioObjectUnknown)
         }
-        if tapID != kAudioObjectUnknown {
-            AudioHardwareDestroyProcessTap(tapID)
-            tapID = AudioObjectID(kAudioObjectUnknown)
+        if state.tapID != kAudioObjectUnknown {
+            AudioHardwareDestroyProcessTap(state.tapID)
+            state.tapID = AudioObjectID(kAudioObjectUnknown)
         }
-        continuation?.finish()
-        continuation = nil
+        state.continuation?.finish()
+        state.continuation = nil
     }
 }
