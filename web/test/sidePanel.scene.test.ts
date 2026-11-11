@@ -42,10 +42,10 @@ const SIZE = { width: 800, height: 600 };
 const modelOf = (snapshot: Snapshot = snap(), viewing: ViewingState = INITIAL_VIEWING): MapSurfaceModel => ({
   ...init(snapshot, "live", false),
   size: Option.some(SIZE),
-  nodeHeights: HashMap.make(...Object.entries(HEIGHTS)),
+  cssNodeHeights: HashMap.make(...Object.entries(HEIGHTS)),
   viewing,
 });
-const mounted = Mount.resolve(ObserveMapSurface, Message.MeasuredMapSurface({ ...SIZE, nodeHeights: {} }));
+const mounted = Mount.resolve(ObserveMapSurface, Message.MeasuredMapSurface({ ...SIZE, cssNodeHeights: {} }));
 const clickedNode = (nodeId: string) => Mount.resolve(ObserveMapSurface, Message.ClickedNodeButton({ nodeId, clientX: 0, clientY: 0 }));
 const nodeButton = (nodeId: string) => expectScene(selector(`[data-node-id="${nodeId}"] button.map-node__button`)).toExist();
 const opened = (): ViewingState => ({ ...INITIAL_VIEWING, humanFolds: Option.fromUndefinedOr(foldingActions(snap(), [{ type: "toggle", id: "A" }]).human) });

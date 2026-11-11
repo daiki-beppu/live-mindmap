@@ -972,7 +972,7 @@ describe("会議中の Scene: 自動のカメラは、スナップショット�
   const remeasuredReference = () =>
     referenceUpdate(
       referencePress(referenceUpdate(referenceOf(NO_TOPIC), MapSurfaceMessage.TickedAnimationFrame({ deltaMs: 2000 })), "E"),
-      MapSurfaceMessage.MeasuredMapSurface({ width: 1100, height: 600, nodeHeights: HEIGHTS }),
+      MapSurfaceMessage.MeasuredMapSurface({ width: 1100, height: 600, cssNodeHeights: HEIGHTS }),
     );
   const NO_TOPIC_NEXT: Snapshot = { ...NO_TOPIC, round: 2 };
   const remeasured = [
@@ -980,7 +980,7 @@ describe("会議中の Scene: 自動のカメラは、スナップショット�
     settle,
     surface(MapSurfaceMessage.TickedAnimationFrame({ deltaMs: 2000 })),
     raw(press("E")),
-    raw(surface(MapSurfaceMessage.MeasuredMapSurface({ width: 1100, height: 600, nodeHeights: HEIGHTS }))),
+    raw(surface(MapSurfaceMessage.MeasuredMapSurface({ width: 1100, height: 600, cssNodeHeights: HEIGHTS }))),
   ] as const;
 
   it("スナップショット以外の frame と、切断・再接続を受けても、ビューポートは動かない", () => {

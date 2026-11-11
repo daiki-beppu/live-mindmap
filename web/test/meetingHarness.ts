@@ -106,7 +106,7 @@ const expand = (step: MeetingStep): SceneStep<Model, MeetingMessage, undefined>[
 export const meetingScene = (model: Model, ...steps: ReadonlyArray<MeetingStep>): void => scene(app, given(model), ...steps.flatMap(expand), settle, quiet);
 
 export const referenceOf = (snapshot: Snapshot, isMac = false): MapSurface.Model =>
-  MapSurface.update(MapSurface.init(snapshot, "live", isMac), MapSurfaceMessage.MeasuredMapSurface({ ...SIZE, nodeHeights: HEIGHTS })).model;
+  MapSurface.update(MapSurface.init(snapshot, "live", isMac), MapSurfaceMessage.MeasuredMapSurface({ ...SIZE, cssNodeHeights: HEIGHTS })).model;
 
 type Mods = { metaKey: boolean; ctrlKey: boolean; altKey: boolean };
 const NONE: Mods = { metaKey: false, ctrlKey: false, altKey: false };
@@ -173,7 +173,7 @@ const expectClose = (actual: number, expected: number) => expect(actual).toBeClo
 type Step = <M, Msg, Out>(simulation: SceneSimulation<M, Msg, Out>) => SceneSimulation<M, Msg, Out>;
 const mountStep = (name: string): Step | undefined =>
   name === "ObserveMapSurface"
-    ? Mount.resolve(ObserveMapSurface, MapSurfaceMessage.MeasuredMapSurface({ ...SIZE, nodeHeights: HEIGHTS }))
+    ? Mount.resolve(ObserveMapSurface, MapSurfaceMessage.MeasuredMapSurface({ ...SIZE, cssNodeHeights: HEIGHTS }))
     : name === "AnchorPopover"
       ? Mount.resolve(Popover.AnchorPopover, Popover.Message.CompletedAnchorPopover())
       : name === "SlideCaptions"

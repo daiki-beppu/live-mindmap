@@ -55,23 +55,25 @@ export const ObserveMapSurface = Mount.defineStream("ObserveMapSurface", {
     ),
 });
 
+const cssHeightOf = (node: HTMLElement): number => Number.parseFloat(getComputedStyle(node).height);
+
 const observeSurface = (surface: HTMLElement): Stream.Stream<Emitted> =>
   Stream.callback<Emitted>((queue) =>
     Effect.acquireRelease(
       Effect.sync(() => {
-        const emit = (nodeHeights: Record<string, number>) => {
-          Queue.offerUnsafe(queue, Message.MeasuredMapSurface({ width: surface.offsetWidth, height: surface.offsetHeight, nodeHeights }));
+        const emit = (cssNodeHeights: Record<string, number>) => {
+          Queue.offerUnsafe(queue, Message.MeasuredMapSurface({ width: surface.offsetWidth, height: surface.offsetHeight, cssNodeHeights }));
         };
         const sizeObserver = new ResizeObserver(() => emit({}));
         sizeObserver.observe(surface);
         const nodeObserver = new ResizeObserver((entries) => {
-          const nodeHeights: Record<string, number> = {};
+          const cssNodeHeights: Record<string, number> = {};
           for (const entry of entries) {
             const node = entry.target as HTMLElement;
             const id = node.dataset.nodeId;
-            if (id !== undefined && node.isConnected) nodeHeights[id] = Number.parseFloat(getComputedStyle(node).height);
+            if (id !== undefined && node.isConnected) cssNodeHeights[id] = cssHeightOf(node);
           }
-          if (Object.keys(nodeHeights).length > 0) emit(nodeHeights);
+          if (Object.keys(cssNodeHeights).length > 0) emit(cssNodeHeights);
         });
         const observed = new Set<Element>();
         const reconcile = () => {

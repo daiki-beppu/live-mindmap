@@ -50,7 +50,7 @@ const observe = <Model, Message>(update: (model: Model, message: Message) => Upd
   unchanged: () => (update(model, unchanged).commands ?? []).filter((c) => c.name === "RestartBlink"),
 });
 
-const measuredMessage = SurfaceMessage.MeasuredMapSurface({ width: 800, height: 600, nodeHeights: {} });
+const measuredMessage = SurfaceMessage.MeasuredMapSurface({ width: 800, height: 600, cssNodeHeights: {} });
 
 describe.each([
   {

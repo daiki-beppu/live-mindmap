@@ -29,7 +29,7 @@ const shownView = (m: MapSurfaceModel) => foldView(m.snapshot, Option.getOrUndef
 const measuredModel = (snapshot: Snapshot, mode: MapSurfaceModel["mode"] = "live", viewing: ViewingState = INITIAL_VIEWING, camera: Pick<MapSurfaceModel["camera"], "mode" | "topic"> = { mode: "auto", topic: undefined }): MapSurfaceModel => ({
   ...init(snapshot, mode, false),
   size: Option.some({ width: 800, height: 600 }),
-  nodeHeights: HashMap.make(...Object.entries(HEIGHTS)),
+  cssNodeHeights: HashMap.make(...Object.entries(HEIGHTS)),
   viewing,
   camera: { ...initialCamera(), ...camera },
 });

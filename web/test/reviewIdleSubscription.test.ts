@@ -17,7 +17,7 @@ const update = makeUpdate(context);
 const subscriptions = makeSubscriptions(context);
 const surface = (message: MapSurfaceMessage) => Message.GotMapSurfaceMessage({ message });
 const wheel = (deltaY: number) => surface(MapSurfaceMessage.WheeledMapSurface({ x: 0, y: 0, deltaX: 0, deltaY, deltaMode: 0, shiftKey: false, ctrlKey: false, metaKey: false, timeStamp: 0 }));
-const measured = (m: Model): Model => update(m, surface(MapSurfaceMessage.MeasuredMapSurface({ width: 800, height: 600, nodeHeights: { root: 40, t1: 40 } }))).model;
+const measured = (m: Model): Model => update(m, surface(MapSurfaceMessage.MeasuredMapSurface({ width: 800, height: 600, cssNodeHeights: { root: 40, t1: 40 } }))).model;
 const idleMessage = () => Message.GotMapSurfaceMessage({ message: MapSurfaceMessage.ElapsedIdleTime() });
 
 describe("見返しの 10 秒のタイマー: 開く条件と計り直し", () => {

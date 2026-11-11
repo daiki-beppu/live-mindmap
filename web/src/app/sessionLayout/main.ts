@@ -218,7 +218,7 @@ const bubbleRowView = (h: H, bubble: DisplayBubble, nameEdit: Model["nameEdit"])
     ],
   );
 
-function bubbleRowsOf(model: Model): ReadonlyArray<DisplayBubble> {
+function rowsWithEditedBubblePinnedFirst(model: Model): ReadonlyArray<DisplayBubble> {
   const { bubbles } = model.captions;
   return Option.match(model.nameEdit, {
     onNone: () => bubbles,
@@ -227,7 +227,7 @@ function bubbleRowsOf(model: Model): ReadonlyArray<DisplayBubble> {
 }
 
 function captionsView(h: H, model: Model): Html | null {
-  const bubbles = bubbleRowsOf(model);
+  const bubbles = rowsWithEditedBubblePinnedFirst(model);
   if (bubbles.length === 0) return null;
   return Disclosure.view(
     {
