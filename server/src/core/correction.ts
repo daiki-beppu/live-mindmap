@@ -19,14 +19,14 @@ const MIN_LENGTH_RATIO = 0.6;
 const MAX_LENGTH_RATIO = 1.6;
 const EXACT_ONLY_KEY_LENGTH = 5;
 
-const SPELLING_VARIANTS: ReadonlyArray<readonly [string, string]> = [
+const KEY_REWRITES: ReadonlyArray<readonly [string, string]> = [
+  ["~tsu", ""], ["~", ""],
   ["sh", "s"], ["ch", "t"], ["ts", "t"], ["j", "z"], ["dz", "z"], ["f", "h"], ["l", "r"], ["v", "b"], ["-", ""], ["'", ""],
 ];
 
 function matchKey(romaji: string): string {
   let s = romaji.toLowerCase().normalize("NFD").replace(/\p{M}/gu, "");
-  s = s.replaceAll("~tsu", "").replaceAll("~", "");
-  for (const [from, to] of SPELLING_VARIANTS) s = s.replaceAll(from, to);
+  for (const [from, to] of KEY_REWRITES) s = s.replaceAll(from, to);
   const out: string[] = [];
   for (const c of s) {
     if (!/[\p{L}\p{N}]/u.test(c)) continue;

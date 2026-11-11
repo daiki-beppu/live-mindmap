@@ -1,3 +1,5 @@
+import { standaloneSource } from "./standaloneScript.ts";
+
 const PASSPHRASE_ALPHABET = "abcdefghijkmnpqrstuvwxyz23456789";
 const PASSPHRASE_GROUPS = 4;
 const PASSPHRASE_GROUP_LENGTH = 5;
@@ -86,8 +88,8 @@ function pageConstants(): string {
 }
 
 export function unlockPageScript(): string {
-  const functions = [bytesToBase64, base64ToBytes, deriveKey, openSealed, bootUnlockPage].map((fn) => fn.toString());
-  return `${pageConstants()}\n${functions.join("\n")}\nbootUnlockPage();\n`;
+  const functions = standaloneSource(bytesToBase64, base64ToBytes, deriveKey, openSealed, bootUnlockPage);
+  return `${pageConstants()}\n${functions}\nbootUnlockPage();\n`;
 }
 
 export const SEALED_SCRIPT_ID = SEALED_ELEMENT_ID;
