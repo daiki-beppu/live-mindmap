@@ -5,7 +5,7 @@ import Testing
 @Suite("語の読みの組み立て（reading(from:)）")
 struct ReadingsTests {
     private func word(_ surface: String, _ romaji: String, _ location: Int = 0) -> Word {
-        Word(surface: surface, romaji: romaji, location: location, length: surface.utf16.count)
+        Word(surface: surface, romaji: romaji, utf16Offset: location, utf16Length: surface.utf16.count)
     }
 
     @Test("語のローマ字を順につないだものが、その語の読みになる")

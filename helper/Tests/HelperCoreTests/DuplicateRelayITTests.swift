@@ -790,7 +790,7 @@ struct DuplicateRelayITTests {
         let task = try await connect(to: server, port: port)
         defer { task.cancel(with: .goingAway, reason: nil) }
 
-        let times = [WordTime(location: 0, length: 3, start: 10.5, end: 11), WordTime(location: 3, length: 2, start: 11, end: 11.5)]
+        let times = [WordTime(utf16Offset: 0, utf16Length: 3, start: 10.5, end: 11), WordTime(utf16Offset: 3, utf16Length: 2, start: 11, end: 11.5)]
         let mine = finishedStream([
             TranscriptionResult(text: "ありがと", isFinal: false, start: 10.5, end: 11.5, wordTimes: times),
             TranscriptionResult(text: "ありがとう", isFinal: true, start: 10.5, end: 11.5, wordTimes: times),

@@ -44,7 +44,7 @@ extension TranscriptionResult {
         TranscriptionResult(
             text: text, isFinal: isFinal, start: start + seconds, end: end + seconds,
             wordTimes: wordTimes.map {
-                WordTime(location: $0.location, length: $0.length, start: $0.start + seconds, end: $0.end + seconds)
+                WordTime(utf16Offset: $0.utf16Offset, utf16Length: $0.utf16Length, start: $0.start + seconds, end: $0.end + seconds)
             })
     }
 }

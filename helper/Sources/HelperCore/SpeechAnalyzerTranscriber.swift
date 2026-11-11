@@ -119,14 +119,14 @@ public final class SpeechAnalyzerTranscriber: Transcriber {
     }
 
     static func wordTimes(of text: AttributedString) -> [WordTime] {
-        var location = 0
+        var utf16Offset = 0
         var times: [WordTime] = []
         for run in text.runs {
-            let length = String(text.characters[run.range]).utf16.count
+            let utf16Length = String(text.characters[run.range]).utf16.count
             if let range = run.audioTimeRange, range.start.isNumeric, range.end.isNumeric {
-                times.append(WordTime(location: location, length: length, start: range.start.seconds, end: range.end.seconds))
+                times.append(WordTime(utf16Offset: utf16Offset, utf16Length: utf16Length, start: range.start.seconds, end: range.end.seconds))
             }
-            location += length
+            utf16Offset += utf16Length
         }
         return times
     }

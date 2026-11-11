@@ -60,7 +60,7 @@ public final class SelfPause: @unchecked Sendable {
 }
 
 public func announceSelfPause(_ rule: SelfPauseRule, at hostTime: UInt64, origin: UInt64, emit: (HelperEvent) async -> Void) async {
-    await emit(.selfPause(paused: rule.paused, reason: rule.reason, start: offsetSeconds(from: origin, to: hostTime)))
+    await emit(.selfPause(rule.state, start: offsetSeconds(from: origin, to: hostTime)))
     await emit(.selfPauseState(rule.carryOver))
 }
 

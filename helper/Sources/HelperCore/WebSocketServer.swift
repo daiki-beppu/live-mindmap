@@ -107,8 +107,7 @@ public actor WebSocketServer {
         do {
             return try event.jsonString()
         } catch {
-            let kind = String(describing: event).prefix { $0 != "(" }
-            writeStderr("helper event \(kind): JSON にできなかったので送らない")
+            writeStderr("helper event \(event.wireType): JSON にできなかったので送らない")
             return nil
         }
     }
