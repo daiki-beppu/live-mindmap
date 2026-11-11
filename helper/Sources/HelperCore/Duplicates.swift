@@ -82,6 +82,10 @@ public actor DuplicateMarker {
     private var heldPartialTimer: Task<Void, Never>?
     private var lastEmittedPartial: TranscriptionResult?
 
+    private let heldMineFinals: AsyncStream<(TranscriptionResult, Double)>
+    private let heldMineFinalContinuation: AsyncStream<(TranscriptionResult, Double)>.Continuation
+    private var hasResolvedHeldFinals = false
+
     private let mineDecisionContinuation: AsyncStream<MineDecision>.Continuation
     public nonisolated let mineDecisions: AsyncStream<MineDecision>
 
@@ -91,13 +95,12 @@ public actor DuplicateMarker {
     ) {
         self.sleep = sleep
         self.clock = now
+        let (heldFinals, heldFinalContinuation) = AsyncStream.makeStream(of: (TranscriptionResult, Double).self)
+        self.heldMineFinals = heldFinals
+        self.heldMineFinalContinuation = heldFinalContinuation
         let (stream, continuation) = AsyncStream.makeStream(of: MineDecision.self)
         self.mineDecisions = stream
         self.mineDecisionContinuation = continuation
-    }
-
-    public func now() async -> Double {
-        await clock()
     }
 
     private static let wallClockOrigin = ContinuousClock.now
@@ -148,17 +151,25 @@ public actor DuplicateMarker {
         heldPartial = result
     }
 
-    public func emitHeldPartialAndEndRecheck() {
+    public func hold(mineFinal result: TranscriptionResult) async {
         releaseHeldPartialIfAny()
         lastEmittedPartial = nil
+        heldMineFinalContinuation.yield((result, await clock()))
     }
 
-    public func emit(resolvedRemark result: TranscriptionResult, duplicate: Bool) {
-        mineDecisionContinuation.yield(MineDecision(result: result, duplicate: duplicate))
+    public func endMineFinals() {
+        heldMineFinalContinuation.finish()
     }
 
-    public func finishMineDecisions() {
-        mineDecisionContinuation.finish()
+    public func resolveHeldFinals() async {
+        precondition(!hasResolvedHeldFinals, "resolveHeldFinals must only be called once per marker")
+        hasResolvedHeldFinals = true
+        defer { mineDecisionContinuation.finish() }
+        for await (result, heldSince) in heldMineFinals {
+            let duplicate = await resolve(result, heldSince: heldSince)
+            if Task.isCancelled { break }
+            mineDecisionContinuation.yield(MineDecision(result: result, duplicate: duplicate))
+        }
     }
 
     public func finishMine() {
@@ -171,7 +182,7 @@ public actor DuplicateMarker {
         wake()
     }
 
-    public func resolve(_ mine: TranscriptionResult, heldSince: Double) async -> Bool {
+    private func resolve(_ mine: TranscriptionResult, heldSince: Double) async -> Bool {
         generation += 1
         let current = generation
         deadlineReached = false

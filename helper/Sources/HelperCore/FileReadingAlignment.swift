@@ -5,8 +5,8 @@ public actor FileReadingAlignment {
         let id: Int
         let alignment: FileReadingAlignment
 
-        func waitScreen(through position: Double) async throws {
-            try await alignment.waitScreen(through: position)
+        func waitUntilScreenEventsSent(before position: Double) async throws {
+            try await alignment.waitUntilScreenEventsSent(before: position)
         }
 
         func waitTurn(start: Double) async throws {
@@ -25,8 +25,8 @@ public actor FileReadingAlignment {
     public struct Screen: Sendable {
         let alignment: FileReadingAlignment
 
-        public func advance(to time: Double) async {
-            await alignment.advanceScreen(to: time)
+        public func sentAllScreenEvents(before time: Double) async {
+            await alignment.sentAllScreenEvents(before: time)
         }
 
         public func finish() async {
@@ -74,13 +74,13 @@ public actor FileReadingAlignment {
         wake()
     }
 
-    private func waitScreen(through position: Double) async throws {
+    private func waitUntilScreenEventsSent(before position: Double) async throws {
         while screenRegistered, !screenFinished, screenTime < position - 1e-9 {
             try await waitForChange()
         }
     }
 
-    private func advanceScreen(to time: Double) {
+    private func sentAllScreenEvents(before time: Double) {
         screenTime = max(screenTime, time)
         wake()
     }

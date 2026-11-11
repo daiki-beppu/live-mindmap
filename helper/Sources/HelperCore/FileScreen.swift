@@ -36,7 +36,7 @@ final class FileScreenReading: @unchecked Sendable {
     private var thinner = ScreenFrameThinner()
     private var detector = ScreenChangeDetector.withoutTabDetection()
     private(set) var lastTime: Double
-    var safeProgress: Double? { detector.fileProgress }
+    var allEventsSentBefore: Double? { detector.fileProgress }
     private var finished = false
     private let cancelLock = NSLock()
     private var cancelled = false
@@ -162,16 +162,16 @@ func relayFileScreen(
         await withTaskCancellationHandler {
             while !Task.isCancelled {
                 do { try await gate?.waitOpen() } catch { break }
-                let stepped = await onFileScreenQueue { () -> (events: [HelperEvent], time: Double, safeProgress: Double?)? in
+                let stepped = await onFileScreenQueue { () -> (events: [HelperEvent], time: Double, allEventsSentBefore: Double?)? in
                     switch reading.step() {
-                    case .frame: return ([], reading.lastTime, reading.safeProgress)
-                    case .events(let events): return (events, reading.lastTime, reading.safeProgress)
+                    case .frame: return ([], reading.lastTime, reading.allEventsSentBefore)
+                    case .events(let events): return (events, reading.lastTime, reading.allEventsSentBefore)
                     case .end: return nil
                     }
                 }
-                guard let (events, time, safeProgress) = stepped else { break }
+                guard let (events, time, allEventsSentBefore) = stepped else { break }
                 for event in events where !Task.isCancelled { await server.send(event) }
-                if let safeProgress { await progress.advance(to: safeProgress) }
+                if let allEventsSentBefore { await progress.sentAllScreenEvents(before: allEventsSentBefore) }
                 await afterFrame?(time)
             }
         } onCancel: {
