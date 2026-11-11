@@ -1,7 +1,8 @@
 import type { SessionWriteFailed } from "./sessionWriteFailed.ts";
 import { diffFailureMessage } from "./diffFailureMessage.ts";
 import type { DiffUpdateStatusReport } from "./diffUpdate.ts";
-import { Cause, Clock, Context, DateTime, Effect, Exit, Fiber, Predicate, Ref, Result, Schema, Semaphore, Stream, type Scope } from "effect";
+import { Cause, Clock, Context, DateTime, Effect, Exit, Fiber, Predicate, Ref, Result, Schema, Stream, type Scope } from "effect";
+import { makeScreenTransitions } from "./screenTransitions.ts";
 import { DIFF_UPDATE_RETRY_MS, DiffUpdatePaused, DiffUpdatePausedEvent, DiffUpdateRetryEvent, DiffUpdateResumedEvent, DiffUpdateStateEvent, type DiffUpdateLifecycle, type DiffUpdateState } from "./diffUpdate.ts";
 import { createDiscussionNoticeState, DiscussionNoticeEvent, nextDiscussionNotice, observeDiscussion, recordDiscussionNotice, type DiscussionNoticeState } from "./discussionNotice.ts";
 import type { KatakanaAnswer } from "./latinWords.ts";
@@ -367,7 +368,6 @@ function takeFresh(pending: readonly Remark[], catchUpUntil: string | undefined)
 const openSession = Effect.fnUntraced(function* (initial: SessionState, screens: RestoredScreens, logShiftMs: number, carriedTerms: readonly string[], updater?: DiffUpdater["Service"]): Effect.fn.Return<Session, SessionWriteFailed, Scope.Scope | SessionLog> {
   const scope = yield* Effect.scope;
   const targetLog = yield* SessionLog;
-  const screenTransitions = yield* Semaphore.make(1);
   const ref = yield* Ref.make<SessionState & Runtime>({ ...initial, lastDiffFailure: undefined, previousResponse: undefined, retryEnabled: true, nextRetryAt: undefined, inFlight: undefined, nextCall: 0, reflecting: [], catchUpUntil: undefined, screenQueue: screens.queue, screenFiles: screens.files });
   const log: SessionLog["Service"] = {
     ...targetLog,
@@ -375,7 +375,17 @@ const openSession = Effect.fnUntraced(function* (initial: SessionState, screens:
       Ref.update(ref, (state) => ({ ...state, retryEnabled: false, nextRetryAt: undefined, diffUpdate: { status: "stopped" as const } })),
     )),
   };
-  const supplements = yield* forkSupplementWorker(Ref.get(ref), carriedTerms, screenTransitions.withPermit);
+  const notifyDiscussion = Effect.gen(function* () {
+    const event = yield* Ref.modify(ref, (s) => {
+      const at = latestEnd(s.remarks);
+      const discussion = observeDiscussion(s.discussion, s.map, new Map(s.remarks.map((r) => [r.id, r])), at);
+      const event = nextDiscussionNotice(discussion, s.map, at, s.criteria ?? []);
+      return [event, { ...s, discussion: event === undefined ? discussion : recordDiscussionNotice(discussion, event) }] as const;
+    });
+    if (event !== undefined) yield* log.write(event);
+  });
+  const { transition, notifyDiscussionIfIdle, readExclusive } = yield* makeScreenTransitions(notifyDiscussion);
+  const supplements = yield* forkSupplementWorker(Ref.get(ref), carriedTerms, readExclusive);
   const reflectPending = Effect.fnUntraced(function* (reflection: { readonly kind: "diff"; readonly reflectedAt: number } | { readonly kind: "stop" }) {
     const pending = yield* supplements.take(reflection.kind === "stop");
     if (pending === undefined) return false;
@@ -397,19 +407,6 @@ const openSession = Effect.fnUntraced(function* (initial: SessionState, screens:
     yield* log.write(result.event);
     return result.event.op !== null;
   });
-
-  const notifyDiscussion = Effect.gen(function* () {
-    const event = yield* Ref.modify(ref, (s) => {
-      const at = latestEnd(s.remarks);
-      const discussion = observeDiscussion(s.discussion, s.map, new Map(s.remarks.map((r) => [r.id, r])), at);
-      const event = nextDiscussionNotice(discussion, s.map, at, s.criteria ?? []);
-      return [event, { ...s, discussion: event === undefined ? discussion : recordDiscussionNotice(discussion, event) }] as const;
-    });
-    if (event !== undefined) yield* log.write(event);
-  });
-
-  const transition = <A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A, E | SessionWriteFailed, R> =>
-    screenTransitions.withPermit(effect.pipe(Effect.tap(() => notifyDiscussion))).pipe(Effect.uninterruptible);
 
   const nameSpeaker = (change: SpeakerNameChange): Effect.Effect<void, SessionWriteFailed> =>
     Effect.uninterruptible(transition(Effect.gen(function* () {
@@ -620,7 +617,7 @@ const openSession = Effect.fnUntraced(function* (initial: SessionState, screens:
         const extra = { ...(original === undefined ? {} : { raw: original.raw, words: original.words }), ...(wordTimes === undefined ? {} : { wordTimes }) };
         const noContent = !r.duplicate && !hasContent(r.text);
         yield* log.write({ type: "remark", remark: r, ...(noContent ? { noContent: true } : {}), ...extra });
-        yield* screenTransitions.withPermitsIfAvailable(1)(notifyDiscussion).pipe(Effect.uninterruptible);
+        yield* notifyDiscussionIfIdle;
         if (r.duplicate || noContent) return;
         yield* Ref.update(ref, (s) => ({ ...s, pending: [...s.pending, r], catchUpUntil: s.diffUpdate.status === "paused" ? r.id : s.catchUpUntil }));
         yield* startDiffIfReady();
