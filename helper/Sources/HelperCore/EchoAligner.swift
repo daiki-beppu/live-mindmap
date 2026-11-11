@@ -1,13 +1,33 @@
 import CoreAudio
 
+private enum ReverseCursor {
+    case noReferenceYet
+    case anchored(at: UInt64)
+    case feeding(next: UInt64)
+
+    var next: UInt64? {
+        switch self {
+        case .noReferenceYet: nil
+        case .anchored(let time), .feeding(let time): time
+        }
+    }
+
+    func isAhead(ofCaptureAt time: UInt64, frameTicks: UInt64) -> Bool {
+        switch self {
+        case .noReferenceYet: false
+        case .anchored(let at): at > time
+        case .feeding(let next): next > time && next >= time &+ frameTicks
+        }
+    }
+}
+
 struct EchoAligner<Canceller: EchoCanceller> {
     static var holdLimitSamples: Int { echoSampleRate / 2 }
 
     private let canceller: Canceller
     private let frameTicks: UInt64
 
-    private var reverseNext: UInt64?
-    private var reverseStarted = false
+    private var reverseCursor: ReverseCursor = .noReferenceYet
     private var reference: [Float] = []
     private var referenceTime: UInt64 = 0
     private var referenceDone = false
@@ -21,7 +41,7 @@ struct EchoAligner<Canceller: EchoCanceller> {
     }
 
     mutating func addReference(_ samples: [Float], hostTime: UInt64) {
-        if reverseNext == nil { reverseNext = hostTime }
+        if case .noReferenceYet = reverseCursor { reverseCursor = .anchored(at: hostTime) }
         if reference.isEmpty {
             reference = samples
             referenceTime = hostTime
@@ -68,16 +88,16 @@ struct EchoAligner<Canceller: EchoCanceller> {
     }
 
     private mutating func feedReference(through time: UInt64, mayFillWithSilence: Bool) -> Bool {
-        if reverseNext == nil {
+        if case .noReferenceYet = reverseCursor {
             guard mayFillWithSilence else { return false }
-            reverseNext = time
+            reverseCursor = .anchored(at: time)
         }
         let silence = [Float](repeating: 0, count: echoFrameSamples)
-        if let next = reverseNext, next > time, !reverseStarted || next >= time &+ frameTicks {
+        if reverseCursor.isAhead(ofCaptureAt: time, frameTicks: frameTicks) {
             silence.withUnsafeBufferPointer { canceller.processReverse($0.baseAddress!) }
             return true
         }
-        while let next = reverseNext, next <= time {
+        while let next = reverseCursor.next, next <= time {
             discardReference(olderThan: next)
             if reference.count >= echoFrameSamples, referenceTime <= next {
                 reference.withUnsafeBufferPointer { canceller.processReverse($0.baseAddress!) }
@@ -90,8 +110,7 @@ struct EchoAligner<Canceller: EchoCanceller> {
             } else {
                 return false
             }
-            reverseNext = next &+ frameTicks
-            reverseStarted = true
+            reverseCursor = .feeding(next: next &+ frameTicks)
         }
         return true
     }
