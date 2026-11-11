@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Context, Effect, Fiber, Layer, Scope } from "effect";
+import { Context, Deferred, Effect, Fiber, Layer, Scope } from "effect";
 import type { SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { AgentSdk, layerClaude } from "../src/claude.ts";
 import { TestClock } from "effect/testing";
@@ -318,6 +318,31 @@ describe("振り分け: 利用上限の一時停止", () => {
 describe("振り分け: 共有画面", () => {
   const shot = (start: number, id = `img${start}`) => ({ start, image: { id, bytes: new Uint8Array([start]) } });
   const starts = (screens: DiffInput["screens"]) => screens?.map((c) => c.start);
+
+  it.effect("中断した行き先では受信済みの画面を消費し、もう一方には今回の画面を残す", () => Effect.gen(function* () {
+    const entered = yield* Deferred.make<void>();
+    const received: DiffInput[] = [];
+    const sonnet = DiffUpdater.of({ update: Effect.fnUntraced(function* (i: DiffInput) {
+      received.push(i);
+      if (received.length === 1) {
+        yield* Deferred.succeed(entered, undefined);
+        return yield* Effect.never;
+      }
+      return { ops: [] };
+    }) });
+    const haiku = fakeUpdater("haiku");
+    const router = yield* routedUpdater({ ask: fakeAsk([0.1, 0.9, 0.9, 0.1]).ask, sonnet, haiku: haiku.service });
+    yield* router.update(input([remark(1)], { screens: [shot(10)] }));
+
+    const updating = yield* Effect.forkChild(router.update(input([remark(2)], { screens: [shot(20)] })));
+    yield* Deferred.await(entered);
+    yield* Fiber.interrupt(updating);
+    yield* router.update(input([remark(3)], { screens: [shot(30)] }));
+    yield* router.update(input([remark(4)], { screens: [shot(40)] }));
+
+    expect(received.map((i) => starts(i.screens))).toEqual([[10, 20], [30]]);
+    expect(haiku.inputs.map((i) => starts(i.screens))).toEqual([[10], [20, 30, 40]]);
+  }));
 
   it.effect("振り分け先を往復して開き直すと、各adapterの保持画面と未送画面が実メッセージにそろう", () => Effect.gen(function* () {
     const queries: { model: string; messages: SDKUserMessage[] }[] = [];
