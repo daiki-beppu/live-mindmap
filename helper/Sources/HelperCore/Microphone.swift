@@ -1,5 +1,6 @@
 import AVFoundation
 import CoreAudio
+import Synchronization
 
 public enum MicrophoneError: Error, CustomStringConvertible {
     case permissionDenied
@@ -26,12 +27,15 @@ public func requestMicrophonePermission() async throws {
 /// Apple の音声処理（エコーキャンセル）は有効にしない。有効にすると同じプロセスのプロセスタップが止まる。
 public final class MicrophoneCapture {
 
-    private let lock = NSLock()
-    private var stopRequested = false
-    private var engine: AVAudioEngine?
-    private var continuation: AsyncThrowingStream<CapturedAudio, Error>.Continuation?
+    private struct Lifecycle {
+        var stopRequested = false
+        var engine: AVAudioEngine?
+        var continuation: AsyncThrowingStream<CapturedAudio, Error>.Continuation?
+        var configurationObserver: NSObjectProtocol?
+    }
+
+    private let lifecycle = Mutex(Lifecycle())
     private let notificationCenter: NotificationCenter
-    private var configurationObserver: NSObjectProtocol?
 
     public init() {
         self.notificationCenter = .default
@@ -42,67 +46,67 @@ public final class MicrophoneCapture {
     }
 
     public func start() throws -> AsyncThrowingStream<CapturedAudio, Error> {
-        try startExclusively { try startUnchecked() }
+        try startExclusively { try startUnchecked(&$0) }
     }
 
     func startWithoutMicrophone(configurationSource source: AnyObject) -> AsyncThrowingStream<CapturedAudio, Error> {
-        startExclusively {
-            let (stream, continuation) = makeStream()
-            observeConfigurationChange(of: source, finishing: continuation)
+        startExclusively { state in
+            let (stream, continuation) = makeStream(&state)
+            state.configurationObserver = Self.finishOnConfigurationChange(
+                of: source, center: notificationCenter, finishing: continuation)
             return stream
         }
     }
 
     var observesConfigurationChange: Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return configurationObserver != nil
+        lifecycle.withLock { $0.configurationObserver != nil }
     }
 
     private func startExclusively(
-        _ body: () throws -> AsyncThrowingStream<CapturedAudio, Error>
+        _ body: (inout Lifecycle) throws -> AsyncThrowingStream<CapturedAudio, Error>
     ) rethrows -> AsyncThrowingStream<CapturedAudio, Error> {
-        lock.lock()
-        defer { lock.unlock() }
-        if stopRequested {
-            let (stream, continuation) = AsyncThrowingStream.makeStream(of: CapturedAudio.self, throwing: Error.self)
-            continuation.finish()
-            return stream
-        }
-        do {
-            return try body()
-        } catch {
-            releaseResources()
-            throw error
+        try lifecycle.withLock { state in
+            if state.stopRequested {
+                let (stream, continuation) = AsyncThrowingStream.makeStream(of: CapturedAudio.self, throwing: Error.self)
+                continuation.finish()
+                return stream
+            }
+            do {
+                return try body(&state)
+            } catch {
+                releaseResources(&state)
+                throw error
+            }
         }
     }
 
-    private func makeStream() -> (AsyncThrowingStream<CapturedAudio, Error>, AsyncThrowingStream<CapturedAudio, Error>.Continuation) {
+    private func makeStream(_ state: inout Lifecycle) -> (AsyncThrowingStream<CapturedAudio, Error>, AsyncThrowingStream<CapturedAudio, Error>.Continuation) {
         let (stream, continuation) = AsyncThrowingStream.makeStream(
             of: CapturedAudio.self, throwing: Error.self, bufferingPolicy: .bufferingOldest(downstreamBacklogLimit))
-        self.continuation = continuation
+        state.continuation = continuation
         return (stream, continuation)
     }
 
-    private func observeConfigurationChange(
-        of source: AnyObject, finishing continuation: AsyncThrowingStream<CapturedAudio, Error>.Continuation
-    ) {
-        configurationObserver = notificationCenter.addObserver(
+    private static func finishOnConfigurationChange(
+        of source: AnyObject, center: NotificationCenter,
+        finishing continuation: AsyncThrowingStream<CapturedAudio, Error>.Continuation
+    ) -> NSObjectProtocol {
+        center.addObserver(
             forName: .AVAudioEngineConfigurationChange, object: source, queue: nil
         ) { _ in
             continuation.finish(throwing: MicrophoneError.configurationChanged)
         }
     }
 
-    private func startUnchecked() throws -> AsyncThrowingStream<CapturedAudio, Error> {
+    private func startUnchecked(_ state: inout Lifecycle) throws -> AsyncThrowingStream<CapturedAudio, Error> {
         let engine = AVAudioEngine()
-        self.engine = engine
+        state.engine = engine
         let input = engine.inputNode
         let format = input.outputFormat(forBus: 0)
         guard format.sampleRate > 0, format.channelCount > 0 else { throw MicrophoneError.invalidInputFormat }
 
         let limit = downstreamBacklogLimit
-        let (stream, continuation) = makeStream()
+        let (stream, continuation) = makeStream(&state)
 
         input.installTap(onBus: 0, bufferSize: 4096, format: format) { buffer, time in
             guard let copy = Self.copyBuffer(buffer) else { return }
@@ -112,7 +116,8 @@ public final class MicrophoneCapture {
             }
         }
         try engine.start()
-        observeConfigurationChange(of: engine, finishing: continuation)
+        state.configurationObserver = Self.finishOnConfigurationChange(
+            of: engine, center: notificationCenter, finishing: continuation)
         return stream
     }
 
@@ -131,23 +136,23 @@ public final class MicrophoneCapture {
     }
 
     public func stop() {
-        lock.lock()
-        defer { lock.unlock() }
-        stopRequested = true
-        releaseResources()
+        lifecycle.withLock { state in
+            state.stopRequested = true
+            releaseResources(&state)
+        }
     }
 
-    private func releaseResources() {
-        if let configurationObserver {
+    private func releaseResources(_ state: inout Lifecycle) {
+        if let configurationObserver = state.configurationObserver {
             notificationCenter.removeObserver(configurationObserver)
-            self.configurationObserver = nil
+            state.configurationObserver = nil
         }
-        if let engine {
+        if let engine = state.engine {
             engine.inputNode.removeTap(onBus: 0)
             engine.stop()
-            self.engine = nil
+            state.engine = nil
         }
-        continuation?.finish()
-        continuation = nil
+        state.continuation?.finish()
+        state.continuation = nil
     }
 }

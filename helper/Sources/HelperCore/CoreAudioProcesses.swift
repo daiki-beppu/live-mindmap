@@ -118,6 +118,7 @@ public final class AudioInputObserver: @unchecked Sendable {
     }
 
     private func rebind() {
+        dispatchPrecondition(condition: .onQueue(queue))
         guard let processListener else { return }
         let current = Set((try? processObjectIDs()) ?? [])
         var devices = audioAddress(kAudioProcessPropertyDevices)
