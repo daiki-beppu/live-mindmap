@@ -92,11 +92,11 @@ func readMono48k(_ url: URL) throws -> [Float] {
     guard let target = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: echoRate, channels: 1, interleaved: false),
           let converter = AVAudioConverter(from: file.processingFormat, to: target),
           let input = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: AVAudioFrameCount(file.length))
-    else { throw SynthError.badScenario("\(url.lastPathComponent) を 48 kHz に変換できない") }
+    else { throw EchoInputError(reason: "\(url.lastPathComponent) を 48 kHz に変換できない") }
     try file.read(into: input)
     let capacity = AVAudioFrameCount(Double(input.frameLength) * echoRate / file.processingFormat.sampleRate) + 16
     guard let output = AVAudioPCMBuffer(pcmFormat: target, frameCapacity: capacity) else {
-        throw SynthError.badScenario("出力バッファを作れない")
+        throw EchoInputError(reason: "出力バッファを作れない")
     }
     var supplied = false
     var error: NSError?
@@ -109,7 +109,7 @@ func readMono48k(_ url: URL) throws -> [Float] {
         inputStatus.pointee = .haveData
         return input
     }
-    if status == .error { throw SynthError.badScenario(error?.localizedDescription ?? "変換に失敗") }
+    if status == .error { throw EchoInputError(reason: error?.localizedDescription ?? "変換に失敗") }
     return Array(UnsafeBufferPointer(start: output.floatChannelData![0], count: Int(output.frameLength)))
 }
 
@@ -122,7 +122,7 @@ private func scaled(_ samples: [Float], by gain: Double) -> [Float] { samples.ma
 
 func runEcho(_ options: EchoOptions) throws {
     let lines = try JSONDecoder().decode([SynthesizedLine].self, from: Data(contentsOf: options.selfLines))
-    guard let first = lines.first, let last = lines.last else { throw SynthError.badScenario("\(options.selfLines.lastPathComponent) に行がない") }
+    guard let first = lines.first, let last = lines.last else { throw EchoInputError(reason: "\(options.selfLines.lastPathComponent) に行がない") }
     if let microphone = options.microphone {
         try runRecordedEcho(options, microphone: microphone, lines: lines)
         return
@@ -138,7 +138,7 @@ func runEcho(_ options: EchoOptions) throws {
 
     let insertAt = insertionSamples(atSeconds: options.atSeconds, firstLineStartSeconds: first.start, sampleRate: echoSampleRate)
     guard insertAt.allSatisfy({ $0 >= 0 }), let furthest = insertAt.max(), furthest + voice.count <= reference.count else {
-        throw SynthError.badScenario("会議の音（\(reference.count / echoSampleRate) 秒）に、発話（\(voice.count / echoSampleRate) 秒）を指定の位置に置けない")
+        throw EchoInputError(reason: "会議の音（\(reference.count / echoSampleRate) 秒）に、発話（\(voice.count / echoSampleRate) 秒）を指定の位置に置けない")
     }
 
     let leakGain = Float(pow(10, options.leakGainDb / 20))
@@ -168,7 +168,7 @@ func runEcho(_ options: EchoOptions) throws {
 
 private func scaleTo(_ target: Double, _ samples: [Float], over range: Range<Int>) throws -> [Float] {
     let current = rms(samples[range])
-    guard current > 0 else { throw SynthError.badScenario("音声が無音で、音量をそろえられない") }
+    guard current > 0 else { throw EchoInputError(reason: "音声が無音で、音量をそろえられない") }
     return scaled(samples, by: target / current)
 }
 
@@ -213,13 +213,13 @@ private func runRecordedEcho(_ options: EchoOptions, microphone microphoneURL: U
     guard lines.count == 2,
           lines.allSatisfy({ $0.start.isFinite && $0.end.isFinite && $0.start >= 0 && $0.end > $0.start && $0.end <= Double(sourceVoice.count) / echoRate }),
           lines[0].end <= lines[1].start else {
-        throw SynthError.badScenario("既知の二文と、音声内で順番に並ぶ start・end が必要")
+        throw EchoInputError(reason: "既知の二文と、音声内で順番に並ぶ start・end が必要")
     }
     let first = lines[0]
     let last = lines[1]
     guard !options.atSeconds.isEmpty,
           options.atSeconds.allSatisfy({ $0.isFinite && $0 >= first.start && $0 <= Double(reference.count) / echoRate }) else {
-        throw SynthError.badScenario("--at は録音内に二文を置ける秒数が必要")
+        throw EchoInputError(reason: "--at は録音内に二文を置ける秒数が必要")
     }
     let voice = Array(sourceVoice.prefix(min(Int((last.end + tailSeconds) * echoRate), sourceVoice.count)))
     let speech = Int(first.start * echoRate)..<Int(last.end * echoRate)

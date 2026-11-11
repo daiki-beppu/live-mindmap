@@ -38,10 +38,50 @@ func mixPlacedSamples(_ parts: [PlacedSamples]) -> [Float] {
     return mixed
 }
 
+enum ScriptSpeaker: String, Decodable {
+    case A, B
+
+    var voice: String {
+        switch self {
+        case .A: return "Kyoko"
+        case .B: return "Reed"
+        }
+    }
+}
+
+enum TruthKind: String, Decodable {
+    case 決定, TODO
+}
+
+struct ScriptTruth {
+    let kind: TruthKind
+    let text: String
+}
+
+struct ScriptLine: Decodable {
+    let speaker: ScriptSpeaker
+    let text: String
+    let truth: ScriptTruth?
+
+    init(from decoder: any Decoder) throws {
+        var values = try decoder.unkeyedContainer()
+        speaker = try values.decode(ScriptSpeaker.self)
+        text = try values.decode(String.self)
+        if values.isAtEnd {
+            truth = nil
+        } else {
+            truth = ScriptTruth(kind: try values.decode(TruthKind.self), text: try values.decode(String.self))
+            guard values.isAtEnd else {
+                throw DecodingError.dataCorruptedError(in: values, debugDescription: "台本行は2要素か4要素が必要")
+            }
+        }
+    }
+}
+
 struct Scenario: Decodable {
     var title: String
     var gap: Double
-    var lines: [[String]]
+    var lines: [ScriptLine]
 }
 
 struct SynthesizedLine: Codable {
@@ -57,21 +97,16 @@ struct TruthEntry: Codable {
     var to: Double
 }
 
-private let voices = ["A": "Kyoko", "B": "Reed"]
 private let speechRate = "190"
 private let leadingSilence = 1.0
 private let trailingSilence = 3.0
 
 enum SynthError: Error, CustomStringConvertible {
     case sayFailed(String)
-    case unknownSpeaker(String)
-    case badScenario(String)
 
     var description: String {
         switch self {
         case .sayFailed(let why): return "say が失敗した: \(why)"
-        case .unknownSpeaker(let s): return "話者 \(s) は A か B"
-        case .badScenario(let why): return "台本が不正: \(why)"
         }
     }
 }
@@ -132,9 +167,7 @@ func synthesize(name: String, scenario: Scenario, gapOverride: Double?, outDir: 
 
     var spoken: [[Float]] = []
     for (i, line) in scenario.lines.enumerated() {
-        guard line.count >= 2 else { throw SynthError.badScenario("\(name) の \(i + 1) 行目") }
-        guard let voice = voices[line[0]] else { throw SynthError.unknownSpeaker(line[0]) }
-        spoken.append(try speak(line[1], voice: voice, in: work, index: i))
+        spoken.append(try speak(line.text, voice: line.speaker.voice, in: work, index: i))
     }
     let placed = placeLines(durations: spoken.map { Double($0.count) / synthSampleRate }, gaps: Array(repeating: gap, count: spoken.count), leadingSilence: leadingSilence)
     var mixed = mixPlacedSamples(zip(spoken, placed).map { PlacedSamples(startFrame: Int(($1.start * synthSampleRate).rounded()), samples: $0) })
@@ -143,10 +176,12 @@ func synthesize(name: String, scenario: Scenario, gapOverride: Double?, outDir: 
     try FileManager.default.createDirectory(at: outDir, withIntermediateDirectories: true)
     try writeWav(mixed, to: outDir.appendingPathComponent("\(name).wav"))
 
-    let lines = zip(scenario.lines, placed).map { SynthesizedLine(speaker: $0[0], text: $0[1], start: $1.start, end: $1.end) }
+    let lines = zip(scenario.lines, placed).map { SynthesizedLine(speaker: $0.speaker.rawValue, text: $0.text, start: $1.start, end: $1.end) }
     var truth: [String: [TruthEntry]] = ["決定": [], "TODO": []]
-    for (line, p) in zip(scenario.lines, placed) where line.count >= 4 {
-        truth[line[2], default: []].append(TruthEntry(text: line[3], from: p.start, to: p.end))
+    for (line, p) in zip(scenario.lines, placed) {
+        if let annotation = line.truth {
+            truth[annotation.kind.rawValue, default: []].append(TruthEntry(text: annotation.text, from: p.start, to: p.end))
+        }
     }
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]

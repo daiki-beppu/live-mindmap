@@ -53,17 +53,21 @@ struct RecordedEchoTests {
 
     @Test("長さが異なる実録音の組を黙って切り詰めない", arguments: [3, 5])
     func rejectsMismatchedRecordings(microphoneCount: Int) {
-        #expect(throws: (any Error).self) {
+        do {
             _ = try buildMicrophone(
                 reference: [Float](repeating: 0.1, count: 4),
                 microphone: [Float](repeating: 0.01, count: microphoneCount),
                 utterance: [], insertAt: [])
+            Issue.record("同期していない録音を受理した")
+        } catch {
+            #expect(error is EchoInputError)
+            #expect(String(describing: error) == "台本が不正: 参照と実マイクは空でない同じ長さの同期済み録音が必要")
         }
     }
 
     @Test("録音に収まらない発話を途中で切らない")
     func rejectsTruncatedVoice() {
-        #expect(throws: (any Error).self) {
+        #expect(throws: EchoInputError.self) {
             _ = try buildMicrophone(
                 reference: [Float](repeating: 0.1, count: 4),
                 microphone: [Float](repeating: 0.01, count: 4),
@@ -73,7 +77,7 @@ struct RecordedEchoTests {
 
     @Test("評価窓が重なる発話配置を拒否する")
     func rejectsOverlappingVoiceWindows() {
-        #expect(throws: (any Error).self) {
+        #expect(throws: EchoInputError.self) {
             _ = try buildMicrophone(
                 reference: [Float](repeating: 0.1, count: 8),
                 microphone: [Float](repeating: 0.01, count: 8),

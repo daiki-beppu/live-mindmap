@@ -1,6 +1,12 @@
 import Foundation
 import HelperCore
 
+struct EchoInputError: Error, CustomStringConvertible {
+    let reason: String
+
+    var description: String { "台本が不正: \(reason)" }
+}
+
 struct EchoMicrophone {
     var microphone: [Float]
     var leak: [Float]
@@ -136,12 +142,12 @@ struct RecordedEchoMicrophone {
 
 func buildMicrophone(reference: [Float], microphone: [Float], utterance: [Float], insertAt: [Int]) throws -> RecordedEchoMicrophone {
     guard !reference.isEmpty, reference.count == microphone.count else {
-        throw SynthError.badScenario("参照と実マイクは空でない同じ長さの同期済み録音が必要")
+        throw EchoInputError(reason: "参照と実マイクは空でない同じ長さの同期済み録音が必要")
     }
     let starts = insertAt.sorted()
     guard starts.allSatisfy({ $0 >= 0 && $0 <= microphone.count && utterance.count <= microphone.count - $0 }),
           zip(starts, starts.dropFirst()).allSatisfy({ $1 - $0 >= utterance.count }) else {
-        throw SynthError.badScenario("発話の配置が録音の範囲外、または評価窓が重なっている")
+        throw EchoInputError(reason: "発話の配置が録音の範囲外、または評価窓が重なっている")
     }
     var mixed = microphone
     for start in insertAt {

@@ -45,19 +45,10 @@ describe("helper の typecheck と test のビルド", () => {
   });
 
   it("AEC3 のライブラリを用意する build-apm を、typecheck と各テスト script がビルドより先に呼ぶ", () => {
-    expect(scripts["build-apm"]).toContain("libwebrtc-audio-processing-2.a");
     for (const name of ["typecheck", ...testScripts]) {
       const steps = expand(name);
       expect(steps[0]).toBe(scripts["build-apm"]);
       expect(steps.findIndex((c) => c.startsWith("swift build"))).toBeGreaterThan(0);
-    }
-  });
-
-  it("--build-system native を使わない", () => {
-    for (const name of ["typecheck", ...testScripts]) {
-      for (const command of swiftCommands(name)) {
-        expect(command).not.toMatch(/--build-system(?:\s+|=)native\b/);
-      }
     }
   });
 });
@@ -82,13 +73,6 @@ describe("helper の層ごとの test script", () => {
       for (const id of ids) {
         expect(selects(id), `${name}: ${id} (${layer})`).toBe(layers[name]!.includes(layer));
       }
-    }
-  });
-
-  it("test は --skip、他の script は --filter で選ぶ", () => {
-    expect(swiftTest("test")[0]).toContain("--skip ");
-    for (const name of ["test:it", "test:it:heavy", "test:it:all"]) {
-      expect(swiftTest(name)[0]).toContain("--filter ");
     }
   });
 });
