@@ -372,41 +372,41 @@ struct FileReadingAlignmentITTests {
         #expect(abs(log.maxEnd(of: "相手") - 6) < 0.01)
     }
 
-    @Test("映像の判定の進みを待つ読み手は、advance で足りるまで戻らず、finish で戻る。映像が無い・終わっていれば待たない")
-    func waitScreenWaitsForAdvanceOrFinish() async throws {
+    @Test("画面イベントの送信を待つ読み手は、送信済みの時刻が足りるまで戻らず、finish で戻る。映像が無い・終わっていれば待たない")
+    func waitUntilScreenEventsSentWaitsForNotificationOrFinish() async throws {
         let alignment = FileReadingAlignment()
         let reader = await alignment.addReader()
-        try await reader.waitScreen(through: 5)
+        try await reader.waitUntilScreenEventsSent(before: 5)
 
         let screen = await alignment.addScreen()
         let passed = Flag()
-        let waiting = Task { try await reader.waitScreen(through: 2); passed.raise() }
+        let waiting = Task { try await reader.waitUntilScreenEventsSent(before: 2); passed.raise() }
         defer { waiting.cancel() }
         try await Task.sleep(for: .milliseconds(200))
         #expect(!passed.isRaised)
 
-        await screen.advance(to: 1.5)
+        await screen.sentAllScreenEvents(before: 1.5)
         try await Task.sleep(for: .milliseconds(200))
         #expect(!passed.isRaised, "進みが足りないのに戻った")
 
-        await screen.advance(to: 2)
+        await screen.sentAllScreenEvents(before: 2)
         try await waitUntil("進みが足りて戻る") { passed.isRaised }
 
-        let finishedWait = Task { try await reader.waitScreen(through: 100) }
+        let finishedWait = Task { try await reader.waitUntilScreenEventsSent(before: 100) }
         defer { finishedWait.cancel() }
         try await Task.sleep(for: .milliseconds(100))
         await screen.finish()
         try await finishedWait.value
-        try await reader.waitScreen(through: 200)
+        try await reader.waitUntilScreenEventsSent(before: 200)
         #expect(await alignment.now() == 0)
     }
 
-    @Test("映像の進みを待っている読み手は、キャンセルされるとすぐ CancellationError で終わる")
-    func waitScreenRespondsToCancellation() async throws {
+    @Test("画面イベントの送信を待っている読み手は、キャンセルされるとすぐ CancellationError で終わる")
+    func waitUntilScreenEventsSentRespondsToCancellation() async throws {
         let alignment = FileReadingAlignment()
         let reader = await alignment.addReader()
         _ = await alignment.addScreen()
-        let waiting = Task { try await reader.waitScreen(through: 1) }
+        let waiting = Task { try await reader.waitUntilScreenEventsSent(before: 1) }
         try await Task.sleep(for: .milliseconds(100))
 
         waiting.cancel()

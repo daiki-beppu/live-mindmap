@@ -30,15 +30,9 @@ private func relayTheirs<Results: AsyncSequence>(
 private func relayMine<Results: AsyncSequence>(
     _ results: Results, to server: WebSocketServer, duplicates: DuplicateMarker
 ) async throws where Results.Element == TranscriptionResult {
-    let (held, heldContinuation) = AsyncStream.makeStream(of: (TranscriptionResult, Double).self)
     try await withThrowingTaskGroup(of: Void.self) { group in
         group.addTask {
-            for await (result, heldSince) in held {
-                let duplicate = await duplicates.resolve(result, heldSince: heldSince)
-                if Task.isCancelled { break }
-                await duplicates.emit(resolvedRemark: result, duplicate: duplicate)
-            }
-            await duplicates.finishMineDecisions()
+            await duplicates.resolveHeldFinals()
         }
         group.addTask {
             for await decision in duplicates.mineDecisions {
@@ -47,16 +41,20 @@ private func relayMine<Results: AsyncSequence>(
             }
         }
         group.addTask {
-            defer { heldContinuation.finish() }
-            for try await result in results {
-                if result.isFinal {
-                    await duplicates.emitHeldPartialAndEndRecheck()
-                    heldContinuation.yield((result, await duplicates.now()))
-                } else {
-                    await duplicates.hold(minePartial: result)
+            do {
+                for try await result in results {
+                    if result.isFinal {
+                        await duplicates.hold(mineFinal: result)
+                    } else {
+                        await duplicates.hold(minePartial: result)
+                    }
                 }
+                await duplicates.finishMine()
+            } catch {
+                await duplicates.endMineFinals()
+                throw error
             }
-            await duplicates.finishMine()
+            await duplicates.endMineFinals()
         }
         for try await _ in group {}
     }

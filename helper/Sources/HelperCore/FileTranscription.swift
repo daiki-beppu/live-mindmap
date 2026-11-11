@@ -207,7 +207,7 @@ public struct FileAudioInputs: AsyncSequence {
                 try await alignment?.waitTurn(start: reading.position)
                 try await gate?.waitOpen()
                 let input = try await onFileReadingQueue { try reading.nextInput() }
-                if input != nil { try await alignment?.waitScreen(through: reading.position) }
+                if input != nil { try await alignment?.waitUntilScreenEventsSent(before: reading.position) }
                 if let input, let diarization {
                     let buffer = input.buffer
                     try await diarization.send(buffer: buffer, start: reading.position - Double(buffer.frameLength) / buffer.format.sampleRate)

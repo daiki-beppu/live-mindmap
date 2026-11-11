@@ -63,10 +63,9 @@ struct DuplicateMarkerTests {
 
         let mineFinal = Support.final("明日の会議は十時", 10.5, 12)
         await marker.hold(minePartial: Support.partialResult("明日の会議は十時", 10.5, 12))
-        await marker.emitHeldPartialAndEndRecheck()
-        let duplicate = await marker.resolve(mineFinal, heldSince: await marker.now())
-        await marker.emit(resolvedRemark: mineFinal, duplicate: duplicate)
-        await marker.finishMineDecisions()
+        await marker.hold(mineFinal: mineFinal)
+        await marker.endMineFinals()
+        await marker.resolveHeldFinals()
 
         var decisions: [MineDecision] = []
         for await decision in marker.mineDecisions { decisions.append(decision) }
@@ -93,7 +92,8 @@ struct DuplicateMarkerTests {
         let released = await decisions.next()
         #expect(released?.result == Support.partialResult("マリコ", 10, 11.5))
         #expect(released?.duplicate == false)
-        await marker.finishMineDecisions()
+        await marker.endMineFinals()
+        await marker.resolveHeldFinals()
         let rest = await decisions.next()
         #expect(rest == nil)
     }
@@ -102,18 +102,59 @@ struct DuplicateMarkerTests {
     func resolveWaitIsMeasuredOnInjectedClock() async {
         let clock = Support.AudioClock()
         let durations = Support.DurationLog()
-        let marker = DuplicateMarker(sleep: { durations.append($0) }, now: { clock.value })
+        let (entered, enteredContinuation) = AsyncStream.makeStream(of: Void.self)
+        let (release, releaseContinuation) = AsyncStream.makeStream(of: Void.self)
+        defer { releaseContinuation.finish(); enteredContinuation.finish() }
+        let marker = DuplicateMarker(sleep: { duration in
+            durations.append(duration)
+            enteredContinuation.yield()
+            if durations.values.count == 1 { for await _ in release { return } }
+        }, now: { clock.value })
         clock.advance(to: 100)
+        let finals = [Support.final(Support.sentence, 90, 92), Support.final(Support.other, 93, 95)]
+        for result in finals { await marker.hold(mineFinal: result) }
+        await marker.endMineFinals()
+        let resolving = Task { await marker.resolveHeldFinals() }
+        defer { resolving.cancel() }
 
-        _ = await marker.resolve(Support.final(Support.sentence, 90, 92), heldSince: 100)
+        await Support.awaitSignal(entered)
         clock.advance(to: 103)
-        _ = await marker.resolve(Support.final(Support.other, 93, 95), heldSince: 100)
+        releaseContinuation.yield()
+        await resolving.value
 
         let waits = durations.values.map(Support.seconds)
         #expect(waits.count == 2)
         guard waits.count == 2 else { return }
         #expect(abs(waits[0] - 8) < 0.001)
         #expect(abs(waits[1] - 5) < 0.001)
+    }
+
+    @Test("消費を始める前に保留した確定結果は、入力終了後も投入順に全件判定されて出力が閉じる")
+    func heldFinalsDrainInInsertionOrder() async {
+        let marker = DuplicateMarker(sleep: { _ in })
+        await marker.add(theirs: Support.final(Support.sentence, 10, 12))
+        await marker.finishTheirs()
+        let finals = [Support.final(Support.other, 20, 22), Support.final(Support.sentence, 10, 12)]
+        for result in finals { await marker.hold(mineFinal: result) }
+        await marker.endMineFinals()
+
+        await marker.resolveHeldFinals()
+
+        var decisions: [MineDecision] = []
+        for await decision in marker.mineDecisions { decisions.append(decision) }
+        #expect(decisions.map(\.result) == finals)
+        #expect(decisions.map(\.duplicate) == [false, true])
+    }
+
+    @Test("確定結果がないまま入力を閉じても消費が終了し、判定出力も閉じる")
+    func emptyFinalsCloseDecisions() async {
+        let marker = DuplicateMarker()
+        await marker.endMineFinals()
+
+        await marker.resolveHeldFinals()
+
+        var decisions = marker.mineDecisions.makeAsyncIterator()
+        #expect(await decisions.next() == nil)
     }
 
     @Test("自分の途中結果の保留（1 秒）も注入した sleep で解ける。相手の文字が無いまま、時計が 1 秒進むまでは流れず、進むと印なしで流れる")
