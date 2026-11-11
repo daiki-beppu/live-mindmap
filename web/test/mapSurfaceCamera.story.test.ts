@@ -64,7 +64,7 @@ const foldable = (extra: Partial<Snapshot> = {}): Snapshot =>
 const HEIGHTS: Record<string, number> = { root: 40, A: 60, A1: 60, A2: 60, A3: 60, B: 60, B1: 60, B2: 60, B3: 60 };
 const SIZE = { width: 600, height: 400 };
 const SMALL = { width: 300, height: 200 };
-const measure = (size = SIZE, nodeHeights: Record<string, number> = HEIGHTS) => Message.MeasuredMapSurface({ ...size, nodeHeights });
+const measure = (size = SIZE, cssNodeHeights: Record<string, number> = HEIGHTS) => Message.MeasuredMapSurface({ ...size, cssNodeHeights });
 
 const settle = (snapshot: Snapshot, mode: MapSurfaceModel["mode"] = "live", size = SIZE): MapSurfaceModel => update(init(snapshot, mode, false), measure(size)).model;
 type Msg = typeof Message.Type;
@@ -80,8 +80,8 @@ const changed = (snapshot: Snapshot) => Message.ChangedSnapshot({ snapshot });
 const clickFoldDot = (nodeId: string) => Message.ClickedFoldDot({ nodeId });
 const clickNode = (nodeId: string) => Message.ClickedNodeButton({ nodeId, clientX: 0, clientY: 0 });
 
-const heightsOf = (m: MapSurfaceModel): Record<string, number> => Object.fromEntries(HashMap.toEntries(m.nodeHeights));
-const dimsOf = (m: MapSurfaceModel): Record<string, { height: number }> => Object.fromEntries(HashMap.toEntries(m.nodeHeights).map(([id, height]) => [id, { height }]));
+const heightsOf = (m: MapSurfaceModel): Record<string, number> => Object.fromEntries(HashMap.toEntries(m.cssNodeHeights));
+const dimsOf = (m: MapSurfaceModel): Record<string, { height: number }> => Object.fromEntries(HashMap.toEntries(m.cssNodeHeights).map(([id, height]) => [id, { height }]));
 const sizeOf = (m: MapSurfaceModel) => Option.getOrThrow(m.size);
 const viewOf = (m: MapSurfaceModel) => {
   if (m.mode === "still") return null;

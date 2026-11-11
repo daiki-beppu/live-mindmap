@@ -30,7 +30,7 @@ const HEIGHTS = { root: 40, A: 64, P: 88, D: 52 };
 const SIZE = { width: 800, height: 600 };
 
 const app = { update, view };
-const measured = (nodeHeights: Record<string, number>, size = SIZE) => Mount.resolve(ObserveMapSurface, MapSurfaceMessage.MeasuredMapSurface({ ...size, nodeHeights }));
+const measured = (cssNodeHeights: Record<string, number>, size = SIZE) => Mount.resolve(ObserveMapSurface, MapSurfaceMessage.MeasuredMapSurface({ ...size, cssNodeHeights }));
 
 const attributeCount = (html: VNode, name: string): number => findAll(html, `[${name}]`).length;
 const expectNoCaptureAttribute = (html: VNode) => {

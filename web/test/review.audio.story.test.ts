@@ -32,7 +32,7 @@ const summary = (commands: ReadonlyArray<{ name: string; args?: unknown }> | und
 const SETTINGS = { name: "WriteAudioSettings", args: { rate: AUDIO_RATE, muted: false, volume: 1 } };
 
 describe("反映をまたぐ録音の時刻移動", () => {
-  const measuredAt = (time: number, playing: boolean) => audioUpdate(stateAt(audioContext, time, playing), Message.GotMapSurfaceMessage({ message: SurfaceMessage.MeasuredMapSurface({ width: 800, height: 600, nodeHeights: {} }) })).model;
+  const measuredAt = (time: number, playing: boolean) => audioUpdate(stateAt(audioContext, time, playing), Message.GotMapSurfaceMessage({ message: SurfaceMessage.MeasuredMapSurface({ width: 800, height: 600, cssNodeHeights: {} }) })).model;
 
   it("測定済みで前へ戻ると、点滅の再生し直しと音声のシークを両方返す", () => {
     const result = audioUpdate(measuredAt(30, false), Message.ClickedPrev());

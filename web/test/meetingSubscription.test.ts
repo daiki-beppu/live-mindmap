@@ -10,7 +10,7 @@ const NO_MODIFIERS = { metaKey: false, ctrlKey: false, altKey: false };
 const pressed = (key: string) => Message.PressedKey({ key: key as never, ...NO_MODIFIERS });
 
 const run = (messages: ReadonlyArray<MeetingMessage>): Model => messages.reduce((model, next) => update(model, next).model, init(false));
-const measured = surfaceMessage(MapSurfaceMessage.MeasuredMapSurface({ ...SIZE, nodeHeights: HEIGHTS }));
+const measured = surfaceMessage(MapSurfaceMessage.MeasuredMapSurface({ ...SIZE, cssNodeHeights: HEIGHTS }));
 const shown = (): Model => run([snapshotMessage(FIRST), measured]);
 const selected = (): Model => run([snapshotMessage(FIRST), measured, surfaceMessage(MapSurfaceMessage.ClickedNodeButton({ nodeId: "A", clientX: 0, clientY: 0 }))]);
 

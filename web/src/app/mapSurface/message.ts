@@ -5,7 +5,7 @@ import { Snapshot } from "../../../../server/src/core/index.ts";
 const ViewKey = Schema.Literals(["=", "-", "0", "F", "Z", "Shift+ArrowLeft", "Shift+ArrowRight", "Shift+ArrowUp", "Shift+ArrowDown"]);
 
 export const Message = defineMessageUnion({
-  MeasuredMapSurface: { width: Schema.Finite, height: Schema.Finite, nodeHeights: Schema.Record(Schema.String, Schema.Finite) },
+  MeasuredMapSurface: { width: Schema.Finite, height: Schema.Finite, cssNodeHeights: Schema.Record(Schema.String, Schema.Finite) },
   PressedMapSurface: { clientX: Schema.Finite, clientY: Schema.Finite, button: Schema.Finite, ctrlKey: Schema.Boolean, insideNoPan: Schema.Boolean },
   PressedNodeButton: { nodeId: Schema.String, clientX: Schema.Finite, clientY: Schema.Finite },
   ClickedNodeButton: { nodeId: Schema.String, clientX: Schema.Finite, clientY: Schema.Finite },

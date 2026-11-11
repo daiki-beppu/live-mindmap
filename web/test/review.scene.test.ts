@@ -30,7 +30,7 @@ const at = (time: number): Model => {
   return { ...start, playback: { ...start.playback, time } };
 };
 const expectedIds = (time: number): string[] => foldView(snapshotOf(context, at(time)), undefined, null).nodes.map((n) => n.id);
-const measuredAll = (time: number) => Mount.resolve(ObserveMapSurface, MapSurfaceMessage.MeasuredMapSurface({ width: 800, height: 600, nodeHeights: Object.fromEntries(expectedIds(time).map((id) => [id, 40])) }));
+const measuredAll = (time: number) => Mount.resolve(ObserveMapSurface, MapSurfaceMessage.MeasuredMapSurface({ width: 800, height: 600, cssNodeHeights: Object.fromEntries(expectedIds(time).map((id) => [id, 40])) }));
 const renderedIds = (html: { children?: unknown }): string[] => {
   type V = { data?: { attrs?: Record<string, unknown> }; children?: Array<V | string> };
   const walk = (v: V): string[] => [...(typeof v.data?.attrs?.["data-node-id"] === "string" ? [v.data.attrs["data-node-id"] as string] : []), ...(v.children ?? []).flatMap((c) => (typeof c === "string" ? [] : walk(c)))];
@@ -60,7 +60,7 @@ describe("見返しの Scene: 時刻のマップが表示面に出る", () => {
     expect(before.nodes.some((node) => node.id === "n2")).toBe(true);
     expect(after.nodes.some((node) => node.id === "n2")).toBe(false);
     scene({ update: makeUpdate(context), view: makeView(context) }, given(model),
-      Mount.resolve(ObserveMapSurface, MapSurfaceMessage.MeasuredMapSurface({ width: 800, height: 600, nodeHeights: { root: 40, n1: 40, n2: 40 } })),
+      Mount.resolve(ObserveMapSurface, MapSurfaceMessage.MeasuredMapSurface({ width: 800, height: 600, cssNodeHeights: { root: 40, n1: 40, n2: 40 } })),
       settle,
       expectScene(selector('[data-node-id="n2"] button.map-node__button')).toExist(),
       Subscription.emit(ReviewMessage.GotMapSurfaceMessage({ message: MapSurfaceMessage.ClickedNodeButton({ nodeId: "n2", clientX: 0, clientY: 0 }) })),
@@ -114,7 +114,7 @@ describe("見返しの Scene: 時刻のマップが表示面に出る", () => {
   it("最初の表示では画面とノードの寸法は未測定", () => {
     const m = init(context);
     expect(Option.isNone(m.mapSurface.size)).toBe(true);
-    expect(HashMap.size(m.mapSurface.nodeHeights)).toBe(0);
+    expect(HashMap.size(m.mapSurface.cssNodeHeights)).toBe(0);
   });
 
   it("測定済みの後に目標の位置が変わる高さを再測定すると補間が始まり、Tick 500 の後に描く位置は新しい高さの layout になる", () => {
@@ -125,8 +125,8 @@ describe("見返しの Scene: 時刻のマップが表示面に出る", () => {
     const before = layout(nodes, base);
     const after = layout(nodes, changed);
     expect(ids.some((id) => before[id]!.y !== after[id]!.y)).toBe(true);
-    const measure = (m: Model, nodeHeights: Record<string, number>): Model =>
-      app.update(m, ReviewMessage.GotMapSurfaceMessage({ message: MapSurfaceMessage.MeasuredMapSurface({ width: 800, height: 600, nodeHeights }) })).model;
+    const measure = (m: Model, cssNodeHeights: Record<string, number>): Model =>
+      app.update(m, ReviewMessage.GotMapSurfaceMessage({ message: MapSurfaceMessage.MeasuredMapSurface({ width: 800, height: 600, cssNodeHeights }) })).model;
     const remeasured = measure(measure(at(30), base), changed);
     expect(Option.isSome(remeasured.mapSurface.motion)).toBe(true);
     const settledModel = app.update(remeasured, ReviewMessage.GotMapSurfaceMessage({ message: MapSurfaceMessage.TickedAnimationFrame({ deltaMs: 500 }) })).model;
@@ -136,7 +136,7 @@ describe("見返しの Scene: 時刻のマップが表示面に出る", () => {
     scene(
       app,
       given(settledModel),
-      Mount.resolve(ObserveMapSurface, MapSurfaceMessage.MeasuredMapSurface({ width: 800, height: 600, nodeHeights: changed })),
+      Mount.resolve(ObserveMapSurface, MapSurfaceMessage.MeasuredMapSurface({ width: 800, height: 600, cssNodeHeights: changed })),
       tap((simulation) => {
         for (const w of wrappers(simulation.html as V)) {
           const id = w.data!.attrs!["data-node-id"] as string;

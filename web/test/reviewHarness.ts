@@ -89,7 +89,7 @@ const commandSteps: Record<string, (args: unknown) => Step> = {
   },
 };
 const mountSteps: Record<string, Step> = {
-  ObserveMapSurface: resolveMount(ObserveMapSurface, MapSurfaceMessage.MeasuredMapSurface({ width: 800, height: 600, nodeHeights: {} })),
+  ObserveMapSurface: resolveMount(ObserveMapSurface, MapSurfaceMessage.MeasuredMapSurface({ width: 800, height: 600, cssNodeHeights: {} })),
   ObserveAudio: resolveMount(ObserveAudio, Message.UpdatedAudioTime({ time: 0 })),
   ObserveSeekPointer: resolveMount(ObserveSeekPointer, Message.LeftSeekPointer()),
   AnchorTooltip: resolveMount(Tooltip.AnchorTooltip, Tooltip.Message.CompletedAnchorTooltip()),

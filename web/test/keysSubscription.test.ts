@@ -340,7 +340,7 @@ describe("見返しの Subscription の keys: 依存と、画面の決まり方"
 
   it("依存は hasSelection だけ: 選んでいなければ false、ノードを選ぶと true", () => {
     const update = makeUpdate(plainContext);
-    const start = update(init(plainContext), Message.GotMapSurfaceMessage({ message: MapSurfaceMessage.MeasuredMapSurface({ width: 800, height: 600, nodeHeights: { root: 40, n1: 40, n2: 40, n3: 40 } }) })).model;
+    const start = update(init(plainContext), Message.GotMapSurfaceMessage({ message: MapSurfaceMessage.MeasuredMapSurface({ width: 800, height: 600, cssNodeHeights: { root: 40, n1: 40, n2: 40, n3: 40 } }) })).model;
     expect(subscriptions(plainContext).keys.modelToDependencies(start)).toEqual({ hasSelection: false });
     const selected = update(start, Message.GotMapSurfaceMessage({ message: MapSurfaceMessage.ClickedNodeButton({ nodeId: "n1", clientX: 0, clientY: 0 }) })).model;
     expect(Option.isSome(selected.mapSurface.viewing.selection)).toBe(true);

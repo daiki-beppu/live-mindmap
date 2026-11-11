@@ -17,14 +17,14 @@ const node = (id: string, parent: string | null, kind: Exclude<SnapshotNode["kin
 const snapshot: Snapshot = { nodes: [node("root", null, "会議"), node("A", "root"), node("P", "A", "論点")], round: 1, changes: [], remarks: [] };
 
 const initial = (mode: MapSurfaceModel["mode"] = "still", isMac = false): MapSurfaceModel => init(snapshot, mode, isMac);
-const heightsOf = (m: MapSurfaceModel) => Object.fromEntries(HashMap.toEntries(m.nodeHeights));
+const heightsOf = (m: MapSurfaceModel) => Object.fromEntries(HashMap.toEntries(m.cssNodeHeights));
 
 describe("mapSurface の update: Mount の Message を受ける", () => {
   it("MeasuredMapSurface 1 つで、画面の大きさ（Some）とノードの高さが入る", () => {
     story(
       update,
       given(initial()),
-      message(Message.MeasuredMapSurface({ width: 800, height: 600, nodeHeights: { root: 40, A: 64 } })),
+      message(Message.MeasuredMapSurface({ width: 800, height: 600, cssNodeHeights: { root: 40, A: 64 } })),
       model((m) => {
         expect(m.size).toEqual(Option.some({ width: 800, height: 600 }));
         expect(heightsOf(m)).toEqual({ root: 40, A: 64 });
@@ -35,15 +35,15 @@ describe("mapSurface の update: Mount の Message を受ける", () => {
   it("測っていない間は、画面の大きさは None で、高さは 1 つも持たない（null や空のオブジェクトで表さない）", () => {
     const m = initial();
     expect(Option.isNone(m.size)).toBe(true);
-    expect(HashMap.size(m.nodeHeights)).toBe(0);
+    expect(HashMap.size(m.cssNodeHeights)).toBe(0);
   });
 
   it("高さは足されていく。同じノードは上書きされ、今回触れなかったノードは捨てない", () => {
     story(
       update,
       given(initial()),
-      message(Message.MeasuredMapSurface({ width: 800, height: 600, nodeHeights: { root: 40, A: 64 } })),
-      message(Message.MeasuredMapSurface({ width: 800, height: 600, nodeHeights: { A: 90, P: 52 } })),
+      message(Message.MeasuredMapSurface({ width: 800, height: 600, cssNodeHeights: { root: 40, A: 64 } })),
+      message(Message.MeasuredMapSurface({ width: 800, height: 600, cssNodeHeights: { A: 90, P: 52 } })),
       model((m) => {
         expect(heightsOf(m)).toEqual({ root: 40, A: 90, P: 52 });
       }),
@@ -54,8 +54,8 @@ describe("mapSurface の update: Mount の Message を受ける", () => {
     story(
       update,
       given(initial()),
-      message(Message.MeasuredMapSurface({ width: 800, height: 600, nodeHeights: { root: 40 } })),
-      message(Message.MeasuredMapSurface({ width: 1024, height: 500, nodeHeights: {} })),
+      message(Message.MeasuredMapSurface({ width: 800, height: 600, cssNodeHeights: { root: 40 } })),
+      message(Message.MeasuredMapSurface({ width: 1024, height: 500, cssNodeHeights: {} })),
       model((m) => {
         expect(m.size).toEqual(Option.some({ width: 1024, height: 500 }));
         expect(heightsOf(m)).toEqual({ root: 40 });
@@ -67,7 +67,7 @@ describe("mapSurface の update: Mount の Message を受ける", () => {
     story(
       update,
       given(initial("live")),
-      message(Message.MeasuredMapSurface({ width: 800, height: 600, nodeHeights: { root: 40 } })),
+      message(Message.MeasuredMapSurface({ width: 800, height: 600, cssNodeHeights: { root: 40 } })),
       model((m) => {
         expect(m.mode).toBe("live");
         expect(m.snapshot).toEqual(snapshot);
@@ -94,11 +94,11 @@ describe("mapSurface の Model: 本物の Schema", () => {
     expect(is({ ...initial(), snapshot: { ...snapshot, nodes: [{ id: "A" }] } })).toBe(false);
   });
 
-  it("nodeHeights は HashMap で、高さに文字列は入らない", () => {
+  it("cssNodeHeights は HashMap で、高さに文字列は入らない", () => {
     const is = Schema.is(Model);
-    expect(is({ ...initial(), nodeHeights: { A: 40 } })).toBe(false);
-    expect(is({ ...initial(), nodeHeights: HashMap.make(["A", "tall"]) })).toBe(false);
-    expect(is({ ...initial(), nodeHeights: HashMap.make(["A", 40]) })).toBe(true);
+    expect(is({ ...initial(), cssNodeHeights: { A: 40 } })).toBe(false);
+    expect(is({ ...initial(), cssNodeHeights: HashMap.make(["A", "tall"]) })).toBe(false);
+    expect(is({ ...initial(), cssNodeHeights: HashMap.make(["A", 40]) })).toBe(true);
   });
 });
 
@@ -202,7 +202,7 @@ describe("mapSurface の update: 二本指スクロールでパン（live）", (
     story(
       update,
       given(initial("live")),
-      message(Message.MeasuredMapSurface({ width: 800, height: 600, nodeHeights: { root: 40 } })),
+      message(Message.MeasuredMapSurface({ width: 800, height: 600, cssNodeHeights: { root: 40 } })),
       message(wheel({ deltaX: 40, deltaY: 100 })),
       model((m) => {
         expect(m.mode).toBe("live");
@@ -552,7 +552,7 @@ describe("mapSurface の update: 差分更新の反映で位置が補間され�
   const shownOf = (m: MapSurfaceModel): SnapshotNode[] => (m.mode === "live" ? foldView(m.snapshot, undefined, null).nodes : m.snapshot.nodes);
   const heightsRecord = (m: MapSurfaceModel) => heightsOf(m);
   const targetOf = (m: MapSurfaceModel) => layout(shownOf(m), heightsRecord(m));
-  const measure = (nodeHeights: Record<string, number>) => Message.MeasuredMapSurface({ width: 800, height: 600, nodeHeights });
+  const measure = (cssNodeHeights: Record<string, number>) => Message.MeasuredMapSurface({ width: 800, height: 600, cssNodeHeights });
   const tick = (deltaMs: number) => Message.TickedAnimationFrame({ deltaMs });
   const startOf = (m: MapSurfaceModel) => (Option.isSome(m.motion) ? Object.fromEntries(HashMap.toEntries(m.motion.value.start)) : {});
   const expectPositions = (actual: Record<string, { x: number; y: number }>, expected: Record<string, { x: number; y: number }>) => {
@@ -758,8 +758,8 @@ describe("mapSurface の Model: motion の欄", () => {
   });
 });
 
-const measuredLive = (isMac = false): MapSurfaceModel => update(initial("live", isMac), Message.MeasuredMapSurface({ width: 800, height: 600, nodeHeights: { root: 40, A: 64, P: 88 } })).model;
-const stillMeasured = (): MapSurfaceModel => update(initial("still"), Message.MeasuredMapSurface({ width: 800, height: 600, nodeHeights: { root: 40, A: 64, P: 88 } })).model;
+const measuredLive = (isMac = false): MapSurfaceModel => update(initial("live", isMac), Message.MeasuredMapSurface({ width: 800, height: 600, cssNodeHeights: { root: 40, A: 64, P: 88 } })).model;
+const stillMeasured = (): MapSurfaceModel => update(initial("still"), Message.MeasuredMapSurface({ width: 800, height: 600, cssNodeHeights: { root: 40, A: 64, P: 88 } })).model;
 const POINT = { x: 300, y: 200 };
 const expectViewport = (actual: { x: number; y: number; zoom: number }, expected: { x: number; y: number; zoom: number }) => {
   expect(actual.x).toBeCloseTo(expected.x, 6);
@@ -897,8 +897,8 @@ describe("mapSurface の update: Ctrl＋ホイール（ピンチ）でズーム�
 describe("mapSurface の update: 画面の大きさが変わっても、人が置いた viewport は動かない（live）", () => {
   const SMALL = { width: 300, height: 200 };
   const LARGE = { width: 4000, height: 3000 };
-  const measuredAt = (size: { width: number; height: number }): MapSurfaceModel => update(initial("live"), Message.MeasuredMapSurface({ ...size, nodeHeights: { root: 40, A: 64, P: 88 } })).model;
-  const resizeTo = (m: MapSurfaceModel, size: { width: number; height: number }): MapSurfaceModel => update(m, Message.MeasuredMapSurface({ ...size, nodeHeights: {} })).model;
+  const measuredAt = (size: { width: number; height: number }): MapSurfaceModel => update(initial("live"), Message.MeasuredMapSurface({ ...size, cssNodeHeights: { root: 40, A: 64, P: 88 } })).model;
+  const resizeTo = (m: MapSurfaceModel, size: { width: number; height: number }): MapSurfaceModel => update(m, Message.MeasuredMapSurface({ ...size, cssNodeHeights: {} })).model;
   const clickTimes = (m: MapSurfaceModel, n: number, over: Partial<typeof Message.ClickedMapSurfaceWithModifier.Type>): MapSurfaceModel =>
     Array.from({ length: n }).reduce<MapSurfaceModel>((acc) => update(acc, clickWith(over)).model, m);
 
@@ -1065,7 +1065,7 @@ describe("mapSurface の update: 反映番号が変わったら点滅をやり�
   ];
   const snapAt = (round: number, changed: string[]): Snapshot => ({ nodes: nodesOf(), round, changes: changed.map((id) => change(id, round)), remarks: [], currentTopic: "B", now: 10 });
   const surfaceAt = (round: number, changed: string[], mode: MapSurfaceModel["mode"] = "review"): MapSurfaceModel =>
-    update(init(snapAt(round, changed), mode, false), Message.MeasuredMapSurface({ width: 800, height: 600, nodeHeights: { root: 40, A: 40, A1: 40, B: 40, P: 40 } })).model;
+    update(init(snapAt(round, changed), mode, false), Message.MeasuredMapSurface({ width: 800, height: 600, cssNodeHeights: { root: 40, A: 40, A1: 40, B: 40, P: 40 } })).model;
   const restarts = (result: ReturnType<typeof update>) => (result.commands ?? []).filter((c) => c.name === "RestartBlink");
 
   it("直接変わったノードが、反映をまたいでも点滅の対象のとき RestartBlink を返す", () => {
