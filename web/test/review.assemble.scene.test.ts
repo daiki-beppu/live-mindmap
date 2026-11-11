@@ -321,7 +321,7 @@ describe("見返しの Scene: 右の列は表示面の見る状態に従い、E 
       settle,
       expectScene(selector(".side")).toExist(),
       expectScene(labelSel("右の列")).toHaveAttr("aria-pressed", "true"),
-      Subscription.emit(Message.GotMapSurfaceMessage({ message: MapSurfaceMessage.MeasuredMapSurface({ width: 390, height: 844, nodeHeights: {} }) })),
+      Subscription.emit(Message.GotMapSurfaceMessage({ message: MapSurfaceMessage.MeasuredMapSurface({ width: 390, height: 844, cssNodeHeights: {} }) })),
       settle,
       press("Home"),
       settle,
@@ -353,7 +353,7 @@ describe("見返しの Scene: 見る状態の知らせ", () => {
     scene(
       plainApp,
       given(
-        plainApp.update(stateAt(plainContext, 105), Message.GotMapSurfaceMessage({ message: MapSurfaceMessage.MeasuredMapSurface({ width: 800, height: 600, nodeHeights: {} }) })).model,
+        plainApp.update(stateAt(plainContext, 105), Message.GotMapSurfaceMessage({ message: MapSurfaceMessage.MeasuredMapSurface({ width: 800, height: 600, cssNodeHeights: {} }) })).model,
       ),
       settle,
       expectScene(selector(".viewing-notice")).toBeAbsent(),
@@ -374,7 +374,7 @@ describe("見返しの Scene: 見る状態の知らせ", () => {
     scene(
       plainApp,
       given(
-        plainApp.update(stateAt(plainContext, 105), Message.GotMapSurfaceMessage({ message: MapSurfaceMessage.MeasuredMapSurface({ width: 800, height: 600, nodeHeights: {} }) })).model,
+        plainApp.update(stateAt(plainContext, 105), Message.GotMapSurfaceMessage({ message: MapSurfaceMessage.MeasuredMapSurface({ width: 800, height: 600, cssNodeHeights: {} }) })).model,
       ),
       settle,
       press("F"),

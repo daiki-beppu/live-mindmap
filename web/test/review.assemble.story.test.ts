@@ -22,7 +22,7 @@ type App = typeof plainApp;
 const appOf = (context: Context): App => (context === plainContext ? plainApp : audioApp);
 
 const measured = (context: Context, time: number, patch: Partial<Model["playback"]> = {}): Model =>
-  appOf(context).update(stateAt(context, time, patch), surface(MapSurfaceMessage.MeasuredMapSurface({ width: 800, height: 600, nodeHeights: { root: 40, n1: 40, n2: 40, n3: 40 } }))).model;
+  appOf(context).update(stateAt(context, time, patch), surface(MapSurfaceMessage.MeasuredMapSurface({ width: 800, height: 600, cssNodeHeights: { root: 40, n1: 40, n2: 40, n3: 40 } }))).model;
 const manualAt = (context: Context, time: number, patch: Partial<Model["playback"]> = {}): Model => {
   const manual = appOf(context).update(measured(context, time, patch), keyOf("=")).model;
   expect(manual.mapSurface.camera.mode).toBe("manual");

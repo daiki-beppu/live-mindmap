@@ -25,7 +25,7 @@ describe("撮影の Story: 表示面の実測", () => {
     story(
       update,
       given(init(snapshot)),
-      message(Message.GotMapSurfaceMessage({ message: MapSurfaceMessage.MeasuredMapSurface({ width: 800, height: 600, nodeHeights: { root: 40, A: 64 } }) })),
+      message(Message.GotMapSurfaceMessage({ message: MapSurfaceMessage.MeasuredMapSurface({ width: 800, height: 600, cssNodeHeights: { root: 40, A: 64 } }) })),
       model((m) => {
         expect(Option.getOrNull(m.mapSurface.size)).toEqual({ width: 800, height: 600 });
         expect(Option.isSome(m.mapSurface.size)).toBe(true);

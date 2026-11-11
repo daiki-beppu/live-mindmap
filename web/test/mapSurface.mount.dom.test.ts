@@ -24,6 +24,7 @@ class FakeButton extends FakeElement {
 
 class FakeSurface {
   listeners: Array<Listener & { type: string }> = [];
+  nodes: FakeElement[] = [];
   offsetWidth = 800;
   offsetHeight = 600;
   origin = { left: 0, top: 0 };
@@ -39,7 +40,7 @@ class FakeSurface {
     return this.origin;
   }
   querySelectorAll() {
-    return [];
+    return this.nodes;
   }
   dispatchEvent(event: Event) {
     for (const listener of [...this.listeners]) {
@@ -79,6 +80,31 @@ const observe = async (surface: FakeSurface) => {
     throw error;
   }
 };
+
+describe("ObserveMapSurface（Mount）: CSS の高さ", () => {
+  it("computed style の高さを小数のまま計測メッセージへ渡す", async () => {
+    const callbacks: Array<(entries: Array<{ target: FakeElement }>) => void> = [];
+    vi.stubGlobal("ResizeObserver", class {
+      constructor(callback: (entries: Array<{ target: FakeElement }>) => void) { callbacks.push(callback); }
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    });
+    vi.stubGlobal("getComputedStyle", () => ({ height: "63.6px" }));
+    const surface = new FakeSurface();
+    const node = Object.assign(new FakeElement(), { dataset: { nodeId: "A" }, isConnected: true, offsetHeight: 64 });
+    surface.nodes = [node];
+    const { got, close } = await observe(surface);
+    try {
+      callbacks[1]!([{ target: node }]);
+      await expect.poll(() => got).toEqual([
+        { _tag: "MeasuredMapSurface", width: 800, height: 600, cssNodeHeights: { A: 63.6 } },
+      ]);
+    } finally {
+      await close();
+    }
+  });
+});
 
 describe("ObserveMapSurface（Mount）: ノードのボタン上の click", () => {
   const tagsAfterClick = async (init: Partial<ClickInit>) => {

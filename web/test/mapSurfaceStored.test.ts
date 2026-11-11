@@ -12,7 +12,7 @@ it.each(["live", "review"] as const)("画面に保持する部分を取り出し
     remarks: [],
   };
   const surface = {
-    ...update(init(snapshot, mode, true), Message.MeasuredMapSurface({ width: 800, height: 600, nodeHeights: { root: 64 } })).model,
+    ...update(init(snapshot, mode, true), Message.MeasuredMapSurface({ width: 800, height: 600, cssNodeHeights: { root: 64 } })).model,
     speakerNames: { speaker1: "田中" },
   };
   const before = { ...surface };

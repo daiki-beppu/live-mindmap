@@ -62,7 +62,7 @@ export const Model = Schema.Struct({
   snapshot: Snapshot,
   foldingContext: FoldingContext,
   size: Schema.Option(Schema.Struct({ width: Schema.Finite, height: Schema.Finite })),
-  nodeHeights: Schema.HashMap(Schema.String, Schema.Finite),
+  cssNodeHeights: Schema.HashMap(Schema.String, Schema.Finite),
   isMac: Schema.Boolean,
   pointer: Schema.Option(Schema.Union([Schema.TaggedStruct("PanningPane", { x: Schema.Finite, y: Schema.Finite, button: Schema.Finite }), Schema.TaggedStruct("HoldingNode", {})])),
   nodePress: Schema.Option(Schema.Struct({ nodeId: Schema.String, x: Schema.Finite, y: Schema.Finite, dragged: Schema.Boolean })),
@@ -90,7 +90,7 @@ export const init = (snapshot: Snapshot, mode: Model["mode"], isMac: boolean): M
   snapshot,
   foldingContext: foldingContextOf(snapshot),
   size: Option.none(),
-  nodeHeights: HashMap.empty(),
+  cssNodeHeights: HashMap.empty(),
   isMac,
   pointer: Option.none(),
   nodePress: Option.none(),
@@ -113,6 +113,9 @@ const positionsOf = (motion: Model["motion"], target: Record<string, Position>):
     onSome: ({ start, elapsedMs }) => interpolate(Object.fromEntries(HashMap.toEntries(start)), target, elapsedMs / MOTION_DURATION_MS),
   });
 
+const layoutHeightsOf = (model: Model): Record<string, number> =>
+  Object.fromEntries(HashMap.toEntries(model.cssNodeHeights).map(([id, height]) => [id, Math.round(height)]));
+
 const surfaceOf = (model: Model) => {
   const context = model.foldingContext;
   const snapshot = {
@@ -127,7 +130,7 @@ const surfaceOf = (model: Model) => {
   };
   const view = model.mode === "still" ? null : foldView(snapshot, Option.getOrUndefined(model.viewing.humanFolds), Option.getOrUndefined(model.viewing.selection)?.id ?? null);
   const shown = view?.nodes ?? model.snapshot.nodes;
-  const heights = Object.fromEntries(HashMap.toEntries(model.nodeHeights).map(([id, height]) => [id, Math.round(height)]));
+  const heights = layoutHeightsOf(model);
   const targets = layout(shown, heights);
   const ids = shown.map((node) => node.id);
   const parents = Object.fromEntries(shown.map((node) => [node.id, node.parent]));
@@ -162,7 +165,7 @@ const surfaceOf = (model: Model) => {
 };
 type Surface = ReturnType<typeof surfaceOf>;
 
-const drawnHeightOf = (model: Model, id: string): number => Option.getOrThrow(HashMap.get(model.nodeHeights, id));
+const edgeAnchorY = (model: Model, id: string, top: number): number => top + Option.getOrThrow(HashMap.get(model.cssNodeHeights, id)) / 2;
 
 export const displayedPositions = (model: Model): Record<string, Position> => surfaceOf(model).seen.positions;
 
@@ -175,7 +178,7 @@ const followTarget = (before: Model, after: Model, previous: Seen, surface: Surf
   if (after.mode === "still") return after;
   const target = surface.seen.targets;
   if (samePositions(previous.targets, target)) return after;
-  const shown = HashMap.size(before.nodeHeights) === 0 ? {} : previous.positions;
+  const shown = HashMap.size(before.cssNodeHeights) === 0 ? {} : previous.positions;
   const start = startPositions(surface.shown, shown, target);
   return modifyFields(after, {
     motion: () => (samePositions(start, target) ? Option.none() : Option.some({ start: HashMap.fromIterable(Object.entries(start)), elapsedMs: 0 })),
@@ -299,17 +302,17 @@ const replaceSnapshot = (model: Model, snapshot: Snapshot): Model => {
 
 export const update = (model: Model, message: Message): Return =>
   Message.match<Return>(message, {
-    MeasuredMapSurface: ({ width, height, nodeHeights }) => {
+    MeasuredMapSurface: ({ width, height, cssNodeHeights }) => {
       const measured = modifyFields(model, {
         size: () => Option.some({ width, height }),
-        nodeHeights: (current) => HashMap.setMany(current, Object.entries(nodeHeights)),
+        cssNodeHeights: (current) => HashMap.setMany(current, Object.entries(cssNodeHeights)),
       });
-      const heightsChanged = Object.entries(nodeHeights).some(([id, nodeHeight]) => Option.getOrUndefined(HashMap.get(model.nodeHeights, id)) !== nodeHeight);
+      const heightsChanged = Object.entries(cssNodeHeights).some(([id, nodeHeight]) => Option.getOrUndefined(HashMap.get(model.cssNodeHeights, id)) !== nodeHeight);
       const previous = surfaceOf(model);
       const surface = surfaceOf(measured);
       const followed = followTarget(model, measured, previous.seen, surface);
       const sizeUnchanged = Option.isSome(model.size) && model.size.value.width === width && model.size.value.height === height;
-      const changedHeights = Object.keys(nodeHeights).filter((id) => Option.getOrUndefined(HashMap.get(model.nodeHeights, id)) !== nodeHeights[id]);
+      const changedHeights = Object.keys(cssNodeHeights).filter((id) => Option.getOrUndefined(HashMap.get(model.cssNodeHeights, id)) !== cssNodeHeights[id]);
       if (sizeUnchanged && changedHeights.length > 0 && changedHeights.every((id) => model.snapshot.nodes.find((n) => n.id === id)?.kind === "補足")) return { model: followed };
       const seen = seenAfterMotion(followed, surface.seen);
       return { model: updateCamera(followed, { type: "measured", heightsChanged }, previous.seen, seen) };
@@ -453,14 +456,14 @@ export const view = Submodel.defineView<Model, Message, { readonly notice: () =>
   const { view: view_, tree, shown, seen } = surfaceOf(model);
   const selectedId = view_ === null ? null : (Option.getOrUndefined(seen.selection)?.id ?? null);
   const positions = seen.positions;
-  const measured = shown.filter((n) => HashMap.has(model.nodeHeights, n.id));
+  const measured = shown.filter((n) => HashMap.has(model.cssNodeHeights, n.id));
   const viewport = model.camera.viewport;
 
   const edges = measured.flatMap((child) => {
     const parent = child.parent === null ? undefined : measured.find((n) => n.id === child.parent);
     if (parent === undefined) return [];
-    const source = { x: positions[parent.id]!.x + NODE_WIDTH + HANDLE_OUTSET, y: positions[parent.id]!.y + drawnHeightOf(model, parent.id) / 2 };
-    const target = { x: positions[child.id]!.x - HANDLE_OUTSET, y: positions[child.id]!.y + drawnHeightOf(model, child.id) / 2 };
+    const source = { x: positions[parent.id]!.x + NODE_WIDTH + HANDLE_OUTSET, y: edgeAnchorY(model, parent.id, positions[parent.id]!.y) };
+    const target = { x: positions[child.id]!.x - HANDLE_OUTSET, y: edgeAnchorY(model, child.id, positions[child.id]!.y) };
     return [h.keyed("path")(`${parent.id}->${child.id}`, [h.D(bezier(source, target)), h.Stroke(KIND_COLOR[child.kind]), h.StrokeWidth("2"), h.Fill("none")])];
   });
   const nodes = shown.map((node) =>
@@ -469,7 +472,7 @@ export const view = Submodel.defineView<Model, Message, { readonly notice: () =>
       [
         h.Class("map-node-slot"),
         h.DataAttribute("node-id", node.id),
-        h.Style({ transform: `translate(${positions[node.id]!.x}px, ${positions[node.id]!.y}px)`, width: `${NODE_WIDTH}px`, visibility: HashMap.has(model.nodeHeights, node.id) ? "visible" : "hidden" }),
+        h.Style({ transform: `translate(${positions[node.id]!.x}px, ${positions[node.id]!.y}px)`, width: `${NODE_WIDTH}px`, visibility: HashMap.has(model.cssNodeHeights, node.id) ? "visible" : "hidden" }),
       ],
       [nodeBody(h, node, view_, node.id === selectedId, model.speakerNames, model.snapshot.criteria ?? [])],
     ),
@@ -482,7 +485,7 @@ export const view = Submodel.defineView<Model, Message, { readonly notice: () =>
           onNone: () => [],
           onSome: (size) =>
             edgeDots(
-              tree.ids.filter((id) => view_.blink.has(id) && HashMap.has(model.nodeHeights, id)),
+              tree.ids.filter((id) => view_.blink.has(id) && HashMap.has(model.cssNodeHeights, id)),
               tree.targets,
               seen.dims,
               viewport,

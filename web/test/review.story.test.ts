@@ -42,10 +42,10 @@ describe("見返しの Model: 本物の Schema で、再生の状態だけを持
     expect(m.playback.time).toBe(30);
     expect(m.playback.playing).toBe(false);
     expect(Option.isNone(m.mapSurface.size)).toBe(true);
-    expect(HashMap.size(m.mapSurface.nodeHeights)).toBe(0);
+    expect(HashMap.size(m.mapSurface.cssNodeHeights)).toBe(0);
   });
 
-  it("本物の Model は通り、壊した playback・null の size・素のオブジェクトの nodeHeights は通らない", () => {
+  it("本物の Model は通り、壊した playback・null の size・素のオブジェクトの cssNodeHeights は通らない", () => {
     const is = Schema.is(Model);
     const m = init(context);
     expect(is(m)).toBe(true);
@@ -53,7 +53,7 @@ describe("見返しの Model: 本物の Schema で、再生の状態だけを持
     expect(is({ ...m, playback: { ...m.playback, playing: 1 } })).toBe(false);
     expect(is({ ...m, playback: { time: 10 } })).toBe(false);
     expect(is({ ...m, mapSurface: { ...m.mapSurface, size: null } })).toBe(false);
-    expect(is({ ...m, mapSurface: { ...m.mapSurface, nodeHeights: { A: 40 } } })).toBe(false);
+    expect(is({ ...m, mapSurface: { ...m.mapSurface, cssNodeHeights: { A: 40 } } })).toBe(false);
   });
 });
 
@@ -135,7 +135,7 @@ describe("見返しの update: 反映の時刻への移動", () => {
     const result = update(start, Message.ClickedPrev());
     expect(result.model.playback).toEqual({ time: 10, playing: true, rate: PLAYBACK_RATES[3], muted: true, volume: 0.4 });
     expect(result.model.mapSurface.size).toEqual(start.mapSurface.size);
-    expect(result.model.mapSurface.nodeHeights).toEqual(start.mapSurface.nodeHeights);
+    expect(result.model.mapSurface.cssNodeHeights).toEqual(start.mapSurface.cssNodeHeights);
     expect(result.commands ?? []).toEqual([]);
   });
 });
@@ -145,10 +145,10 @@ describe("見返しの update: 表示面の実測", () => {
     story(
       update,
       given(at(10)),
-      message(Message.GotMapSurfaceMessage({ message: MapSurfaceMessage.MeasuredMapSurface({ width: 800, height: 600, nodeHeights: { root: 40, t1: 64 } }) })),
+      message(Message.GotMapSurfaceMessage({ message: MapSurfaceMessage.MeasuredMapSurface({ width: 800, height: 600, cssNodeHeights: { root: 40, t1: 64 } }) })),
       model((m) => {
         expect(m.mapSurface.size).toEqual(Option.some({ width: 800, height: 600 }));
-        expect(Object.fromEntries(HashMap.toEntries(m.mapSurface.nodeHeights))).toEqual({ root: 40, t1: 64 });
+        expect(Object.fromEntries(HashMap.toEntries(m.mapSurface.cssNodeHeights))).toEqual({ root: 40, t1: 64 });
         expect(m.playback).toEqual(at(10).playback);
       }),
     );
@@ -158,13 +158,13 @@ describe("見返しの update: 表示面の実測", () => {
     story(
       update,
       given(at(10)),
-      message(Message.GotMapSurfaceMessage({ message: MapSurfaceMessage.MeasuredMapSurface({ width: 800, height: 600, nodeHeights: { root: 40 } }) })),
+      message(Message.GotMapSurfaceMessage({ message: MapSurfaceMessage.MeasuredMapSurface({ width: 800, height: 600, cssNodeHeights: { root: 40 } }) })),
       message(Message.ClickedNext()),
       restarted,
       model((m) => {
         expect(m.playback.time).toBe(30);
         expect(m.mapSurface.size).toEqual(Option.some({ width: 800, height: 600 }));
-        expect(HashMap.has(m.mapSurface.nodeHeights, "root")).toBe(true);
+        expect(HashMap.has(m.mapSurface.cssNodeHeights, "root")).toBe(true);
         expect(topicsOf(snapshotOf(context, m))).toEqual(["採用", "予算", "上限をどうするか"]);
       }),
     );
@@ -208,7 +208,7 @@ describe("見返しの update: 表示面の見る状態", () => {
 
 describe("見返しの update: 表示面のカメラ", () => {
   const surface = (message: MapSurfaceMessage) => Message.GotMapSurfaceMessage({ message });
-  const measured = (m: Model): Model => update(m, surface(MapSurfaceMessage.MeasuredMapSurface({ width: 800, height: 600, nodeHeights: { root: 40, t1: 40, t2: 40, p1: 40 } }))).model;
+  const measured = (m: Model): Model => update(m, surface(MapSurfaceMessage.MeasuredMapSurface({ width: 800, height: 600, cssNodeHeights: { root: 40, t1: 40, t2: 40, p1: 40 } }))).model;
   const scrolled = (m: Model): Model =>
     update(m, surface(MapSurfaceMessage.WheeledMapSurface({ x: 0, y: 0, deltaX: 40, deltaY: 100, deltaMode: 0, shiftKey: false, ctrlKey: false, metaKey: false, timeStamp: 0 }))).model;
 
@@ -327,7 +327,7 @@ describe("見返しの update: 開閉の後の最終配置とカメラ", () => {
   const idOf = (text: string): string => snapshotAt(ctx.timeline, 30).nodes.find((n) => n.text === text)!.id;
   const T1 = idOf("採用");
   const HEIGHTS = { root: 40, [T1]: 40, [idOf("一つ目")]: 40, [idOf("二つ目")]: 200, [idOf("予算")]: 40, [idOf("上限をどうするか")]: 40 };
-  const measureMsg = (nodeHeights: Record<string, number> = HEIGHTS) => got(MapSurfaceMessage.MeasuredMapSurface({ width: 800, height: 600, nodeHeights }));
+  const measureMsg = (cssNodeHeights: Record<string, number> = HEIGHTS) => got(MapSurfaceMessage.MeasuredMapSurface({ width: 800, height: 600, cssNodeHeights }));
   const keyMsg = (k: "F") => got(MapSurfaceMessage.PressedViewKey({ key: k, metaKey: false, ctrlKey: false, altKey: false }));
   const wheelMsg = got(MapSurfaceMessage.WheeledMapSurface({ x: 0, y: 0, deltaX: 40, deltaY: 100, deltaMode: 0, shiftKey: false, ctrlKey: false, metaKey: false, timeStamp: 0 }));
   const clickDot = (nodeId: string) => got(MapSurfaceMessage.ClickedFoldDot({ nodeId }));
@@ -435,8 +435,8 @@ describe("見返しの update: 今の議題が無い自動のカメラ", () => {
 
   it("測り直しで目標の位置が動くと補間が始まり、Tick 500 の後の viewport は最終配置で収めた位置と一致する", () => {
     const heights = (h: number) => Object.fromEntries(ids.map((id) => [id, id === "root" ? 40 : h]));
-    const first = upd(start, got(MapSurfaceMessage.MeasuredMapSurface({ width: 800, height: 600, nodeHeights: heights(40) }))).model;
-    const message = got(MapSurfaceMessage.MeasuredMapSurface({ width: 800, height: 600, nodeHeights: heights(300) }));
+    const first = upd(start, got(MapSurfaceMessage.MeasuredMapSurface({ width: 800, height: 600, cssNodeHeights: heights(40) }))).model;
+    const message = got(MapSurfaceMessage.MeasuredMapSurface({ width: 800, height: 600, cssNodeHeights: heights(300) }));
     expect(cameraFocus(snapshotOf(ctx, first))).toBeNull();
     expect(first.mapSurface.camera.mode).toBe("auto");
     const child = MapSurface.update(surfaceOf(first), (message as { message: MapSurfaceMessage }).message).model;
@@ -461,7 +461,7 @@ describe("見返しの update: 反映をまたぐ移動の補間", () => {
   const got = (message: MapSurfaceMessage) => Message.GotMapSurfaceMessage({ message });
   const measuredAt = (time: number): Model => {
     const m = at(time);
-    return update(m, got(MapSurfaceMessage.MeasuredMapSurface({ width: 800, height: 600, nodeHeights: { root: 40, t1: 40, t2: 40, p1: 200 } }))).model;
+    return update(m, got(MapSurfaceMessage.MeasuredMapSurface({ width: 800, height: 600, cssNodeHeights: { root: 40, t1: 40, t2: 40, p1: 200 } }))).model;
   };
   const displayed = (m: Model) => MapSurface.displayedPositions({ mode: "review", snapshot: snapshotOf(context, m), speakerNames: {}, ...m.mapSurface });
   const finalPositions = (m: Model) => MapSurface.displayedPositions({ mode: "review", snapshot: snapshotOf(context, m), speakerNames: {}, ...m.mapSurface, motion: Option.none() });
@@ -528,7 +528,7 @@ describe("見返しの update: 反映をまたぐ移動の補間", () => {
 describe("見返しの update: 点滅のやり直し", () => {
   const got = (message: MapSurfaceMessage) => Message.GotMapSurfaceMessage({ message });
   const measuredAt = (time: number): Model =>
-    update(at(time), got(MapSurfaceMessage.MeasuredMapSurface({ width: 800, height: 600, nodeHeights: { root: 40, t1: 40, t2: 40, p1: 40 } }))).model;
+    update(at(time), got(MapSurfaceMessage.MeasuredMapSurface({ width: 800, height: 600, cssNodeHeights: { root: 40, t1: 40, t2: 40, p1: 40 } }))).model;
   const names = (result: ReturnType<typeof update>) => (result.commands ?? []).map((c) => c.name);
 
   it("反映をまたぐ移動（ボタン・時計・シーク）で RestartBlink を出す", () => {

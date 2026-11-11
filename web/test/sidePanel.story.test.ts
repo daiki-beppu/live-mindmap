@@ -23,7 +23,7 @@ const shownView = (m: MapSurfaceModel) => foldView(m.snapshot, Option.getOrUndef
 const measuredModel = (snapshot: Snapshot, viewing: ViewingState = INITIAL_VIEWING, camera: Pick<MapSurfaceModel["camera"], "mode" | "topic"> = { mode: "auto", topic: undefined }): MapSurfaceModel => ({
   ...init(snapshot, "live", false),
   size: Option.some({ width: 800, height: 600 }),
-  nodeHeights: HashMap.make(...Object.entries(HEIGHTS)),
+  cssNodeHeights: HashMap.make(...Object.entries(HEIGHTS)),
   viewing,
   camera: { ...initialCamera(), ...camera },
 });
@@ -301,7 +301,7 @@ describe("mapSurface の update: 右の列の出す・隠す（reduceViewing の
         expect(m.viewing).toEqual(INITIAL_VIEWING);
         expect(m.camera.viewport).toEqual(hidden.camera.viewport);
       }),
-      message(Message.MeasuredMapSurface({ ...narrow, nodeHeights: {} })),
+      message(Message.MeasuredMapSurface({ ...narrow, cssNodeHeights: {} })),
       model((m) => {
         expectViewport(m.camera.viewport, expected);
         expect(m.camera.pendingShift).toBe(false);

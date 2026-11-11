@@ -11,7 +11,7 @@ const NO_MODIFIERS = { metaKey: false, ctrlKey: false, altKey: false };
 const pressQuestion = Subscription.emit(Message.PressedKey({ key: "?", ...NO_MODIFIERS }));
 
 const measuredModel = (context: typeof plainContext, app: typeof plainApp) =>
-  app.update(stateAt(context, 100), Message.GotMapSurfaceMessage({ message: MapSurfaceMessage.MeasuredMapSurface({ width: 800, height: 600, nodeHeights: { root: 40, n1: 40, n2: 40, n3: 40 } }) })).model;
+  app.update(stateAt(context, 100), Message.GotMapSurfaceMessage({ message: MapSurfaceMessage.MeasuredMapSurface({ width: 800, height: 600, cssNodeHeights: { root: 40, n1: 40, n2: 40, n3: 40 } }) })).model;
 const wheel = (deltaY: number) =>
   MapSurfaceMessage.WheeledMapSurface({ x: 0, y: 0, deltaX: 0, deltaY, deltaMode: 0, shiftKey: false, ctrlKey: false, metaKey: false, timeStamp: 0 });
 

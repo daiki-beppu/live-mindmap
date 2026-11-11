@@ -32,7 +32,7 @@ type Update = ReturnType<typeof makeUpdate>;
 const updateOf = (context: Context): Update => makeUpdate(context);
 
 const measured = (context: Context, update: Update, time = DURATION) =>
-  update(stateAt(context, time), surface(MapSurfaceMessage.MeasuredMapSurface({ width: 800, height: 600, nodeHeights: { root: 40, n1: 40, n2: 40, n3: 40 } }))).model;
+  update(stateAt(context, time), surface(MapSurfaceMessage.MeasuredMapSurface({ width: 800, height: 600, cssNodeHeights: { root: 40, n1: 40, n2: 40, n3: 40 } }))).model;
 const withSelection = (update: Update, model: ReturnType<typeof stateAt>) => update(model, surface(MapSurfaceMessage.ClickedNodeButton({ nodeId: "n1", clientX: 0, clientY: 0 }))).model;
 const feed = (update: Update, start: ReturnType<typeof stateAt>, messages: ReadonlyArray<Message>) => messages.reduce((model, message) => update(model, message).model, start);
 
@@ -190,7 +190,7 @@ describe("倍率・位置・ノードを選ぶキーは、表示面の Pressed*K
     const shown = (model: ReturnType<typeof stateAt>) => {
       return foldView(snapshotAt(local.timeline, 40), Option.getOrUndefined(model.mapSurface.viewing.humanFolds), Option.getOrUndefined(model.mapSurface.viewing.selection)?.id ?? null).nodes.map((n) => n.id);
     };
-    const base = localUpdate(stateAt(local, 40), surface(MapSurfaceMessage.MeasuredMapSurface({ width: 800, height: 600, nodeHeights: {} }))).model;
+    const base = localUpdate(stateAt(local, 40), surface(MapSurfaceMessage.MeasuredMapSurface({ width: 800, height: 600, cssNodeHeights: {} }))).model;
     const selected = localUpdate(base, surface(MapSurfaceMessage.ClickedNodeButton({ nodeId: idOf("T1"), clientX: 0, clientY: 0 }))).model;
     const children = [idOf("Q1"), idOf("Q2")];
     for (const id of children) expect(shown(selected)).not.toContain(id);
@@ -297,7 +297,7 @@ describe.each([
   const NODE_HEIGHTS = { root: 40, n1: 40, n2: 40, n3: 40 };
   const autoViewportAt = (time: number) =>
     MapSurface.update(
-      MapSurface.update(MapSurface.init(snapshotAt(context.timeline, time), "review", context.isMac), MapSurfaceMessage.MeasuredMapSurface({ width: 800, height: 600, nodeHeights: NODE_HEIGHTS })).model,
+      MapSurface.update(MapSurface.init(snapshotAt(context.timeline, time), "review", context.isMac), MapSurfaceMessage.MeasuredMapSurface({ width: 800, height: 600, cssNodeHeights: NODE_HEIGHTS })).model,
       MapSurfaceMessage.TickedAnimationFrame({ deltaMs: 500 }),
     ).model.camera.viewport;
   const wheeled = (model: ReturnType<typeof stateAt>) =>

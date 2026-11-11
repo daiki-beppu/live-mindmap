@@ -37,7 +37,7 @@ const HEIGHTS = { root: 40, A: 64, P: 88, D: 52 };
 const SIZE = { width: 800, height: 600 };
 
 const modelOf = (snapshot: Snapshot, mode: MapSurfaceModel["mode"]): MapSurfaceModel => init(snapshot, mode, false);
-const measured = (nodeHeights: Record<string, number>, size = SIZE) => Mount.resolve(ObserveMapSurface, Message.MeasuredMapSurface({ ...size, nodeHeights }));
+const measured = (cssNodeHeights: Record<string, number>, size = SIZE) => Mount.resolve(ObserveMapSurface, Message.MeasuredMapSurface({ ...size, cssNodeHeights }));
 
 const HANDLE_OUTSET = 3;
 const numbers = (s: string): number[] => (s.match(/-?\d+(?:\.\d+)?(?:e-?\d+)?/g) ?? []).map(Number);
@@ -382,7 +382,7 @@ describe("mapSurface の Scene: 畳み（foldView）は live だけ", () => {
     const noop = reflect(() => [{ op: "noop", reason: "相づち" }]);
     const resumed = reflect((id) => [{ op: "update", node: "n2", evidence: [id] }]);
     expect(resumed.nodes.find((n) => n.id === "n2")?.evidence.length).toBe(3);
-    const normal = update(modelOf(noop, "live"), Message.MeasuredMapSurface({ ...SIZE, nodeHeights: criteriaHeights })).model;
+    const normal = update(modelOf(noop, "live"), Message.MeasuredMapSurface({ ...SIZE, cssNodeHeights: criteriaHeights })).model;
     const expected = update(normal, Message.ChangedSnapshot({ snapshot: resumed })).model;
     scene(app, given(modelOf(before, "live")), measured(criteriaHeights),
       Subscription.emit(Message.ChangedSnapshot({ snapshot: linked })),
@@ -621,7 +621,7 @@ describe("mapSurface の Scene: ノードの DOM は MapNode.tsx と同じ形・
 });
 
 describe("mapSurface の Scene: パン（ビューポートの transform が、全体を収める位置から画面上で動いた分だけずれる）", () => {
-  const measuredModel = (mode: MapSurfaceModel["mode"]): MapSurfaceModel => update(modelOf(snap(nodes()), mode), Message.MeasuredMapSurface({ ...SIZE, nodeHeights: HEIGHTS })).model;
+  const measuredModel = (mode: MapSurfaceModel["mode"]): MapSurfaceModel => update(modelOf(snap(nodes()), mode), Message.MeasuredMapSurface({ ...SIZE, cssNodeHeights: HEIGHTS })).model;
   const fitOf = (mode: MapSurfaceModel["mode"]) => {
     const positions = layout(nodes(), HEIGHTS);
     const rects = nodes().map((n) => ({ x: positions[n.id]!.x, y: positions[n.id]!.y, width: NODE_WIDTH, height: HEIGHTS[n.id as keyof typeof HEIGHTS] }));
@@ -711,7 +711,7 @@ describe("mapSurface の Scene: パン（ビューポートの transform が、�
 });
 
 describe("mapSurface の Scene: ズーム（ビューポートの transform が、今と同じ式で変わる）", () => {
-  const measuredModel = (mode: MapSurfaceModel["mode"]): MapSurfaceModel => update(modelOf(snap(nodes()), mode), Message.MeasuredMapSurface({ ...SIZE, nodeHeights: HEIGHTS })).model;
+  const measuredModel = (mode: MapSurfaceModel["mode"]): MapSurfaceModel => update(modelOf(snap(nodes()), mode), Message.MeasuredMapSurface({ ...SIZE, cssNodeHeights: HEIGHTS })).model;
   const fitOf = (minZoom: number): { x: number; y: number; zoom: number } => {
     const positions = layout(nodes(), HEIGHTS);
     const rects = nodes().map((n) => ({ x: positions[n.id]!.x, y: positions[n.id]!.y, width: NODE_WIDTH, height: HEIGHTS[n.id as keyof typeof HEIGHTS] }));
@@ -806,10 +806,10 @@ describe("mapSurface の Scene: 動き（補間中の位置でノードとエッ
   const before = snap(nodes());
   const after = snap([...nodes(), node("N", "A", "案", "新しい案")], { round: 4 });
   const shownOf = (snapshot: Snapshot) => foldView(snapshot, undefined, null).nodes;
-  const measuredLive: MapSurfaceModel = { ...modelOf(before, "live"), size: Option.some(SIZE), nodeHeights: HashMap.make(...Object.entries(HEIGHTS)) };
+  const measuredLive: MapSurfaceModel = { ...modelOf(before, "live"), size: Option.some(SIZE), cssNodeHeights: HashMap.make(...Object.entries(HEIGHTS)) };
   const changedModel = (): MapSurfaceModel => update(measuredLive, Message.ChangedSnapshot({ snapshot: after })).model;
   const tick = (deltaMs: number) => Message.TickedAnimationFrame({ deltaMs });
-  const mounted = Mount.resolve(ObserveMapSurface, Message.MeasuredMapSurface({ ...SIZE, nodeHeights: {} }));
+  const mounted = Mount.resolve(ObserveMapSurface, Message.MeasuredMapSurface({ ...SIZE, cssNodeHeights: {} }));
 
   it("反映の直後は今までの位置、フレームを進めると途中の位置、終わると目標の位置の transform とエッジになる", () => {
     const from = layout(shownOf(before), HEIGHTS);

@@ -37,7 +37,7 @@ describe("見返しの表示面のポインタの Subscription", () => {
   };
 
   it("補間している間（motion が Some）だけ、表示面の animationFrame の Subscription が開き、Tick 合計 500 の後に閉じる", () => {
-    const measured = plainApp.update(stateAt(plainContext, 100), surface(MapSurfaceMessage.MeasuredMapSurface({ width: 800, height: 600, nodeHeights: { root: 40, n1: 40, n2: 40, n3: 40 } }))).model;
+    const measured = plainApp.update(stateAt(plainContext, 100), surface(MapSurfaceMessage.MeasuredMapSurface({ width: 800, height: 600, cssNodeHeights: { root: 40, n1: 40, n2: 40, n3: 40 } }))).model;
     expect(motionActive(measured)).toBe(false);
     const moved = plainApp.update(measured, Message.ClickedNext()).model;
     expect(Option.isSome(moved.mapSurface.motion)).toBe(true);

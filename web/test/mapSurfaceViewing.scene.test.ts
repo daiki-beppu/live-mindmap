@@ -31,10 +31,10 @@ const SIZE = { width: 800, height: 600 };
 const measuredModel = (snapshot: Snapshot, mode: MapSurfaceModel["mode"] = "live", viewing: ViewingState = INITIAL_VIEWING): MapSurfaceModel => ({
   ...init(snapshot, mode, false),
   size: Option.some(SIZE),
-  nodeHeights: HashMap.make(...Object.entries(HEIGHTS)),
+  cssNodeHeights: HashMap.make(...Object.entries(HEIGHTS)),
   viewing,
 });
-const mounted = Mount.resolve(ObserveMapSurface, Message.MeasuredMapSurface({ ...SIZE, nodeHeights: {} }));
+const mounted = Mount.resolve(ObserveMapSurface, Message.MeasuredMapSurface({ ...SIZE, cssNodeHeights: {} }));
 const clickedNode = (nodeId: string) => Mount.resolve(ObserveMapSurface, Message.ClickedNodeButton({ nodeId, clientX: 0, clientY: 0 }));
 
 const mapNodeOf = (id: string) => selector(`[data-node-id="${id}"] .map-node`);

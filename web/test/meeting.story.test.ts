@@ -30,7 +30,7 @@ import {
 } from "./meetingHarness.ts";
 
 const names = (result: { commands?: ReadonlyArray<{ name: string }> }): string[] => (result.commands ?? []).map((c) => c.name).sort();
-const measured = surfaceMessage(MapSurfaceMessage.MeasuredMapSurface({ ...SIZE, nodeHeights: HEIGHTS }));
+const measured = surfaceMessage(MapSurfaceMessage.MeasuredMapSurface({ ...SIZE, cssNodeHeights: HEIGHTS }));
 
 const run = (messages: ReadonlyArray<MeetingMessage>, from: Model = init(false)): { model: Model; commands?: ReadonlyArray<{ name: string }> } =>
   messages.reduce<{ model: Model; commands?: ReadonlyArray<{ name: string }> }>((acc, next) => update(acc.model, next), { model: from });
@@ -177,7 +177,7 @@ describe("会議中の update: 狭い幅で開いたときの右の列と字幕"
   });
 
   it("開いた後は、次のスナップショットでも画面の大きさが変わっても、隠す・出すは変わらない（人の操作を上書きしない）", () => {
-    const resized = surfaceMessage(MapSurfaceMessage.MeasuredMapSurface({ width: 390, height: 844, nodeHeights: HEIGHTS }));
+    const resized = surfaceMessage(MapSurfaceMessage.MeasuredMapSurface({ width: 390, height: 844, cssNodeHeights: HEIGHTS }));
     const hiddenAtStart = run([snapshotMessage(FIRST), measured], init(false, { startsNarrow: true })).model;
     expect(hidden(run([snapshotMessage(SECOND), resized], hiddenAtStart).model)).toEqual({ side: true, captions: true });
     const shownByHand = run([keyMessage("E"), keyMessage("C")], hiddenAtStart).model;
