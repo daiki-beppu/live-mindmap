@@ -16,7 +16,6 @@ public enum ProcessTapError: Error, CustomStringConvertible {
 }
 
 public final class ProcessTap {
-    private static let backlogLimit = 2048
 
     private let lock = NSLock()
     private var stopRequested = false
@@ -107,7 +106,7 @@ public final class ProcessTap {
         status = AudioHardwareCreateAggregateDevice(aggregate as CFDictionary, &aggregateID)
         guard status == noErr else { throw CoreAudioError.status("集約デバイスの作成", status) }
 
-        let limit = Self.backlogLimit
+        let limit = downstreamBacklogLimit
         let (stream, continuation) = AsyncThrowingStream.makeStream(
             of: CapturedAudio.self, throwing: Error.self, bufferingPolicy: .bufferingOldest(limit))
         self.continuation = continuation

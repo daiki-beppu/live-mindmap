@@ -1,7 +1,6 @@
 import AVFoundation
 import Foundation
 
-private let backlogLimit = 2048
 
 private let echoFormat = AVAudioFormat(standardFormatWithSampleRate: Double(echoSampleRate), channels: 1)!
 
@@ -24,11 +23,11 @@ func echoCancelledStream<Canceller: EchoCanceller>(
     reference: AsyncThrowingStream<CapturedAudio, Error>,
     canceller: Canceller
 ) -> AsyncThrowingStream<CapturedAudio, Error> {
-    AsyncThrowingStream(bufferingPolicy: .bufferingOldest(backlogLimit)) { continuation in
-        let (events, eventInput) = AsyncStream.makeStream(of: EchoEvent.self, bufferingPolicy: .bufferingOldest(backlogLimit * 2))
+    AsyncThrowingStream(bufferingPolicy: .bufferingOldest(downstreamBacklogLimit)) { continuation in
+        let (events, eventInput) = AsyncStream.makeStream(of: EchoEvent.self, bufferingPolicy: .bufferingOldest(downstreamBacklogLimit * 2))
         let post: @Sendable (EchoEvent) -> Void = { event in
             if case .dropped = eventInput.yield(event) {
-                continuation.finish(throwing: TranscriberError.backlogExceeded(limit: backlogLimit * 2))
+                continuation.finish(throwing: TranscriberError.backlogExceeded(limit: downstreamBacklogLimit * 2))
             }
         }
         let microphoneReader = Task {
@@ -96,7 +95,7 @@ private func emit(
         buffer.floatChannelData![0].update(from: source.baseAddress!, count: item.samples.count)
     }
     if case .dropped = continuation.yield(CapturedAudio(buffer: buffer, hostTime: item.hostTime)) {
-        throw TranscriberError.backlogExceeded(limit: backlogLimit)
+        throw TranscriberError.backlogExceeded(limit: downstreamBacklogLimit)
     }
 }
 

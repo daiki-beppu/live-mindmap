@@ -25,7 +25,6 @@ public func requestMicrophonePermission() async throws {
 
 /// Apple の音声処理（エコーキャンセル）は有効にしない。有効にすると同じプロセスのプロセスタップが止まる。
 public final class MicrophoneCapture {
-    private static let backlogLimit = 2048
 
     private let lock = NSLock()
     private var stopRequested = false
@@ -47,7 +46,7 @@ public final class MicrophoneCapture {
     }
 
     func startWithoutMicrophone(configurationSource source: AnyObject) -> AsyncThrowingStream<CapturedAudio, Error> {
-        try! startExclusively {
+        startExclusively {
             let (stream, continuation) = makeStream()
             observeConfigurationChange(of: source, finishing: continuation)
             return stream
@@ -62,7 +61,7 @@ public final class MicrophoneCapture {
 
     private func startExclusively(
         _ body: () throws -> AsyncThrowingStream<CapturedAudio, Error>
-    ) throws -> AsyncThrowingStream<CapturedAudio, Error> {
+    ) rethrows -> AsyncThrowingStream<CapturedAudio, Error> {
         lock.lock()
         defer { lock.unlock() }
         if stopRequested {
@@ -80,7 +79,7 @@ public final class MicrophoneCapture {
 
     private func makeStream() -> (AsyncThrowingStream<CapturedAudio, Error>, AsyncThrowingStream<CapturedAudio, Error>.Continuation) {
         let (stream, continuation) = AsyncThrowingStream.makeStream(
-            of: CapturedAudio.self, throwing: Error.self, bufferingPolicy: .bufferingOldest(Self.backlogLimit))
+            of: CapturedAudio.self, throwing: Error.self, bufferingPolicy: .bufferingOldest(downstreamBacklogLimit))
         self.continuation = continuation
         return (stream, continuation)
     }
@@ -102,7 +101,7 @@ public final class MicrophoneCapture {
         let format = input.outputFormat(forBus: 0)
         guard format.sampleRate > 0, format.channelCount > 0 else { throw MicrophoneError.invalidInputFormat }
 
-        let limit = Self.backlogLimit
+        let limit = downstreamBacklogLimit
         let (stream, continuation) = makeStream()
 
         input.installTap(onBus: 0, bufferSize: 4096, format: format) { buffer, time in

@@ -126,7 +126,7 @@ describe("ObserveMapSurface（Mount）: Safari の gesture", () => {
       expect(first.defaultPrevented).toBe(true);
       await expect.poll(() => got).toEqual([
         { _tag: "StartedMapSurfaceGesture" },
-        { _tag: "ChangedMapSurfaceGesture", scale: 1.1, x: 200, y: 150 },
+        { _tag: "ChangedMapSurfaceGesture", cumulativeScale: 1.1, x: 200, y: 150 },
       ]);
 
       const second = Object.assign(new Event("gesturechange", { cancelable: true }), {
@@ -136,8 +136,8 @@ describe("ObserveMapSurface（Mount）: Safari の gesture", () => {
       expect(second.defaultPrevented).toBe(true);
       await expect.poll(() => got).toEqual([
         { _tag: "StartedMapSurfaceGesture" },
-        { _tag: "ChangedMapSurfaceGesture", scale: 1.1, x: 200, y: 150 },
-        { _tag: "ChangedMapSurfaceGesture", scale: 1.21, x: 230, y: 180 },
+        { _tag: "ChangedMapSurfaceGesture", cumulativeScale: 1.1, x: 200, y: 150 },
+        { _tag: "ChangedMapSurfaceGesture", cumulativeScale: 1.21, x: 230, y: 180 },
       ]);
     } finally {
       await close();

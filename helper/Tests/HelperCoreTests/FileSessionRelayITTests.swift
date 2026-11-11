@@ -178,7 +178,9 @@ private func blankImage() -> CGImage? {
     return context?.makeImage()
 }
 
-private func waitUntil(_ condition: String, within limit: Duration = .seconds(30), _ check: @Sendable () -> Bool) async throws {
+private let busyRunnerWaitLimit: Duration = .seconds(30)
+
+private func waitUntil(_ condition: String, within limit: Duration = busyRunnerWaitLimit, _ check: @Sendable () -> Bool) async throws {
     let deadline = ContinuousClock.now + limit
     while !check() {
         if ContinuousClock.now >= deadline { throw WaitTimedOut(condition: condition) }
@@ -228,7 +230,7 @@ private struct Rig {
         let port = try await server.start()
         socket = URLSession.shared.webSocketTask(with: URL(string: "ws://127.0.0.1:\(port)")!)
         socket.resume()
-        let deadline = ContinuousClock.now + .seconds(30)
+        let deadline = ContinuousClock.now + busyRunnerWaitLimit
         while await server.clientCount != 1 {
             if ContinuousClock.now >= deadline { throw WaitTimedOut(condition: "WebSocket が接続する") }
             try await Task.sleep(for: .milliseconds(25))
@@ -788,7 +790,7 @@ enum FileScreenTestSupport {
         let socket = URLSession.shared.webSocketTask(with: URL(string: "ws://127.0.0.1:\(port)")!)
         socket.resume()
         do {
-            let deadline = ContinuousClock.now + .seconds(30)
+            let deadline = ContinuousClock.now + busyRunnerWaitLimit
             while await server.clientCount != 1 {
                 if ContinuousClock.now >= deadline { throw WaitTimedOut(condition: "WebSocket が接続する") }
                 try await Task.sleep(for: .milliseconds(25))

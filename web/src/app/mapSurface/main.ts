@@ -387,10 +387,10 @@ export const update = (model: Model, message: Message): Return =>
     },
     ClickedMapSurfaceWithModifier: ({ x, y, altKey }) => ({ model: zoomBy(model, { x, y }, altKey ? 1 / CLICK_ZOOM_FACTOR : CLICK_ZOOM_FACTOR) }),
     StartedMapSurfaceGesture: () => ({ model: modifyFields(model, { gestureScale: () => Option.none() }) }),
-    ChangedMapSurfaceGesture: ({ scale, x, y }) => {
+    ChangedMapSurfaceGesture: ({ cumulativeScale, x, y }) => {
       if (model.mode === "still") return { model };
-      const factor = scale / Option.getOrElse(model.gestureScale, () => 1);
-      return { model: modifyFields(zoomBy(model, { x, y }, factor), { gestureScale: () => Option.some(scale) }) };
+      const factor = cumulativeScale / Option.getOrElse(model.gestureScale, () => 1);
+      return { model: modifyFields(zoomBy(model, { x, y }, factor), { gestureScale: () => Option.some(cumulativeScale) }) };
     },
   });
 

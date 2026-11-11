@@ -125,7 +125,7 @@ const observeSurface = (surface: HTMLElement): Stream.Stream<Emitted> =>
           event.preventDefault();
           const { scale, clientX, clientY } = event as GestureEvent;
           const origin = surface.getBoundingClientRect();
-          Queue.offerUnsafe(queue, Message.ChangedMapSurfaceGesture({ scale, x: clientX - origin.left, y: clientY - origin.top }));
+          Queue.offerUnsafe(queue, Message.ChangedMapSurfaceGesture({ cumulativeScale: scale, x: clientX - origin.left, y: clientY - origin.top }));
         };
         surface.addEventListener("pointerdown", onPointerDown);
         surface.addEventListener("click", onClick);

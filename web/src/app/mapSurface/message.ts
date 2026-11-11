@@ -25,7 +25,7 @@ export const Message = defineMessageUnion({
   },
   ClickedMapSurfaceWithModifier: { x: Schema.Finite, y: Schema.Finite, ctrlKey: Schema.Boolean, metaKey: Schema.Boolean, altKey: Schema.Boolean },
   StartedMapSurfaceGesture: {},
-  ChangedMapSurfaceGesture: { scale: Schema.Finite, x: Schema.Finite, y: Schema.Finite },
+  ChangedMapSurfaceGesture: { cumulativeScale: Schema.Finite, x: Schema.Finite, y: Schema.Finite },
   ClickedChangeItem: { nodeId: Schema.String },
   ClickedEvidenceClose: {},
   ToggledSide: { isOpen: Schema.Boolean },

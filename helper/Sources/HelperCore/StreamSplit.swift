@@ -1,21 +1,20 @@
 import AVFoundation
 import Foundation
 
-private let backlogLimit = 2048
 
 public func split(
     _ upstream: AsyncThrowingStream<CapturedAudio, Error>
 ) -> (AsyncThrowingStream<CapturedAudio, Error>, AsyncThrowingStream<CapturedAudio, Error>) {
     let (first, firstContinuation) = AsyncThrowingStream.makeStream(
-        of: CapturedAudio.self, throwing: Error.self, bufferingPolicy: .bufferingOldest(backlogLimit))
+        of: CapturedAudio.self, throwing: Error.self, bufferingPolicy: .bufferingOldest(downstreamBacklogLimit))
     let (second, secondContinuation) = AsyncThrowingStream.makeStream(
-        of: CapturedAudio.self, throwing: Error.self, bufferingPolicy: .bufferingOldest(backlogLimit))
+        of: CapturedAudio.self, throwing: Error.self, bufferingPolicy: .bufferingOldest(downstreamBacklogLimit))
     let reader = Task {
         do {
             for try await audio in upstream {
                 for (continuation, element) in [(firstContinuation, audio), (secondContinuation, copyCaptured(audio))] {
                     if case .dropped = continuation.yield(element) {
-                        continuation.finish(throwing: TranscriberError.backlogExceeded(limit: backlogLimit))
+                        continuation.finish(throwing: TranscriberError.backlogExceeded(limit: downstreamBacklogLimit))
                     }
                 }
             }

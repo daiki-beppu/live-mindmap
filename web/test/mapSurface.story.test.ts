@@ -977,9 +977,9 @@ describe("mapSurface の update: Safari の gesture でズーム（live）", () 
       update,
       given(measuredLive()),
       message(Message.StartedMapSurfaceGesture()),
-      message(Message.ChangedMapSurfaceGesture({ scale: 1.2, ...POINT })),
+      message(Message.ChangedMapSurfaceGesture({ cumulativeScale: 1.2, ...POINT })),
       model((m) => expectViewport(m.camera.viewport, step1)),
-      message(Message.ChangedMapSurfaceGesture({ scale: 1.5, ...POINT })),
+      message(Message.ChangedMapSurfaceGesture({ cumulativeScale: 1.5, ...POINT })),
       model((m) => expectViewport(m.camera.viewport, step2)),
     );
   });
@@ -990,7 +990,7 @@ describe("mapSurface の update: Safari の gesture でズーム（live）", () 
       update,
       given(measuredLive()),
       message(Message.StartedMapSurfaceGesture()),
-      message(Message.ChangedMapSurfaceGesture({ scale: 0.8, ...POINT })),
+      message(Message.ChangedMapSurfaceGesture({ cumulativeScale: 0.8, ...POINT })),
       model((m) => expectViewport(m.camera.viewport, zoomAtPoint(before, POINT, 0.8))),
     );
   });
@@ -1003,9 +1003,9 @@ describe("mapSurface の update: Safari の gesture でズーム（live）", () 
       update,
       given(measuredLive()),
       message(Message.StartedMapSurfaceGesture()),
-      message(Message.ChangedMapSurfaceGesture({ scale: 1.5, ...POINT })),
+      message(Message.ChangedMapSurfaceGesture({ cumulativeScale: 1.5, ...POINT })),
       message(Message.StartedMapSurfaceGesture()),
-      message(Message.ChangedMapSurfaceGesture({ scale: 1.2, ...POINT })),
+      message(Message.ChangedMapSurfaceGesture({ cumulativeScale: 1.2, ...POINT })),
       model((m) => expectViewport(m.camera.viewport, step2)),
     );
   });
@@ -1015,7 +1015,7 @@ describe("mapSurface の update: Safari の gesture でズーム（live）", () 
     story(
       update,
       given(measuredLive()),
-      message(Message.ChangedMapSurfaceGesture({ scale: 1.3, ...POINT })),
+      message(Message.ChangedMapSurfaceGesture({ cumulativeScale: 1.3, ...POINT })),
       model((m) => expectViewport(m.camera.viewport, zoomAtPoint(before, POINT, 1.3))),
     );
   });
@@ -1025,7 +1025,7 @@ describe("mapSurface の update: Safari の gesture でズーム（live）", () 
       update,
       given(measuredLive()),
       message(Message.StartedMapSurfaceGesture()),
-      message(Message.ChangedMapSurfaceGesture({ scale: 100, ...POINT })),
+      message(Message.ChangedMapSurfaceGesture({ cumulativeScale: 100, ...POINT })),
       model((m) => expect(m.camera.viewport.zoom).toBeCloseTo(USER_MAX_ZOOM, 9)),
     );
   });
@@ -1035,7 +1035,7 @@ describe("mapSurface の update: Safari の gesture でズーム（live）", () 
       update,
       given(stillMeasured()),
       message(Message.StartedMapSurfaceGesture()),
-      message(Message.ChangedMapSurfaceGesture({ scale: 1.5, ...POINT })),
+      message(Message.ChangedMapSurfaceGesture({ cumulativeScale: 1.5, ...POINT })),
       model((m) => expect(m.camera.viewport).toEqual(stillMeasured().camera.viewport)),
     );
   });

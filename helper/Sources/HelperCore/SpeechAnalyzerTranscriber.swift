@@ -20,7 +20,6 @@ public enum TranscriberError: Error, CustomStringConvertible {
 public final class SpeechAnalyzerTranscriber: Transcriber {
     private let locale = Locale(identifier: "ja-JP")
     private let transcriber: SpeechTranscriber
-    private static let backlogLimit = 2048
 
     private var analyzerFormat: AVAudioFormat?
 
@@ -50,7 +49,7 @@ public final class SpeechAnalyzerTranscriber: Transcriber {
     public func transcribe(_ audio: AsyncThrowingStream<CapturedAudio, Error>, origin: UInt64) async throws -> AsyncThrowingStream<TranscriptionResult, Error> {
         guard let format = analyzerFormat else { throw TranscriberError.noCompatibleFormat }
         let analyzer = SpeechAnalyzer(modules: [transcriber])
-        let limit = Self.backlogLimit
+        let limit = downstreamBacklogLimit
         let (inputs, inputBuilder) = AsyncStream.makeStream(of: AnalyzerInput.self, bufferingPolicy: .bufferingOldest(limit))
         try await analyzer.start(inputSequence: inputs)
 

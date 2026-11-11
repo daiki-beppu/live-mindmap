@@ -810,7 +810,7 @@ describe("人が動かすと止まる: パン・ズームで見る状態の user
     ["⌘/Ctrl＋Shift＋スクロール（軸固定）", [wheel({ deltaX: 30, deltaY: 5, shiftKey: true, metaKey: true, timeStamp: 1000 })]],
     ["Ctrl＋ホイール（ピンチ）", [wheel({ ctrlKey: true, deltaY: -100, ...POINT })]],
     ["⌘＋クリック", [Message.ClickedMapSurfaceWithModifier({ ...POINT, ctrlKey: false, metaKey: true, altKey: false })]],
-    ["Safari の gesture", [Message.StartedMapSurfaceGesture(), Message.ChangedMapSurfaceGesture({ scale: 1.3, ...POINT })]],
+    ["Safari の gesture", [Message.StartedMapSurfaceGesture(), Message.ChangedMapSurfaceGesture({ cumulativeScale: 1.3, ...POINT })]],
     ["空いたところのドラッグ", [press, Message.MovedPointer({ clientX: 130, clientY: 90, buttons: 1 })]],
   ];
 

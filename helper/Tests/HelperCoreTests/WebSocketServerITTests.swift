@@ -313,7 +313,8 @@ struct WebSocketServerITTests {
 
     @Test("読むのが遅いクライアントにも、stop の前に送ったフレームがすべて届き、close コード 1000 で閉じてから、同時に呼んだ stop がどちらも戻る")
     func slowReaderReceivesEveryFrameBeforeStopReturns() async throws {
-        let server = WebSocketServer(port: 0, closeDeadline: .seconds(30), writeStderr: { _ in })
+        let slowReaderCloseDeadline: Duration = .seconds(30)
+        let server = WebSocketServer(port: 0, closeDeadline: slowReaderCloseDeadline, writeStderr: { _ in })
         let port = try await server.start()
         let emitter = ScreenEventEmitter(bundleID: "com.google.Chrome", writeStderr: { _ in })
         let relay = Task { await relayScreenEvents(emitter.events, to: server) }

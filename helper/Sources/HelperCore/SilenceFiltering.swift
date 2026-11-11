@@ -37,7 +37,6 @@ func forEachFrameMeanSquare(of buffer: AVAudioPCMBuffer, _ body: (Int, Float) ->
 
 private let loudnessRetentionSeconds = 30.0
 
-private let measuredAudioBacklogLimit = 2048
 
 final class TrackLoudness: @unchecked Sendable {
     private let origin: UInt64
@@ -138,13 +137,13 @@ private func measuredStream(
     loudness: TrackLoudness
 ) -> AsyncThrowingStream<CapturedAudio, Error> {
     let (stream, continuation) = AsyncThrowingStream.makeStream(
-        of: CapturedAudio.self, throwing: Error.self, bufferingPolicy: .bufferingOldest(measuredAudioBacklogLimit))
+        of: CapturedAudio.self, throwing: Error.self, bufferingPolicy: .bufferingOldest(downstreamBacklogLimit))
     let task = Task {
         do {
             for try await captured in upstream {
                 loudness.record(captured)
                 if case .dropped = continuation.yield(captured) {
-                    throw TranscriberError.backlogExceeded(limit: measuredAudioBacklogLimit)
+                    throw TranscriberError.backlogExceeded(limit: downstreamBacklogLimit)
                 }
             }
             continuation.finish()

@@ -29,7 +29,17 @@ extension Optional {
 }
 
 var args = Array(CommandLine.arguments.dropFirst())
-guard let command = args.first else { fail("usage: stt-bench <synth|tracks|run|echo|variants> ...") }
+let usage = """
+usage:
+  stt-bench synth <台本.json> <出力フォルダ> [--only <名前>] [--gap <秒>]
+  stt-bench tracks <会議フォルダ> <出力フォルダ> --self <話者>
+  stt-bench run --variant <名前> <音声.wav> [--load <音声2.wav>] [--vocab <語彙.txt>] [--vocab-at <秒>] [--diarize <区間.jsonl>]
+  stt-bench run --variant <名前> <相手.wav> --events [--self <自分.wav>] [--vocab <語彙.txt>] [--vocab-at <秒>]
+  stt-bench echo <meeting.wav> <self.wav> --self-lines <self.lines.json> [--microphone <AEC3前の録音>] [--delays 40,200,300] [--at 5,30,60] [--leak-gain-db -10] [--candidate <名前,…>] [--out <フォルダ>]
+  stt-bench variants
+"""
+
+guard let command = args.first else { fail(usage) }
 args.removeFirst()
 
 do {
@@ -63,7 +73,7 @@ do {
             return Vocabulary(strings: words, at: vocabAt)
         }
         if variant.usesVocabulary, vocabulary == nil { fail("候補 \(name) には --vocab が要る") }
-        guard args.count == 1 else { fail("usage: stt-bench run --variant <名前> <音声.wav> [--load <音声2.wav>] [--vocab <語彙.txt>] [--vocab-at <秒>]") }
+        guard args.count == 1 else { fail(usage) }
         if events {
             guard load == nil, diarizeTo == nil else { fail("--events は --load・--diarize と併用しない（話者分離は --events の出力に入る）") }
             try await runEvents(variant: variant, audio: URL(fileURLWithPath: args[0]), selfAudio: selfAudio, vocabulary: vocabulary)
@@ -72,8 +82,8 @@ do {
         if selfAudio != nil { fail("--self は --events のときだけ使える") }
         try await runBench(variant: variant, audio: URL(fileURLWithPath: args[0]), load: load, vocabulary: vocabulary, diarizeTo: diarizeTo)
     case "echo":
-        let usage = "usage: stt-bench echo <meeting.wav> <self.wav> --self-lines <self.lines.json> [--microphone <AEC3前の録音>] [--delays 40,200,300] [--at 5,30,60] [--leak-gain-db -10] [--candidate <名前,…>] [--out <フォルダ>]"
-        guard let selfLines = option("--self-lines", in: &args) else { fail("--self-lines が要る\n\(usage)") }
+        let echoUsage = "usage: stt-bench echo <meeting.wav> <self.wav> --self-lines <self.lines.json> [--microphone <AEC3前の録音>] [--delays 40,200,300] [--at 5,30,60] [--leak-gain-db -10] [--candidate <名前,…>] [--out <フォルダ>]"
+        guard let selfLines = option("--self-lines", in: &args) else { fail("--self-lines が要る\n\(echoUsage)") }
         var options = EchoOptions(meeting: URL(fileURLWithPath: ""), selfVoice: URL(fileURLWithPath: ""), selfLines: URL(fileURLWithPath: selfLines))
         options.microphone = option("--microphone", in: &args).map { URL(fileURLWithPath: $0) }
         if options.microphone != nil, args.contains("--delays") || args.contains("--leak-gain-db") {
@@ -98,14 +108,14 @@ do {
             options.candidates = candidates
         }
         options.out = option("--out", in: &args).map { URL(fileURLWithPath: $0) }
-        guard args.count == 2 else { fail(usage) }
+        guard args.count == 2 else { fail(echoUsage) }
         options.meeting = URL(fileURLWithPath: args[0])
         options.selfVoice = URL(fileURLWithPath: args[1])
         try runEcho(options)
     case "variants":
         for v in variants { print("\(v.name)\t\(v.detail)") }
     default:
-        fail("未対応のコマンド: \(command)")
+        fail("未対応のコマンド: \(command)\n\(usage)")
     }
 } catch {
     fail("\(error)")

@@ -756,7 +756,7 @@ describe("mapSurface の Scene: ズーム（ビューポートの transform が�
     scene(
       app,
       given(measuredModel("live")),
-      Mount.resolve(ObserveMapSurface, Message.ChangedMapSurfaceGesture({ scale: 1.25, ...POINT })),
+      Mount.resolve(ObserveMapSurface, Message.ChangedMapSurfaceGesture({ cumulativeScale: 1.25, ...POINT })),
       tap((simulation) => expectNumbers(viewportTransform(simulation.html), zoomedLive(1.25))),
     );
   });
@@ -771,7 +771,7 @@ describe("mapSurface の Scene: ズーム（ビューポートの transform が�
   });
 
   it("still: Ctrl＋ホイール・⌘＋クリック・gesture のどれでも transform は動かない", () => {
-    for (const message of [wheel({ ctrlKey: true, deltaY: -100 }), click({ metaKey: true }), Message.ChangedMapSurfaceGesture({ scale: 1.5, ...POINT })]) {
+    for (const message of [wheel({ ctrlKey: true, deltaY: -100 }), click({ metaKey: true }), Message.ChangedMapSurfaceGesture({ cumulativeScale: 1.5, ...POINT })]) {
       scene(
         app,
         given(measuredModel("still")),

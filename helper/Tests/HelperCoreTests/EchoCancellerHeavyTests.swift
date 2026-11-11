@@ -115,7 +115,8 @@ struct EchoCancellerHeavyTests {
 
 private func retentionWithoutLeak(_ canceller: WebRTCEchoCanceller, windows: [Int], speechStartSeconds: Int) throws -> [Int: Double] {
     let count = 16 * sampleRate + maximumOutputDelaySamples
-    let reference = bandLimitedNoise(count: sampleRate * 20, seed: 1, rms: 0.1)
+    let referenceNormalizationSeconds = 20
+    let reference = bandLimitedNoise(count: sampleRate * referenceNormalizationSeconds, seed: 1, rms: 0.1)
     var microphone = harmonicBursts(count: count, scale: 0.05)
     for index in 0..<(speechStartSeconds * sampleRate) { microphone[index] = 0 }
     var output = microphone
