@@ -38,9 +38,9 @@ description: 取り込みの再起動（server/src/intakeAttempts.ts の openInt
 
 ## 範囲
 
-最後に合わせた PR: #2011（2026-11-09）、#2017 の修正の PR
+最後に合わせた PR: #2049（2026-11-13）
 
-この PR が main に入った後に次のファイルが変わっていたら、手順 2 から見直します。PR の squash コミットは件名の末尾に `(#2011)` が付くので、`git log "$(git log -1 --format=%H --grep='(#2011)$' origin/main)"..origin/main -- <ファイル>` で後の変更を出せます。
+この PR が main に入った後に次のファイルが変わっていたら、手順 2 から見直します。PR の squash コミットは件名の末尾に `(#2049)` が付くので、`git log "$(git log -1 --format=%H --grep='(#2049)$' origin/main)"..origin/main -- <ファイル>` で後の変更を出せます。
 
 - `server/src/intakeAttempts.ts`: `openIntake` の中の `launch`・`connect`・`serve`・`run`（`finishAttempt`・`readConnected`・`readNext`・`body`）・返す `send`・`stop`
 - `server/src/core/intake.ts`: `decideIntakeRestart`・`isConfigurationChangeExit`・`MAX_CONSECUTIVE_FAILURES`・`MAX_CONFIGURATION_CHANGES`・`RESTART_WINDOW_MS`・`CONFIGURATION_CHANGE_WINDOW_MS`
