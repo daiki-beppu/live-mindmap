@@ -547,10 +547,15 @@ export class Sessions extends Context.Service<Sessions, {
         if (previous !== undefined) yield* previous.end;
         const beforeRun = yield* Ref.get(state);
         if (beforeRun.kind !== "live" || beforeRun.live !== live) return yield* new Aborted();
-        const running = yield* runLive(live, "resume");
-        yield* Ref.set(live.running, running);
-        yield* live.send({ type: "intake", status: "interrupted" });
-        const result = yield* running.reached;
+        const resumed = yield* Effect.forkIn(Effect.gen(function* () {
+          const running = yield* runLive(live, "resume");
+          yield* Ref.set(live.running, running);
+          yield* live.send({ type: "intake", status: "interrupted" });
+          return yield* running.reached;
+        }), live.scope, { startImmediately: true });
+        const exit = yield* Fiber.await(resumed);
+        if (Exit.isFailure(exit) && Cause.hasInterruptsOnly(exit.cause)) return yield* new Aborted();
+        const result = yield* exit;
         if (result.kind === "gaveUp") return yield* new RestartGaveUp({ stderrTail: result.stderrTail });
         if (result.kind === "aborted") return yield* new Aborted();
         return { warnings };
