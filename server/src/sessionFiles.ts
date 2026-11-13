@@ -21,7 +21,7 @@ import {
 } from "./core/index.ts";
 import { errorMessage, fileReason, formatIssues, oneLine } from "./truthFile.ts";
 import type { ExecutableModel } from "./modelSelection.ts";
-import type { SendFrame } from "./viewers.ts";
+import type { NotIntakeFrame, SendFrame } from "./viewers.ts";
 
 export const EXPORT_FILE = "export.json";
 export const LOG_FILE = "log.jsonl";
@@ -228,7 +228,8 @@ export type LoggedSessionOptions = {
   criteria?: readonly string[];
   logShiftMs?: number;
   carriedTerms?: readonly string[];
-  send?: SendFrame;
+  // SessionLog の書き込みのロックの中で呼ぶ。ここからログへ書くと、ロックを待ち合って止まる
+  send?: SendFrame<NotIntakeFrame>;
   onDiff?: Effect.Effect<void>;
 };
 

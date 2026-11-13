@@ -32,7 +32,7 @@ import {
 } from "./sessionFailure.ts";
 import { planModel } from "./updatePlan.ts";
 import { audioFileNames, SessionSinks, type LiveSink, type RecordedSink } from "./sessionSinks.ts";
-import { Viewers, type SendFrame, type ViewerFrame } from "./viewers.ts";
+import { Viewers, type NotIntakeFrame, type SendFrame } from "./viewers.ts";
 import { StartupChecks } from "./startupChecks.ts";
 import type { CheckReport } from "./managedDepsProtocol.ts";
 
@@ -47,6 +47,10 @@ export class SessionsDir extends Context.Service<SessionsDir, string>()("live-mi
 type IntakeKind = "running" | "interrupted" | "stopped";
 const INITIAL_INTAKE: IntakeKind = "running";
 
+const showIntake = (intake: SubscriptionRef.SubscriptionRef<IntakeKind>, send: SendFrame) =>
+  Stream.runFoldEffect(SubscriptionRef.changes(intake), (): IntakeKind => INITIAL_INTAKE, (shown, status) =>
+    status === shown ? Effect.succeed(shown) : Effect.as(send({ type: "intake", status }), status));
+
 type Intake = Effect.Success<ReturnType<typeof openIntake>>;
 type IntakeRun = Effect.Success<ReturnType<Intake["run"]>>;
 
@@ -58,7 +62,7 @@ type Live = {
   noticeShown: Ref.Ref<boolean>;
   meetingTabNotice: Effect.Success<ReturnType<typeof makeMeetingTabNotice>>;
   sink: LiveSink;
-  send: (frame: Exclude<ViewerFrame, { type: "intake" }>) => Effect.Effect<void>;
+  send: SendFrame<NotIntakeFrame>;
   controller: Intake;
   running: Ref.Ref<IntakeRun | undefined>;
   scope: Scope.Closeable;
@@ -251,10 +255,6 @@ export class Sessions extends Context.Service<Sessions, {
           }
         }),
       });
-
-      const showIntake = (intake: SubscriptionRef.SubscriptionRef<IntakeKind>, send: SendFrame) =>
-        Stream.runFoldEffect(SubscriptionRef.changes(intake), () => INITIAL_INTAKE, (shown, status) =>
-          status === shown ? Effect.succeed(shown) : Effect.as(send({ type: "intake", status }), status));
 
       const claimStart = claimIdle((idle) => idle.installations === 0 ? { kind: "starting" } : undefined);
 

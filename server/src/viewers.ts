@@ -6,7 +6,8 @@ const FEED_END = Symbol("live-mindmap/server/Viewers/end");
 type Feed = string | typeof FEED_END;
 
 export type ViewerFrame = typeof ViewerFrameSchema.Type;
-export type SendFrame = (frame: ViewerFrame) => Effect.Effect<void>;
+export type SendFrame<F extends ViewerFrame = ViewerFrame> = (frame: F) => Effect.Effect<void>;
+export type NotIntakeFrame = Exclude<ViewerFrame, { type: "intake" }>;
 
 const END_FRAMES: {
   readonly [F in ViewerFrame as F["type"]]: F | "keep";
