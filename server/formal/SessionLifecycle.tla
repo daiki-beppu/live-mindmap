@@ -100,6 +100,8 @@ Reach(rec, v) == IF rec.reached = "none" THEN v ELSE rec.reached
 \* body の ensuring（intakeAttempts.ts:153）: run が終われば、reached が決まっていなければ aborted にする
 EndRun(k, e) == runs' = [runs EXCEPT ![k].pc = "ended", ![k].end = e, ![k].reached = Reach(runs[k], "aborted")]
 Ended(g, r) == r = NoRun \/ runs[<<g, r>>].pc = "ended"
+\* resume が live.scope に fork した Fiber（sessions.ts:550-555）の中の歩。Scope を閉じると中断される
+ResInScope == {"runLive", "setRunning", "send", "awaitReached"}
 
 ------------------------------------------------------------------------------
 \* reserveDeps（sessions.ts:156）。idle のときだけ installations を 1 増やし、返すときは idle なら 1 減らす
@@ -287,7 +289,7 @@ WatcherStep == WatchFire \/ WatchRead \/ WatchAwait \/ WatchSet \/ WatchSend
 
 ------------------------------------------------------------------------------
 \* セッションを閉じる（closeSession, sessions.ts:342）。Scope は "sequential" なので後から足したものから閉じる:
-\* fork した Fiber（run・書き込みの失敗を待つ Fiber・終わりを待つ Fiber）を中断し、最後に forSession の終わりのフレームを送る（viewers.ts:49-53）
+\* fork した Fiber（run・書き込みの失敗を待つ Fiber・終わりを待つ Fiber・resume が fork した Fiber）を中断し、最後に forSession の終わりのフレームを送る（viewers.ts:49-53）
 
 CloseScope(g) ==
   /\ scopeOpen' = [scopeOpen EXCEPT ![g] = FALSE]
@@ -295,6 +297,7 @@ CloseScope(g) ==
                                        THEN [pc |-> "ended", reached |-> Reach(runs[k], "aborted"), end |-> "aborted"]
                                        ELSE runs[k]]
   /\ watcher' = IF watcher.gen = g /\ watcher.pc \notin {"done", "none"} THEN [watcher EXCEPT !.pc = "done"] ELSE watcher
+  /\ resumer' = IF resumer.gen = g /\ resumer.pc \in ResInScope THEN [pc |-> "idle", gen |-> 0, run |-> NoRun] ELSE resumer   \* Aborted（sessions.ts:557）
   /\ shown' = IF sent[g] THEN "none" ELSE shown                    \* END_FRAMES の intake: none
 
 \* 録画の終わりを待つ Fiber と concludeRecorded（sessions.ts:487-492, 405-413）
@@ -321,7 +324,7 @@ ConcludeClose ==                                                \* :413 finishin
   /\ concluder.pc = "closing"
   /\ CloseScope(concluder.gen)
   /\ concluder' = [concluder EXCEPT !.pc = "setIdle"]
-  /\ UNCHANGED <<state, reserver, reserveN, starter, sessions, stopper, resumer, resumes, stopReq, intake, sent, runningRef, nextRun, crashes, writeErr, writeFails>>
+  /\ UNCHANGED <<state, reserver, reserveN, starter, sessions, stopper, resumes, stopReq, intake, sent, runningRef, nextRun, crashes, writeErr, writeFails>>
 ConcludeIdle ==                                                 \* closeSession の ensuring（:346）
   /\ concluder.pc = "setIdle"
   /\ state' = [kind |-> "idle", gen |-> state.gen, inst |-> 0]
@@ -333,7 +336,8 @@ ConcluderStep == ConcludeAwait \/ ConcludePrepare \/ ConcludeClaim \/ ConcludeCl
 ------------------------------------------------------------------------------
 \* stop（sessions.ts:527）
 
-StopUnchanged == UNCHANGED <<reserver, reserveN, starter, sessions, resumer, resumes, intake, sent, runningRef, nextRun, crashes, writeErr, writeFails>>
+StopKeep == UNCHANGED <<reserver, reserveN, starter, sessions, resumes, intake, sent, runningRef, nextRun, crashes, writeErr, writeFails>>
+StopUnchanged == UNCHANGED resumer /\ StopKeep
 
 StopClaim ==                                                    \* :529 current("any", "stopping")
   /\ stopper.pc = "idle"
@@ -361,7 +365,7 @@ StopClose ==                                                    \* :515 / :525 c
   /\ concluder' = IF concluder.gen = stopper.gen /\ concluder.pc \in {"waiting", "prepare", "claim"}
                   THEN [concluder EXCEPT !.pc = "done"] ELSE concluder
   /\ stopper' = [stopper EXCEPT !.pc = "setIdle"]
-  /\ UNCHANGED <<state, stopReq>> /\ StopUnchanged
+  /\ UNCHANGED <<state, stopReq>> /\ StopKeep
 StopIdle ==                                                     \* closeSession の ensuring（:346）
   /\ stopper.pc = "setIdle"
   /\ state' = [kind |-> "idle", gen |-> state.gen, inst |-> 0]
@@ -402,33 +406,36 @@ ResReadPrev ==                                                  \* :546 Ref.get(
   /\ UNCHANGED <<resumes, scopeOpen, intake, shown, sent, runs, runningRef, nextRun>> /\ ResUnchanged
 ResAwaitPrev ==                                                 \* :547 previous.end、:548-549
   /\ resumer.pc = "awaitPrev" /\ Ended(resumer.gen, resumer.run)
-  /\ IF ResIsCurrent THEN resumer' = [resumer EXCEPT !.pc = "runLive"] ELSE ResDone   \* Aborted
+  /\ IF ResIsCurrent THEN resumer' = [resumer EXCEPT !.pc = "fork"] ELSE ResDone   \* Aborted
   /\ UNCHANGED <<resumes, scopeOpen, intake, shown, sent, runs, runningRef, nextRun>> /\ ResUnchanged
-ResRunLive ==                                                   \* :550 runLive。閉じた Scope への forkIn は Fiber を始めずに中断する（effect/src/internal/effect.ts:5698-5707）ので、
-                                                                \* body の ensuring が走らず、reached は決まらない
+ResFork ==                                                      \* :550-555 forkIn(…, live.scope)、:556-557。閉じた Scope への forkIn は Fiber を始めずに中断する
+                                                                \* （effect/src/internal/effect.ts:5698-5707）ので、resume は Aborted を返す
+  /\ resumer.pc = "fork"
+  /\ IF scopeOpen[resumer.gen] THEN resumer' = [resumer EXCEPT !.pc = "runLive"] ELSE ResDone
+  /\ UNCHANGED <<resumes, scopeOpen, intake, shown, sent, runs, runningRef, nextRun>> /\ ResUnchanged
+ResRunLive ==                                                   \* :551 runLive（開いた Scope の中の Fiber から）
   /\ resumer.pc = "runLive" /\ nextRun[resumer.gen] <= MaxRuns
   /\ LET k == <<resumer.gen, nextRun[resumer.gen]>> IN
-       runs' = [runs EXCEPT ![k] = IF scopeOpen[resumer.gen] THEN [pc |-> "relaunch", reached |-> "none", end |-> "none"]
-                                   ELSE [pc |-> "ended", reached |-> "none", end |-> "aborted"]]
+       runs' = [runs EXCEPT ![k] = [pc |-> "relaunch", reached |-> "none", end |-> "none"]]
   /\ resumer' = [resumer EXCEPT !.pc = "setRunning", !.run = nextRun[resumer.gen]]
   /\ nextRun' = [nextRun EXCEPT ![resumer.gen] = @ + 1]
   /\ UNCHANGED <<resumes, scopeOpen, intake, shown, sent, runningRef>> /\ ResUnchanged
-ResSetRunning ==                                                \* :551
+ResSetRunning ==                                                \* :552
   /\ resumer.pc = "setRunning"
   /\ runningRef' = [runningRef EXCEPT ![resumer.gen] = resumer.run]
   /\ resumer' = [resumer EXCEPT !.pc = "send"]
   /\ UNCHANGED <<resumes, scopeOpen, intake, shown, sent, runs, nextRun>> /\ ResUnchanged
-ResSend ==                                                      \* :552 live.send intake interrupted
+ResSend ==                                                      \* :553 live.send intake interrupted
   /\ resumer.pc = "send"
   /\ SendIntake(resumer.gen, "interrupted")
   /\ resumer' = [resumer EXCEPT !.pc = "awaitReached"]
   /\ UNCHANGED <<resumes, scopeOpen, intake, runs, runningRef, nextRun>> /\ ResUnchanged
-ResAwaitReached ==                                              \* :553 running.reached
+ResAwaitReached ==                                              \* :554 running.reached、:558-560
   /\ resumer.pc = "awaitReached" /\ runs[<<resumer.gen, resumer.run>>].reached # "none"
   /\ ResDone
   /\ UNCHANGED <<resumes, scopeOpen, intake, shown, sent, runs, runningRef, nextRun>> /\ ResUnchanged
 
-ResumerStep == ResPrepare \/ ResTake \/ ResReadPrev \/ ResAwaitPrev \/ ResRunLive \/ ResSetRunning \/ ResSend \/ ResAwaitReached
+ResumerStep == ResPrepare \/ ResTake \/ ResReadPrev \/ ResAwaitPrev \/ ResFork \/ ResRunLive \/ ResSetRunning \/ ResSend \/ ResAwaitReached
 
 ------------------------------------------------------------------------------
 
