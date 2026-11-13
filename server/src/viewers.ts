@@ -1,4 +1,4 @@
-import { Array as Arr, Context, Effect, FiberSet, Layer, PubSub, Ref, type Scope } from "effect";
+import { Array as Arr, Context, Effect, FiberSet, Layer, PubSub, type Scope } from "effect";
 import { Socket } from "effect/socket";
 import type { ViewerFrame as ViewerFrameSchema } from "./core/index.ts";
 
@@ -34,28 +34,27 @@ export class Viewers extends Context.Service<Viewers, {
   drained: Effect.Effect<void>;
 }>()("live-mindmap/server/Viewers") {
   static readonly layer: Layer.Layer<Viewers> = Layer.effect(Viewers)(Effect.gen(function* () {
-    const retained = yield* Ref.make<ReadonlyMap<string, string>>(new Map());
+    const retained = new Map<string, string>();
     const updates = yield* PubSub.unbounded<Feed>();
     const connections = yield* FiberSet.make();
 
-    const send = Effect.fnUntraced(function* (frame: ViewerFrame) {
+    const publish = (frame: ViewerFrame) => {
       const data = JSON.stringify(frame);
-      yield* Ref.update(retained, (current) => new Map(current).set(frame.type, data));
-      yield* PubSub.publish(updates, data);
-    });
+      retained.set(frame.type, data);
+      PubSub.publishUnsafe(updates, data);
+    };
 
     const forSession = Effect.gen(function* () {
-      const sent = yield* Ref.make<ReadonlySet<string>>(new Set());
-      yield* Effect.addFinalizer(() => Effect.gen(function* () {
-        const kinds = yield* Ref.get(sent);
+      const sent = new Set<string>();
+      yield* Effect.addFinalizer(() => Effect.sync(() => {
         for (const [kind, frame] of Object.entries(END_FRAMES)) {
-          if (kinds.has(kind) && frame !== "keep") yield* send(frame);
+          if (sent.has(kind) && frame !== "keep") publish(frame);
         }
       }));
-      return Effect.fnUntraced(function* (frame: ViewerFrame) {
-        yield* Ref.update(sent, (current) => new Set(current).add(frame.type));
-        yield* send(frame);
-      }, Effect.uninterruptible);
+      return (frame: ViewerFrame) => Effect.sync(() => {
+        sent.add(frame.type);
+        publish(frame);
+      });
     });
 
     const deliver = Effect.fnUntraced(function* (subscription: PubSub.Subscription<Feed>, writer: Socket.Writer) {
@@ -74,7 +73,7 @@ export class Viewers extends Context.Service<Viewers, {
       const writer = yield* socket.writer;
       const subscription = yield* PubSub.subscribe(updates);
       yield* Effect.withFiber((fiber) => FiberSet.add(connections, fiber));
-      for (const data of retainedFrames(yield* Ref.get(retained))) yield* writer.write(data);
+      for (const data of retainedFrames(retained)) yield* writer.write(data);
       return yield* Effect.raceFirst(deliver(subscription, writer), Effect.forever(reader.pull));
     }, Effect.scoped);
 
