@@ -11,7 +11,7 @@ description: 画面への配信（server/src/viewers.ts の send・forSession・
 
 - `observe`: `runLive` の observe（sessions.ts:250）。Scope の中の Fiber です。
 - `notice`・`noticeClear`: 共有画面の知らせ（sessions.ts:226-230）。Scope の中の Fiber です。
-- `resume`: `resume`（sessions.ts:552）。HTTP の要求の Fiber で、Scope の外にあります。
+- `resume`: `resume`（sessions.ts:553）。resume が `live.scope` に fork した Fiber です（sessions.ts:550）。Scope が閉じていれば Fiber は始まらず、何も送りません。
 
 `inScope` の送る側は、`closeSession` の `Scope.close`（sessions.ts:345）で中断されて待たれます。待ち終わってから、forSession の finalizer（sessions.ts:266 で Scope に最初に足したので、最後に走る）が終わりの値を送ります。
 
@@ -24,7 +24,7 @@ description: 画面への配信（server/src/viewers.ts の send・forSession・
 | `InvSendsSerializedPerKind` | 同じ種類のフレームを、2 つの Fiber が同時に送らない（`InvViewersMatchRetained` の前提） | 上の食い違いが起きる |
 | `InvNoSendAfterEnd` | forSession の finalizer が終わりの値を決めた後に、そのセッションの send が来ない（`InvEndFramesAfterClose` の前提） | 終わりの値が上書きされて、止めた会議の表示が残る |
 
-構成は 2 つあります（`server/formal/viewer-single.cfg`・`viewer-resume.cfg`）。single は resume を呼ばない会議で、同じ種類を送る Fiber は重なりません。ここで上の 2 つの性質を調べます。resume は、取り込みが止まった後に resume を呼ぶ会議です。ここで下の 2 つ（前提）を調べます。今のコードでは、上の 2 つは成り立ちます。下の 2 つは破れ、「既知の発見」に書いてあります。`server/formal/ViewerFeed.checks` の `known` の行に載っている性質は、`check.sh` が `KNOWN` と出し、終了コードに数えません。直さずに残す不具合をほかに見つけたら、その性質を `known` に足して、下の節に反例を書きます。
+構成は 2 つあります（`server/formal/viewer-single.cfg`・`viewer-resume.cfg`）。single は resume を呼ばない会議で、同じ種類を送る Fiber は重なりません。ここで上の 2 つの性質を調べます。resume は、取り込みが止まった後に resume を呼ぶ会議です。ここで下の 2 つ（前提）を調べます。今のコードでは、`InvSendsSerializedPerKind` だけが破れ、「既知の発見」に書いてあります。ほかの 3 つは成り立ちます。`server/formal/ViewerFeed.checks` の `known` の行に載っている性質は、`check.sh` が `KNOWN` と出し、終了コードに数えません。直さずに残す不具合をほかに見つけたら、その性質を `known` に足して、下の節に反例を書きます。
 
 ## 手順
 
@@ -65,16 +65,16 @@ description: 画面への配信（server/src/viewers.ts の send・forSession・
 
 ## 範囲
 
-最後に合わせた PR: #2011（2026-11-09）
+最後に合わせた PR: #2048（2026-11-13）
 
-この PR が main に入った後に次のファイルが変わっていたら、手順 2 から見直します。PR の squash コミットは件名の末尾に `(#2011)` が付くので、`git log "$(git log -1 --format=%H --grep='(#2011)$' origin/main)"..origin/main -- <ファイル>` で後の変更を出せます。
+この PR が main に入った後に次のファイルが変わっていたら、手順 2 から見直します。PR の squash コミットは件名の末尾に `(#2048)` が付くので、`git log "$(git log -1 --format=%H --grep='(#2048)$' origin/main)"..origin/main -- <ファイル>` で後の変更を出せます。
 
 対象のファイル:
 
 - `server/src/viewers.ts`: `END_FRAMES`・`retainedFrames`・`send`・`forSession`（`sent` と finalizer）・`deliver`・`connect`
 - `web/src/liveFeed.ts`: `createFeedState`（`DEFAULT_INTAKE`）・`applyFrame` の intake と screen-notice・`applyOpen`・`applyClose`
 - `web/src/app/liveFeed/subscription.ts`: `connection`（onopen・onmessage・onclose）・`liveFeedStream`（`RECONNECT_MS` 後に接続し直す）
-- `server/src/sessions.ts`: intake と screen-notice を送る場所（`runLive` の observe、`showScreenNotice`、`start` の writeFailure の fork、`resume` の `beforeRun` の確かめと send）、`openSession` で `viewers.forSession` を Scope に足す順、`closeSession` の `Scope.close`、`stop` が state を stopping にする `current`
+- `server/src/sessions.ts`: intake と screen-notice を送る場所（`runLive` の observe、`showScreenNotice`、`start` の writeFailure の fork、`resume` の `beforeRun` の確かめ、`live.scope` への fork と send）、`openSession` で `viewers.forSession` を Scope に足す順、`closeSession` の `Scope.close`、`stop` が state を stopping にする `current`
 
 ## 調べている範囲と前提
 
@@ -92,32 +92,19 @@ description: 画面への配信（server/src/viewers.ts の send・forSession・
 
 ## 既知の発見
 
-どちらも、resume の send（sessions.ts:552）が Scope の外の Fiber から来ることによります。起こすには、同期の歩だけが並ぶ短い間に別の Fiber が I/O を終えて割り込む必要があり、実際にはまず起きません。ただし、コードで止めているわけではありません。
+resume の send（sessions.ts:553）と、resume が始めた取り込みの observe の send が、同じ intake を同時に送ることによります。起こすには、同期の歩だけが並ぶ短い間に別の Fiber が I/O を終えて割り込む必要があり、実際にはまず起きません。ただし、コードで止めているわけではありません。
 
 ### `InvSendsSerializedPerKind`（viewer-resume）
 
 画面が見る値と、後から開いた画面が見る値が食い違います（このとき `InvViewersMatchRetained` も破れます）。
 
-1. resume が `Ref.get(state)` で live を確かめ（sessions.ts:548-549）、`runLive` で新しい取り込みを始めます（sessions.ts:550）。
+1. resume が `Ref.get(state)` で live を確かめ（sessions.ts:548-549）、`live.scope` に fork した Fiber の `runLive` で新しい取り込みを始めます（sessions.ts:550-551）。
 2. 新しい取り込みの observe が `{ type: "intake", status: "running" }` を送り始めます（sessions.ts:250）。`sent` に足し（viewers.ts:56）、retained を running にします（viewers.ts:43）。まだ publish していません。
-3. resume が `{ type: "intake", status: "interrupted" }` を送ります（sessions.ts:552）。retained を interrupted にし、publish します（viewers.ts:43-44）。
+3. resume が `{ type: "intake", status: "interrupted" }` を送ります（sessions.ts:553）。retained を interrupted にし、publish します（viewers.ts:43-44）。
 4. 画面がつながり、購読します（viewers.ts:75）。
 5. observe が running を publish します（viewers.ts:44）。
 6. 画面は retained の interrupted を受け取り（viewers.ts:77）、続けて購読から running を受け取ります（viewers.ts:63-65）。
 
 この結果、つながっていた画面は取り込み中を表示します。一方、retained は interrupted なので、後から開いた画面は「音声の取り込みが途切れました。再開しています」を表示します。どちらも、次に intake が送られるまで続きます。
 
-起きやすさ: observe の send は、ヘルパーの起動と接続の I/O の後にしか始まりません。resume の 550-552 は同期の歩だけです。observe の send の中で、viewers.ts:43 と :44 の間で Fiber が順番を譲り、その間に resume が send を通す必要があります。
-
-### `InvNoSendAfterEnd`（viewer-resume）
-
-止めた会議の終わりの値が上書きされます（このとき `InvEndFramesAfterClose` も破れます）。
-
-1. resume が `Ref.get(state)` で live を確かめます（sessions.ts:548-549）。
-2. stop が state を stopping にします（sessions.ts:139）。そして `stopLive` を終え、`closeSession` の `Scope.close`（sessions.ts:345）に進みます。
-3. forSession の finalizer が `sent` を読み（viewers.ts:50）、終わりの値（intake は none）を送ります。
-4. resume が `runLive`・`Ref.set` の後に `{ type: "intake", status: "interrupted" }` を送ります（sessions.ts:550-552）。retained の intake は interrupted になります。
-
-この結果、会議が終わった後も、つながっている画面と新しく開いた画面の両方に「音声の取り込みが途切れました。再開しています」が残ります。次のセッションが intake を送るまで消えません。resume 自身がこの後どう終わるかは、このモデルの外です。
-
-起きやすさ: 549 から 552 の間は同期の歩だけです。その間に、stop がヘルパーの停止と書き出しの I/O をすべて終える必要があります。
+起きやすさ: observe の send は、ヘルパーの起動と接続の I/O の後にしか始まりません。resume の 551-553 は同期の歩だけです。observe の send の中で、viewers.ts:43 と :44 の間で Fiber が順番を譲り、その間に resume が send を通す必要があります。

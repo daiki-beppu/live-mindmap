@@ -10,7 +10,7 @@ EXTENDS Naturals, Sequences, FiniteSets
 
 CONSTANTS
   Viewers,          \* 開いている画面（ブラウザのタブ）
-  WithResume,       \* TRUE なら resume（sessions.ts:552）が intake を送る
+  WithResume,       \* TRUE なら resume（sessions.ts:553）が intake を送る
   MaxDisconnects    \* 状態空間を有限にするための、画面ごとの切断の数の上限
 
 Kinds == {"intake", "screen-notice"}
@@ -20,7 +20,7 @@ SenderInfo == [
   observe     |-> [kind |-> "intake", value |-> "running", inScope |-> TRUE],          \* sessions.ts:250（runLive の observe、intakeAttempts.ts:155 で Scope に fork）。前の取り込みの observe は resume が sessions.ts:547 で終わりを待つので重ならない
   notice      |-> [kind |-> "screen-notice", value |-> "text", inScope |-> TRUE],     \* sessions.ts:226（applyEvent の screen-off、取り込みの Fiber）
   noticeClear |-> [kind |-> "screen-notice", value |-> "null", inScope |-> TRUE],     \* sessions.ts:227-230（SCREEN_NOTICE_MS 後に消す、live.scope に fork）
-  resume      |-> [kind |-> "intake", value |-> "interrupted", inScope |-> FALSE]     \* sessions.ts:552（HTTP の要求の Fiber、Scope の外）
+  resume      |-> [kind |-> "intake", value |-> "interrupted", inScope |-> TRUE]      \* sessions.ts:553（resume が sessions.ts:550 で live.scope に fork した Fiber）
 ]
 Senders == IF WithResume THEN {"observe", "notice", "noticeClear", "resume"} ELSE {"observe", "notice", "noticeClear"}
 \* セッションの Scope を閉じたときに送る終わりの値（viewers.ts:11-24 の END_FRAMES）
@@ -63,7 +63,7 @@ Publish(f) == sub' = [v \in Viewers |-> IF sub[v] = "off" THEN "off" ELSE Append
 TypeOK ==
   /\ retained \in [Kinds -> Values \cup {NoValue}]
   /\ sent \subseteq Kinds
-  /\ pc \in [Senders -> {"idle", "checked", "marked", "stored", "done", "interrupted"}]
+  /\ pc \in [Senders -> {"idle", "checked", "forked", "marked", "stored", "done", "interrupted"}]
   /\ sess \in {"open", "stopping", "ending", "endRead", "closed"}
   /\ endTodo \subseteq Kinds
   /\ endStored \in Kinds \cup {NoValue}
@@ -95,7 +95,8 @@ ViewerVars == <<conn, sub, snap, sock, webOpen, web, disconnects>>
 
 (* ---- 送る側 ---- *)
 
-\* resume は Ref.get(state) で live を確かめてから送る（sessions.ts:548-549）。その後 send までの runLive・Ref.set は state を見ない
+\* resume は Ref.get(state) で live を確かめてから（sessions.ts:548-549）、送る歩を live.scope に fork する（sessions.ts:550）。
+\* fork の後の runLive・Ref.set は state を見ない
 ResumeCheck(s) ==
   /\ s = "resume"
   /\ pc[s] = "idle"
@@ -103,12 +104,19 @@ ResumeCheck(s) ==
   /\ pc' = [pc EXCEPT ![s] = "checked"]
   /\ UNCHANGED <<retained, sent, sess, endTodo, endStored, lateSend, ViewerVars>>
 
+\* 閉じた Scope への forkIn は Fiber を始めずに中断する（effect/src/internal/effect.ts:5698-5707）。resume は送らずに Aborted を返す
+ResumeFork(s) ==
+  /\ s = "resume"
+  /\ pc[s] = "checked"
+  /\ pc' = [pc EXCEPT ![s] = IF sess \in {"open", "stopping"} THEN "forked" ELSE "interrupted"]
+  /\ UNCHANGED <<retained, sent, sess, endTodo, endStored, lateSend, ViewerVars>>
+
 \* forSession の send の 1 歩目: sent に種類を足す（viewers.ts:56）
 SendMark(s) ==
-  /\ pc[s] = IF SenderInfo[s].inScope THEN "idle" ELSE "checked"
+  /\ pc[s] = IF s = "resume" THEN "forked" ELSE "idle"
   /\ SenderInfo[s].inScope => sess \in {"open", "stopping"}     \* Scope を閉じると fork した Fiber は中断され、新しい send は始まらない
   /\ s = "noticeClear" => pc["notice"] = "done"                  \* sessions.ts:226-230: 表示を送ってから、消す Fiber を fork する
-  /\ (s = "observe" /\ WithResume) => pc["resume"] # "idle"       \* resume があるときの observe は、resume が runLive（sessions.ts:550）で始めた取り込みのもの
+  /\ (s = "observe" /\ WithResume) => pc["resume"] \in {"forked", "marked", "stored", "done"}   \* resume があるときの observe は、resume が fork した Fiber の runLive（sessions.ts:551）で始めた取り込みのもの
   /\ pc' = [pc EXCEPT ![s] = "marked"]
   /\ sent' = sent \cup {SenderInfo[s].kind}
   /\ lateSend' = (lateSend \/ sess \in {"endRead", "closed"})
@@ -141,7 +149,7 @@ Stop ==
 CloseScope ==
   /\ sess = "stopping"
   /\ \A s \in Senders : SenderInfo[s].inScope => pc[s] \notin {"marked", "stored"}
-  /\ pc' = [s \in Senders |-> IF SenderInfo[s].inScope /\ pc[s] = "idle" THEN "interrupted" ELSE pc[s]]
+  /\ pc' = [s \in Senders |-> IF SenderInfo[s].inScope /\ pc[s] \in {"idle", "forked"} THEN "interrupted" ELSE pc[s]]
   /\ sess' = "ending"
   /\ UNCHANGED <<retained, sent, endTodo, endStored, lateSend, ViewerVars>>
 
@@ -180,7 +188,7 @@ EndDone ==
 
 (* ---- 画面 ---- *)
 
-\* ブラウザが WebSocket を開く（subscription.ts:33-35 の onopen → applyOpen）。切断の後は RECONNECT_MS 後に開き直す（subscription.ts:67-68）
+\* ブラウザが WebSocket を開く（subscription.ts:32-34 の onopen → applyOpen）。切断の後は RECONNECT_MS 後に開き直す（subscription.ts:66-68）
 Open(v) ==
   /\ conn[v] = "off"
   /\ ~webOpen[v]
@@ -218,7 +226,7 @@ Deliver(v) ==
   /\ sub' = [sub EXCEPT ![v] = <<>>]
   /\ UNCHANGED <<retained, sent, pc, sess, endTodo, endStored, lateSend, conn, snap, webOpen, web, disconnects>>
 
-\* ブラウザが 1 通受け取って applyFrame する（subscription.ts:36 → liveFeed.ts:20-21）
+\* ブラウザが 1 通受け取って applyFrame する（subscription.ts:35 → liveFeed.ts:20-21）
 Receive(v) ==
   /\ webOpen[v]
   /\ sock[v] # <<>>
@@ -226,7 +234,7 @@ Receive(v) ==
   /\ sock' = [sock EXCEPT ![v] = Tail(sock[v])]
   /\ UNCHANGED <<retained, sent, pc, sess, endTodo, endStored, lateSend, conn, sub, snap, webOpen, disconnects>>
 
-\* 切断: ブラウザは onclose で applyClose（subscription.ts:37-40 → liveFeed.ts:40-41）。server は reader.pull の失敗で raceFirst を抜け、
+\* 切断: ブラウザは onclose で applyClose（subscription.ts:36-39 → liveFeed.ts:40-41）。server は reader.pull の失敗で raceFirst を抜け、
 \* Effect.scoped が購読を外す（viewers.ts:78-79）。まだ受け取っていないフレームは届かない
 Disconnect(v) ==
   /\ webOpen[v]
@@ -240,7 +248,7 @@ Disconnect(v) ==
   /\ UNCHANGED <<retained, sent, pc, sess, endTodo, endStored, lateSend, snap>>
 
 Next ==
-  \/ \E s \in Senders : ResumeCheck(s) \/ SendMark(s) \/ SendStore(s) \/ SendPublish(s)
+  \/ \E s \in Senders : ResumeCheck(s) \/ ResumeFork(s) \/ SendMark(s) \/ SendStore(s) \/ SendPublish(s)
   \/ Stop \/ CloseScope \/ EndReadSent \/ (\E k \in Kinds : EndStore(k)) \/ EndPublish \/ EndDone
   \/ \E v \in Viewers : Open(v) \/ Subscribe(v) \/ ReadRetained(v) \/ WriteRetained(v) \/ Deliver(v) \/ Receive(v) \/ Disconnect(v)
 
@@ -250,7 +258,7 @@ Spec == Init /\ [][Next]_vars
 
 \* 送る途中の send が無く、終わりの値を送る途中でもなく、つながっている画面には届いていないフレームが無い
 Quiescent ==
-  /\ \A s \in Senders : pc[s] \notin {"checked", "marked", "stored"}
+  /\ \A s \in Senders : pc[s] \notin {"checked", "forked", "marked", "stored"}
   /\ sess \in {"open", "stopping", "closed"}
   /\ \A v \in Viewers : conn[v] \in {"off", "live"}
   /\ \A v \in Viewers : conn[v] = "live" => sub[v] = <<>> /\ sock[v] = <<>>

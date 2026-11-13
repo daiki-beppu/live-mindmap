@@ -335,7 +335,7 @@ InvInstructionFollowsUser == Connected /\ userWant # "none" => Paused(helper[cur
 InvSelfPauseFollowsUser == InvInstructionFollowsUser
 InvReadingPauseFollowsUser == InvInstructionFollowsUser
 
-\* resume が待つ reached は、いつか決まる（reached を待つのは live の resume だけ、sessions.ts:553）
+\* resume が待つ reached は、いつか決まる（reached を待つのは live の resume だけ、sessions.ts:554）
 PropReachedSettles == [](reached = "undecided" => <>(reached # "undecided"))
 
 \* stop の後、end はいつか返る
