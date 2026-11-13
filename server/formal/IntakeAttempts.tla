@@ -37,7 +37,7 @@ VARIABLES
   endKind,      \* body の返り値（IntakeEnd の kind）
   failures,     \* history.failures（:95）
   cfgN,         \* history.configurationChanges のうち、窓の中に残っている数
-  shown,        \* sessions.ts の live.intake（observe の running / interrupted / stopped で変わる、sessions.ts:249）
+  shown,        \* sessions.ts の live.intake（observe の running / interrupted / stopped で変わる、sessions.ts:254）
   target,       \* link.target（:54）
   pending,      \* link.pending の、この Mode の指示（self-pause か reading-pause）の値
   userWant,     \* 利用者が最後に send した値
@@ -110,8 +110,8 @@ ReadNextLaunch ==
   /\ pc' = "Launch"
   /\ UNCHANGED <<cur, reconnecting, served, helper, stopRequested, reached, endKind, failures, cfgN, shown, target, pending, userWant, carried, sends, runs, countedAfterStop>>
 
-\* launch（:55）: 子プロセスを起動する。launchOptions は selfPauseState（carried）を渡し（sessions.ts:304）、
-\* reading-pause は渡さない（sessions.ts:433）。前の試行の子プロセスは serve が終わりを待ってから閉じている（:87）
+\* launch（:55）: 子プロセスを起動する。launchOptions は selfPauseState（carried）を渡し（sessions.ts:308）、
+\* reading-pause は渡さない（sessions.ts:437）。前の試行の子プロセスは serve が終わりを待ってから閉じている（:87）
 Launch ==
   /\ pc = "Launch"
   /\ LET slot == CHOOSE x \in Slots : ~helper[x].alive /\ ~helper[x].sock IN
@@ -174,7 +174,7 @@ Restarted ==
 
 ObsRunning ==
   /\ pc = "ObsRunning"
-  /\ shown' = "running"                              \* intakeAttempts.ts:122 → sessions.ts:249
+  /\ shown' = "running"                              \* intakeAttempts.ts:122 → sessions.ts:254
   /\ pc' = "ReachCheck"
   /\ UNCHANGED <<cur, reconnecting, served, helper, stopRequested, reached, endKind, failures, cfgN, target, pending, userWant, carried, sends, runs, countedAfterStop>>
 
@@ -214,7 +214,7 @@ AfterReadFinished ==
   /\ Return("finished")
   /\ UNCHANGED <<cur, reconnecting, served, helper, stopRequested, failures, cfgN, shown, target, pending, userWant, carried, sends, runs, countedAfterStop>>
 
-\* served なら crashed を observe する（:147。表示は変えない、sessions.ts:241）
+\* served なら crashed を observe する（:147。表示は変えない、sessions.ts:246）
 AfterReadCrashed ==
   /\ pc = "AfterRead" /\ ~stopRequested
   /\ ~(served /\ Mode = "recorded" /\ helper[cur].exit = "zero")
@@ -287,12 +287,12 @@ Send ==
        ELSE UNCHANGED <<helper, carried>>
     /\ UNCHANGED <<pc, cur, reconnecting, served, stopRequested, reached, endKind, failures, cfgN, shown, target, runs, countedAfterStop>>
 
-\* sessions.ts の resume（:536）: 表示が stopped のときだけ、表示を interrupted にし、前の end を待ってから次の run を始める
+\* sessions.ts の resume（:540）: 表示が stopped のときだけ、表示を interrupted にし、前の end を待ってから次の run を始める
 Resume ==
   /\ Mode = "live" /\ runs < MaxRuns
   /\ ~stopRequested
-  /\ shown = "stopped"                                 \* sessions.ts:540・:544
-  /\ pc = "Ended"                                      \* sessions.ts:547（previous.end）
+  /\ shown = "stopped"                                 \* sessions.ts:544・:548
+  /\ pc = "Ended"                                      \* sessions.ts:551（previous.end）
   /\ runs' = runs + 1
   /\ shown' = "interrupted"
   /\ pc' = "ReadNext" /\ cur' = NoSlot                 \* initial は最初の run が取り出した（:138）
@@ -335,7 +335,7 @@ InvInstructionFollowsUser == Connected /\ userWant # "none" => Paused(helper[cur
 InvSelfPauseFollowsUser == InvInstructionFollowsUser
 InvReadingPauseFollowsUser == InvInstructionFollowsUser
 
-\* resume が待つ reached は、いつか決まる（reached を待つのは live の resume だけ、sessions.ts:554）
+\* resume が待つ reached は、いつか決まる（reached を待つのは live の resume だけ、sessions.ts:557）
 PropReachedSettles == [](reached = "undecided" => <>(reached # "undecided"))
 
 \* stop の後、end はいつか返る
