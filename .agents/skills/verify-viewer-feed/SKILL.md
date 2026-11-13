@@ -65,9 +65,9 @@ description: 画面への配信（server/src/viewers.ts の send・forSession・
 
 ## 範囲
 
-最後に合わせた PR: #2011（2026-11-09）
+最後に合わせた PR: #2048（2026-11-13）
 
-この PR が main に入った後に次のファイルが変わっていたら、手順 2 から見直します。PR の squash コミットは件名の末尾に `(#2011)` が付くので、`git log "$(git log -1 --format=%H --grep='(#2011)$' origin/main)"..origin/main -- <ファイル>` で後の変更を出せます。
+この PR が main に入った後に次のファイルが変わっていたら、手順 2 から見直します。PR の squash コミットは件名の末尾に `(#2048)` が付くので、`git log "$(git log -1 --format=%H --grep='(#2048)$' origin/main)"..origin/main -- <ファイル>` で後の変更を出せます。
 
 対象のファイル:
 

@@ -188,7 +188,7 @@ EndDone ==
 
 (* ---- 画面 ---- *)
 
-\* ブラウザが WebSocket を開く（subscription.ts:33-35 の onopen → applyOpen）。切断の後は RECONNECT_MS 後に開き直す（subscription.ts:67-68）
+\* ブラウザが WebSocket を開く（subscription.ts:32-34 の onopen → applyOpen）。切断の後は RECONNECT_MS 後に開き直す（subscription.ts:66-68）
 Open(v) ==
   /\ conn[v] = "off"
   /\ ~webOpen[v]
@@ -226,7 +226,7 @@ Deliver(v) ==
   /\ sub' = [sub EXCEPT ![v] = <<>>]
   /\ UNCHANGED <<retained, sent, pc, sess, endTodo, endStored, lateSend, conn, snap, webOpen, web, disconnects>>
 
-\* ブラウザが 1 通受け取って applyFrame する（subscription.ts:36 → liveFeed.ts:20-21）
+\* ブラウザが 1 通受け取って applyFrame する（subscription.ts:35 → liveFeed.ts:20-21）
 Receive(v) ==
   /\ webOpen[v]
   /\ sock[v] # <<>>
@@ -234,7 +234,7 @@ Receive(v) ==
   /\ sock' = [sock EXCEPT ![v] = Tail(sock[v])]
   /\ UNCHANGED <<retained, sent, pc, sess, endTodo, endStored, lateSend, conn, sub, snap, webOpen, disconnects>>
 
-\* 切断: ブラウザは onclose で applyClose（subscription.ts:37-40 → liveFeed.ts:40-41）。server は reader.pull の失敗で raceFirst を抜け、
+\* 切断: ブラウザは onclose で applyClose（subscription.ts:36-39 → liveFeed.ts:40-41）。server は reader.pull の失敗で raceFirst を抜け、
 \* Effect.scoped が購読を外す（viewers.ts:78-79）。まだ受け取っていないフレームは届かない
 Disconnect(v) ==
   /\ webOpen[v]

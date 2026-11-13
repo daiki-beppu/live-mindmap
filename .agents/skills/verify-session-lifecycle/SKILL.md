@@ -43,9 +43,9 @@ resume は、新しい run を始めて画面に知らせ、`reached` を待つ�
 
 ## 範囲
 
-最後に合わせた PR: #2011（2026-11-09）
+最後に合わせた PR: #2048（2026-11-13）
 
-この PR が main に入った後に次のファイルが変わっていたら、手順 2 から見直します。PR の squash コミットは件名の末尾に `(#2011)` が付くので、`git log "$(git log -1 --format=%H --grep='(#2011)$' origin/main)"..origin/main -- <ファイル>` で後の変更を出せます。
+この PR が main に入った後に次のファイルが変わっていたら、手順 2 から見直します。PR の squash コミットは件名の末尾に `(#2048)` が付くので、`git log "$(git log -1 --format=%H --grep='(#2048)$' origin/main)"..origin/main -- <ファイル>` で後の変更を出せます。
 
 - `server/src/sessions.ts`: `State`・`current`・`claimIdle`・`reserveDeps`・`runLive` の `observe`・`claimStart`・`openSession`・`start`（`Ref.set(live.running)` と書き込みの失敗を待つ fork）・`closeSession`・`concludeRecorded`・`startRecorded` の `afterPublish`・`stopLive`・`stopRecorded`・`stop`・`resume`（`live.scope` への fork と、その Fiber の中断の扱い）・`status`
 - `server/src/intakeAttempts.ts`: `run` の body のうち、`observe` に渡す遷移、`reached` を決める所、`end` が返る条件、`stopRequested` を見る所（:107-110・:116-124・:129-133・:144-153）
