@@ -12,7 +12,7 @@ server の取り込みの試行（`server/src/intakeAttempts.ts`）と、それ�
 
 | | ライブ | 録画からのセッション |
 |---|---|---|
-| `commands` | `self-pause: "pending-once"` | `reading-pause: "sticky"` |
+| `commands` | `self-pause: { until: "self-pause-state" }` | `reading-pause: "sticky"` |
 | `exitZero` | `"restart"` | `"finish"` |
 | `observe(crashed)` | `sink.interrupted`・`lastInterruptedAt` | `from` に `sink.drainForRestart` の結果を入れる |
 | `end` の扱い | stop だけが受ける | finished → `sink.end({ kind: "入れ切る" })`、gaveUp → `sink.end({ kind: "捨てる", quiesce: Effect.void })`（`concludeRecorded` の claim を通す） |
@@ -42,12 +42,14 @@ server の取り込みの試行（`server/src/intakeAttempts.ts`）と、それ�
 
 `send` は、送り先と覚えている指令を `SynchronizedRef` 1 つで持つ。
 
-- **`pending-once`（ライブの self-pause）**: 接続待ちの間の最新の値だけを、接続した回へ 1 回送り、送ったら忘れる
+- **`{ until: <イベント> }`（ライブの self-pause）**: 最新の値を、読んでいる回がそのイベント（`self-pause-state`）を返すまで覚える。返す前に回が終われば、次に接続した回へ送り直す。返したら忘れる
 - **`sticky`（録画の reading-pause）**: 求める状態をいつも覚えておき、新しい回に接続したとき、既定（`paused: false`）と違えば送り直す。終わった前の回へは送らない
+
+self-pause を送ったら忘れる形（前の `pending-once`）にしていたときは、回が落ちてから `link.target` が外れるまでに押した一時停止が、死んだ回へ送られて消えた（[#2017](https://github.com/daiki-beppu/live-mindmap/issues/2017)、TLA+ の `InvSelfPauseFollowsUser`）。送り先の回へ渡したことは、その回が受け取ったことにならない。受け取ったと分かるのは、その回が `self-pause-state` を返したときだけで、server からは「無視した」と「当てる前に落ちた」を見分けられない。self-pause を `sticky` にしないのは、ヘルパーの手動の休止は入力の使い方が変わると外れる（`SelfPauseRule` の `released`・`normalized`）ので、外れた後の指示を起動のたびに送り直すと、話している利用者を止めてしまうため。外れたときは状態が変わり `self-pause-state` が出るので、それで忘れる。
 
 「接続したら送り直す」を素直に書くと、`openIntake` が最初の回をつないだ直後と、`run` が同じ回を読み始めるときの 2 回、同じ回へ送る。#1316 の実装はこれで `intakeAttempts.test` の 3 件を落とした（`expected length 1 but got 2`）。今の `connect` は、送り先が同じ回なら何もしない。
 
-`pending-once` と `sticky` の違いは、同じ `Intake` を「接続 → 切れる → 指令を変える → 接続 → また接続」と続けて動かす 1 本のテストで見る。条件ごとに `Intake` を作り直すと、次の回へ持ち越すかどうかが見えない。
+`{ until }` と `sticky` の違いは、同じ `Intake` を「接続 → 切れる → 指令を変える → 接続 → また接続」と続けて動かす 1 本のテストで見る。条件ごとに `Intake` を作り直すと、次の回へ持ち越すかどうかが見えない。
 
 ## `startRecorded` の配線は、本物の `Sessions` と `openIntake` を通し、偽の `Helpers` と偽の sink の境界で見る
 

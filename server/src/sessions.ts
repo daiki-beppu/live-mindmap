@@ -293,7 +293,7 @@ export class Sessions extends Context.Service<Sessions, {
         const origin = yield* Ref.make<string | undefined>(undefined);
         const selfPauseState = yield* Ref.make<SelfPauseState>(INITIAL_SELF_PAUSE_STATE);
         const controller = yield* openIntake({
-          scope, commands: { "self-pause": "pending-once" },
+          scope, commands: { "self-pause": { until: "self-pause-state" } },
           launchOptions: (attemptNo) => Effect.gen(function* () {
             return {
               kind: "run",

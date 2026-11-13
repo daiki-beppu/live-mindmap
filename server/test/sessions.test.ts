@@ -1879,7 +1879,7 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
         expect((yield* sessions.status).status).toBe("running");
       }));
 
-    it.effect("接続中の helper が無視した休止の要求（イベントが無い）は、起動し直した回の引数にも送信にも残らない", () =>
+    it.effect("接続中の helper が引き継ぎの状態を返さずに落ちたら、休止の要求を起動し直した回へ送り直す。引数は返された状態のまま", () =>
       Effect.gen(function* () {
         const { fakeHelpers, sessions } = yield* boot([{ unexpectedExit: { afterMs: 500, exit: { code: 75, signal: null } } }, {}]);
         yield* sessions.start(start());
@@ -1890,16 +1890,15 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
 
         expect(fakeHelpers.calls).toHaveLength(2);
         expect(fakeHelpers.calls[1]).toMatchObject({ kind: "run", selfPause: INITIAL_SELF_PAUSE_STATE });
-        expect(fakeHelpers.sentPauses.filter((s) => s.attempt === 1)).toEqual([]);
+        expect(fakeHelpers.sentPauses.filter((s) => s.attempt === 1)).toEqual([{ attempt: 1, paused: true }]);
       }));
 
-    it.effect("接続待ちの間の休止の要求は、接続した回へ送られる。helper が無視したら（イベントが無い）、その次の回の引数にも送信にも残らない", () =>
+    it.effect("接続待ちの間の休止の要求は、接続した回へ送られる", () =>
       Effect.gen(function* () {
         const gate = yield* Deferred.make<void>();
         const { fakeHelpers, sessions } = yield* boot([
           { unexpectedExit: { afterMs: 500, exit: { code: 75, signal: null } } },
-          { connectGate: gate, unexpectedExit: { afterMs: 500, exit: { code: 75, signal: null } } },
-          {},
+          { connectGate: gate },
         ]);
         yield* sessions.start(start());
         yield* relaunchAfter(500);
@@ -1910,11 +1909,6 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
         yield* Deferred.succeed(gate, undefined);
         yield* TestClock.adjust(1);
         expect(fakeHelpers.sentPauses).toEqual([{ attempt: 1, paused: true }]);
-
-        yield* relaunchAfter(500);
-        expect(fakeHelpers.calls).toHaveLength(3);
-        expect(fakeHelpers.calls[2]).toMatchObject({ kind: "run", selfPause: INITIAL_SELF_PAUSE_STATE });
-        expect(fakeHelpers.sentPauses.filter((s) => s.attempt === 2)).toEqual([]);
       }));
 
     it.effect("引き継ぎの状態で起動し直した回の接続待ちの間に再開を求めると、その起動回へ paused:false が送られる", () =>

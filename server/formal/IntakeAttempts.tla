@@ -9,11 +9,12 @@
    含めないもの: イベントの中身と apply・log の書き込み（SessionWriteFailed による tapError を含む）、時刻そのもの
    （60 秒の窓は、落ちるたびに ranLong と窓から外れた構成の変化の数を選び直すことで表す）、stats の attempt の数、
    openIntake の最初の起動の失敗（start が失敗するだけなので、最初の試行はつながった状態から始める）。
-   ヘルパーは、届いた指示をすぐ当てて、その状態を self-pause-state で返すとする（live の carried）。 *)
+   ヘルパーは、届いた指示をすぐ当てる。当てた状態を self-pause-state で返すのは別の遷移（Echo）で、返すのは生きてソケットが開いている間だけとする
+   （返した後、server が読む前に指示が届く順は含めない）。 *)
 EXTENDS Naturals
 
 CONSTANTS
-  Mode,       \* "live"（start: self-pause が pending-once、exitZero が restart、resume がある）か "recorded"（reading-pause が sticky、exitZero が finish）
+  Mode,       \* "live"（start: self-pause が self-pause-state まで覚える、exitZero が restart、resume がある）か "recorded"（reading-pause が sticky、exitZero が finish）
   MaxCfg,     \* MAX_CONFIGURATION_CHANGES（intake.ts:27。本物は 10）
   MaxFailures,\* MAX_CONSECUTIVE_FAILURES（intake.ts:21）
   MaxSends,   \* 状態を有限にするための、利用者の send の数の上限
@@ -27,15 +28,15 @@ Paused(w) == w = "on"
 ExitKinds == {"none", "zero", "config", "other"}  \* config は HELPER_EXIT_CONFIGURATION_CHANGED（intake.ts:25）
 
 VARIABLES
-  pc,           \* run の body（intakeAttempts.ts:137）の位置。"Ended" は body が返った後
+  pc,           \* run の body（intakeAttempts.ts:142）の位置。"Ended" は body が返った後
   cur,          \* 読んでいる・起動中の試行の枠（readNext の current / next）
-  reconnecting, \* readConnected の reconnecting（:128 は FALSE、:135 は TRUE）
-  served,       \* readNext が served を返したか（:145）
+  reconnecting, \* readConnected の reconnecting（:133 は FALSE、:140 は TRUE）
+  served,       \* readNext が served を返したか（:150）
   helper,       \* 枠ごとの子プロセス: alive・sock（ソケットが開いている）・afterStop（stop の要求の後に起動した）・applied（当たっている指示）・exit・ranLong
   stopRequested,\* Deferred stopRequested（:52）
-  reached,      \* Deferred reached（:93）
+  reached,      \* Deferred reached（:98）
   endKind,      \* body の返り値（IntakeEnd の kind）
-  failures,     \* history.failures（:95）
+  failures,     \* history.failures（:100）
   cfgN,         \* history.configurationChanges のうち、窓の中に残っている数
   shown,        \* sessions.ts の live.intake（observe の running / interrupted / stopped で変わる、sessions.ts:249）
   target,       \* link.target（:54）
@@ -69,7 +70,7 @@ TypeOK ==
   /\ sends \in 0..MaxSends /\ runs \in 1..MaxRuns
   /\ countedAfterStop \in BOOLEAN
 
-\* 最初の試行は openIntake の中で起動し（:63）、link.target に入れてある（:70）。最初の run は initial を読む（:138）
+\* 最初の試行は openIntake の中で起動し（:63）、link.target に入れてある（:70）。最初の run は initial を読む（:143）
 Init ==
   /\ pc = "ReadNext"
   /\ cur = 1
@@ -84,34 +85,34 @@ Init ==
   /\ sends = 0 /\ runs = 1
   /\ countedAfterStop = FALSE
 
-\* body が返る（:141・:144・:146・:149）。ensuring で reached が未定なら aborted にする（:153）
+\* body が返る（:146・:149・:151・:154）。ensuring で reached が未定なら aborted にする（:158）
 Return(kind) ==
   /\ pc' = "Ended" /\ endKind' = kind
   /\ reached' = IF reached = "undecided" THEN "aborted" ELSE reached
 
 \* ---- run の body ----
 
-\* readNext（:127）。current があればそれを readConnected(current, false) に渡す（:128）
+\* readNext（:132）。current があればそれを readConnected(current, false) に渡す（:133）
 ReadNextCurrent ==
   /\ pc = "ReadNext" /\ cur # NoSlot
   /\ pc' = "Connect" /\ reconnecting' = FALSE /\ served' = TRUE
   /\ UNCHANGED <<cur, helper, stopRequested, reached, endKind, failures, cfgN, shown, target, pending, userWant, carried, sends, runs, countedAfterStop>>
 
-\* current が無ければ、stop が要求済みかを見る（:129）
+\* current が無ければ、stop が要求済みかを見る（:134）
 ReadNextStopped ==
   /\ pc = "ReadNext" /\ cur = NoSlot
-  /\ stopRequested                                  \* intakeAttempts.ts:129
+  /\ stopRequested                                  \* intakeAttempts.ts:134
   /\ Return("stopped")
   /\ UNCHANGED <<cur, reconnecting, served, helper, stopRequested, failures, cfgN, shown, target, pending, userWant, carried, sends, runs, countedAfterStop>>
 
 ReadNextLaunch ==
   /\ pc = "ReadNext" /\ cur = NoSlot
-  /\ ~stopRequested                                 \* intakeAttempts.ts:129
+  /\ ~stopRequested                                 \* intakeAttempts.ts:134
   /\ pc' = "Launch"
   /\ UNCHANGED <<cur, reconnecting, served, helper, stopRequested, reached, endKind, failures, cfgN, shown, target, pending, userWant, carried, sends, runs, countedAfterStop>>
 
 \* launch（:55）: 子プロセスを起動する。launchOptions は selfPauseState（carried）を渡し（sessions.ts:304）、
-\* reading-pause は渡さない（sessions.ts:433）。前の試行の子プロセスは serve が終わりを待ってから閉じている（:87）
+\* reading-pause は渡さない（sessions.ts:433）。前の試行の子プロセスは serve が終わりを待ってから閉じている（:92）
 Launch ==
   /\ pc = "Launch"
   /\ LET slot == CHOOSE x \in Slots : ~helper[x].alive /\ ~helper[x].sock IN
@@ -136,13 +137,13 @@ LaunchFailed ==
   /\ UNCHANGED <<cur, reconnecting, helper, stopRequested, reached, endKind, failures, cfgN, shown, target, pending, userWant, carried, sends, runs, countedAfterStop>>
 
 FailCheckStopped ==
-  /\ pc = "FailCheck" /\ stopRequested               \* intakeAttempts.ts:132
+  /\ pc = "FailCheck" /\ stopRequested               \* intakeAttempts.ts:137
   /\ Return("stopped")
   /\ UNCHANGED <<cur, reconnecting, served, helper, stopRequested, failures, cfgN, shown, target, pending, userWant, carried, sends, runs, countedAfterStop>>
 
 FailCheckFailed ==
-  /\ pc = "FailCheck" /\ ~stopRequested              \* intakeAttempts.ts:132
-  /\ pc' = "Finish"                                  \* connectionFailed（:133）は crashed を observe しない（:145）
+  /\ pc = "FailCheck" /\ ~stopRequested              \* intakeAttempts.ts:137
+  /\ pc' = "Finish"                                  \* connectionFailed（:138）は crashed を observe しない（:150）
   /\ UNCHANGED <<cur, reconnecting, served, helper, stopRequested, reached, endKind, failures, cfgN, shown, target, pending, userWant, carried, sends, runs, countedAfterStop>>
 
 \* connect（:72）。SynchronizedRef.updateEffect の中なので send と交わらない
@@ -150,22 +151,20 @@ Deliver(s, v) == IF helper[s].alive /\ helper[s].sock THEN v ELSE helper[s].appl
 Connect ==
   /\ pc = "Connect"
   /\ IF target = cur                                 \* intakeAttempts.ts:73
-     THEN UNCHANGED <<helper, pending, carried, target>>
+     THEN UNCHANGED <<helper, target>>
      ELSE /\ target' = cur
-          /\ LET replay == pending # "none" /\ (Mode = "live" \/ Paused(pending)) IN  \* intakeAttempts.ts:76（pending-once か paused）
-               /\ helper' = IF replay THEN [helper EXCEPT ![cur].applied = Deliver(cur, pending)] ELSE helper
-               /\ carried' = IF replay /\ Mode = "live" /\ helper[cur].alive /\ helper[cur].sock THEN pending ELSE carried
-          /\ pending' = IF Mode = "live" THEN "none" ELSE pending   \* intakeAttempts.ts:77
+          /\ LET replay == pending # "none" /\ (Mode = "live" \/ Paused(pending)) IN  \* intakeAttempts.ts:75（self-pause は送り直す、sticky は paused のときだけ）
+               helper' = IF replay THEN [helper EXCEPT ![cur].applied = Deliver(cur, pending)] ELSE helper
   /\ pc' = "Check"
-  /\ UNCHANGED <<cur, reconnecting, served, stopRequested, reached, endKind, failures, cfgN, shown, userWant, sends, runs, countedAfterStop>>
+  /\ UNCHANGED <<cur, reconnecting, served, stopRequested, reached, endKind, failures, cfgN, shown, pending, userWant, carried, sends, runs, countedAfterStop>>
 
-\* restarted = reconnecting && !isDone(stopRequested)（:116）。observe connected（:117）は表示を変えない
+\* restarted = reconnecting && !isDone(stopRequested)（:121）。observe connected（:122）は表示を変えない
 Check ==
   /\ pc = "Check"
-  /\ pc' = IF reconnecting /\ ~stopRequested THEN "Restarted" ELSE "ReachCheck"   \* intakeAttempts.ts:116・:118
+  /\ pc' = IF reconnecting /\ ~stopRequested THEN "Restarted" ELSE "ReachCheck"   \* intakeAttempts.ts:121・:123
   /\ UNCHANGED <<cur, reconnecting, served, helper, stopRequested, reached, endKind, failures, cfgN, shown, target, pending, userWant, carried, sends, runs, countedAfterStop>>
 
-\* restarts を 1 つ増やして intake-restarted を書く（:119・:120）
+\* restarts を 1 つ増やして intake-restarted を書く（:124・:125）
 Restarted ==
   /\ pc = "Restarted"
   /\ countedAfterStop' = (countedAfterStop \/ helper[cur].afterStop)
@@ -174,54 +173,54 @@ Restarted ==
 
 ObsRunning ==
   /\ pc = "ObsRunning"
-  /\ shown' = "running"                              \* intakeAttempts.ts:122 → sessions.ts:249
+  /\ shown' = "running"                              \* intakeAttempts.ts:127 → sessions.ts:249
   /\ pc' = "ReachCheck"
   /\ UNCHANGED <<cur, reconnecting, served, helper, stopRequested, reached, endKind, failures, cfgN, target, pending, userWant, carried, sends, runs, countedAfterStop>>
 
 ReachCheck ==
   /\ pc = "ReachCheck"
-  /\ pc' = IF ~stopRequested THEN "ReachSet" ELSE "Serving"   \* intakeAttempts.ts:124
+  /\ pc' = IF ~stopRequested THEN "ReachSet" ELSE "Serving"   \* intakeAttempts.ts:129
   /\ UNCHANGED <<cur, reconnecting, served, helper, stopRequested, reached, endKind, failures, cfgN, shown, target, pending, userWant, carried, sends, runs, countedAfterStop>>
 
 ReachSet ==
   /\ pc = "ReachSet"
-  /\ reached' = IF reached = "undecided" THEN "running" ELSE reached   \* intakeAttempts.ts:124（Deferred は最初の 1 回だけ）
+  /\ reached' = IF reached = "undecided" THEN "running" ELSE reached   \* intakeAttempts.ts:129（Deferred は最初の 1 回だけ）
   /\ countedAfterStop' = (countedAfterStop \/ (reached = "undecided" /\ helper[cur].afterStop))
   /\ pc' = "Serving"
   /\ UNCHANGED <<cur, reconnecting, served, helper, stopRequested, endKind, failures, cfgN, shown, target, pending, userWant, carried, sends, runs>>
 
-\* serve（:81）: ソケットが閉じるとイベントのストリームが終わり、ensuring で link.target を外す（:84・:85）
+\* serve（:86）: ソケットが閉じるとイベントのストリームが終わり、ensuring で link.target を外す（:89・:90）
 ServeEnd ==
   /\ pc = "Serving" /\ ~helper[cur].sock
   /\ target' = NoSlot
   /\ pc' = "AwaitExit"
   /\ UNCHANGED <<cur, reconnecting, served, helper, stopRequested, reached, endKind, failures, cfgN, shown, pending, userWant, carried, sends, runs, countedAfterStop>>
 
-\* 子プロセスの終わりを待ってから scope を閉じる（:87・:89）
+\* 子プロセスの終わりを待ってから scope を閉じる（:92・:94）
 AwaitExit ==
-  /\ pc = "AwaitExit" /\ ~helper[cur].alive          \* intakeAttempts.ts:87
+  /\ pc = "AwaitExit" /\ ~helper[cur].alive          \* intakeAttempts.ts:92
   /\ pc' = "AfterRead"
   /\ UNCHANGED <<cur, reconnecting, served, helper, stopRequested, reached, endKind, failures, cfgN, shown, target, pending, userWant, carried, sends, runs, countedAfterStop>>
 
 AfterReadStopped ==
-  /\ pc = "AfterRead" /\ stopRequested               \* intakeAttempts.ts:144
+  /\ pc = "AfterRead" /\ stopRequested               \* intakeAttempts.ts:149
   /\ Return("stopped")
   /\ UNCHANGED <<cur, reconnecting, served, helper, stopRequested, failures, cfgN, shown, target, pending, userWant, carried, sends, runs, countedAfterStop>>
 
 AfterReadFinished ==
   /\ pc = "AfterRead" /\ ~stopRequested
-  /\ served /\ Mode = "recorded" /\ helper[cur].exit = "zero"   \* intakeAttempts.ts:146（exitZero が finish）
+  /\ served /\ Mode = "recorded" /\ helper[cur].exit = "zero"   \* intakeAttempts.ts:151（exitZero が finish）
   /\ Return("finished")
   /\ UNCHANGED <<cur, reconnecting, served, helper, stopRequested, failures, cfgN, shown, target, pending, userWant, carried, sends, runs, countedAfterStop>>
 
-\* served なら crashed を observe する（:147。表示は変えない、sessions.ts:241）
+\* served なら crashed を observe する（:152。表示は変えない、sessions.ts:241）
 AfterReadCrashed ==
   /\ pc = "AfterRead" /\ ~stopRequested
   /\ ~(served /\ Mode = "recorded" /\ helper[cur].exit = "zero")
   /\ pc' = "Finish"
   /\ UNCHANGED <<cur, reconnecting, served, helper, stopRequested, reached, endKind, failures, cfgN, shown, target, pending, userWant, carried, sends, runs, countedAfterStop>>
 
-\* finishAttempt（:96）。decideIntakeRestart（intake.ts:48）。窓から外れた構成の変化の数は選び直す（時刻を表さない代わり）
+\* finishAttempt（:101）。decideIntakeRestart（intake.ts:48）。窓から外れた構成の変化の数は選び直す（時刻を表さない代わり）
 Finish ==
   /\ pc = "Finish"
   /\ LET h == helper[cur] IN
@@ -230,25 +229,25 @@ Finish ==
        THEN LET changes == kept + 1 IN
             LET f == IF h.ranLong THEN 0 ELSE failures IN           \* intake.ts:53
             IF changes > MaxCfg                                     \* intake.ts:54
-            THEN /\ pc' = "GaveUpReached" /\ shown' = "stopped" /\ failures' = f /\ cfgN' = MaxCfg   \* :107
-            ELSE /\ pc' = "ReadNext" /\ shown' = "interrupted" /\ failures' = f /\ cfgN' = changes   \* :110
+            THEN /\ pc' = "GaveUpReached" /\ shown' = "stopped" /\ failures' = f /\ cfgN' = MaxCfg   \* :112
+            ELSE /\ pc' = "ReadNext" /\ shown' = "interrupted" /\ failures' = f /\ cfgN' = changes   \* :115
        ELSE IF h.ranLong                                           \* intake.ts:58
             THEN /\ pc' = "ReadNext" /\ shown' = "interrupted" /\ failures' = 0 /\ cfgN' = kept
             ELSE IF failures + 1 >= MaxFailures                     \* intake.ts:60
                  THEN /\ pc' = "GaveUpReached" /\ shown' = "stopped" /\ failures' = MaxFailures /\ cfgN' = kept
                  ELSE /\ pc' = "ReadNext" /\ shown' = "interrupted" /\ failures' = failures + 1 /\ cfgN' = kept
-  /\ cur' = NoSlot                                                  \* current = undefined（:143）
+  /\ cur' = NoSlot                                                  \* current = undefined（:148）
   /\ UNCHANGED <<reconnecting, served, helper, stopRequested, reached, endKind, target, pending, userWant, carried, sends, runs, countedAfterStop>>
 
 GaveUpReached ==
   /\ pc = "GaveUpReached"
-  /\ reached' = IF reached = "undecided" THEN "gaveUp" ELSE reached  \* intakeAttempts.ts:108
-  /\ pc' = "Ended" /\ endKind' = "gaveUp"                            \* intakeAttempts.ts:149
+  /\ reached' = IF reached = "undecided" THEN "gaveUp" ELSE reached  \* intakeAttempts.ts:113
+  /\ pc' = "Ended" /\ endKind' = "gaveUp"                            \* intakeAttempts.ts:154
   /\ UNCHANGED <<cur, reconnecting, served, helper, stopRequested, failures, cfgN, shown, target, pending, userWant, carried, sends, runs, countedAfterStop>>
 
 \* ---- ヘルパーの子プロセス ----
 
-\* 落ちる・終わる。stop の要求の後は kill で SIGTERM（helpers.ts:267・intakeAttempts.ts:83）なので exit は other
+\* 落ちる・終わる。stop の要求の後は kill で SIGTERM（helpers.ts:267・intakeAttempts.ts:88）なので exit は other
 HelperExit ==
   \E s \in Slots, k \in {"zero", "config", "other"}, long \in BOOLEAN :
     /\ helper[s].alive
@@ -268,24 +267,30 @@ SockClose ==
     /\ helper' = [helper EXCEPT ![s].sock = FALSE]
     /\ UNCHANGED <<pc, cur, reconnecting, served, stopRequested, reached, endKind, failures, cfgN, shown, target, pending, userWant, carried, sends, runs, countedAfterStop>>
 
+\* live: 読んでいるヘルパーが self-pause-state を返す。serve は読んだら pending の self-pause を忘れ（intakeAttempts.ts:89）、
+\* それから sessions.ts が selfPauseState に入れる（sessions.ts:209）。間に send が入っても、この遷移の後の Send と同じ結果になる
+Echo ==
+  /\ Mode = "live"
+  /\ pc = "Serving" /\ target = cur /\ helper[cur].alive /\ helper[cur].sock
+  /\ carried' = helper[cur].applied
+  /\ pending' = "none"
+  /\ UNCHANGED <<pc, cur, reconnecting, served, helper, stopRequested, reached, endKind, failures, cfgN, shown, target, userWant, sends, runs, countedAfterStop>>
+
 \* ---- 利用者と sessions.ts ----
 
 Stop ==
   /\ ~stopRequested
-  /\ stopRequested' = TRUE                            \* intakeAttempts.ts:167
+  /\ stopRequested' = TRUE                            \* intakeAttempts.ts:170
   /\ UNCHANGED <<pc, cur, reconnecting, served, helper, reached, endKind, failures, cfgN, shown, target, pending, userWant, carried, sends, runs, countedAfterStop>>
 
-\* send（:160）。SynchronizedRef.updateEffect の中なので connect と交わらない
+\* send（:165）。SynchronizedRef.updateEffect の中なので connect と交わらない
 Send ==
   \E v \in {"on", "off"} :
     /\ sends < MaxSends
     /\ sends' = sends + 1 /\ userWant' = v
-    /\ pending' = IF Mode = "recorded" \/ target = NoSlot THEN v ELSE pending   \* intakeAttempts.ts:163（sticky、または pending-once で target が無い）
-    /\ IF target # NoSlot                                                     \* intakeAttempts.ts:164
-       THEN /\ helper' = [helper EXCEPT ![target].applied = Deliver(target, v)]
-            /\ carried' = IF Mode = "live" /\ helper[target].alive /\ helper[target].sock THEN v ELSE carried
-       ELSE UNCHANGED <<helper, carried>>
-    /\ UNCHANGED <<pc, cur, reconnecting, served, stopRequested, reached, endKind, failures, cfgN, shown, target, runs, countedAfterStop>>
+    /\ pending' = v                                                          \* intakeAttempts.ts:167・:168（sticky も self-pause も覚える）
+    /\ helper' = IF target # NoSlot THEN [helper EXCEPT ![target].applied = Deliver(target, v)] ELSE helper   \* intakeAttempts.ts:166
+    /\ UNCHANGED <<pc, cur, reconnecting, served, stopRequested, reached, endKind, failures, cfgN, shown, target, carried, runs, countedAfterStop>>
 
 \* sessions.ts の resume（:536）: 表示が stopped のときだけ、表示を interrupted にし、前の end を待ってから次の run を始める
 Resume ==
@@ -295,16 +300,16 @@ Resume ==
   /\ pc = "Ended"                                      \* sessions.ts:547（previous.end）
   /\ runs' = runs + 1
   /\ shown' = "interrupted"
-  /\ pc' = "ReadNext" /\ cur' = NoSlot                 \* initial は最初の run が取り出した（:138）
+  /\ pc' = "ReadNext" /\ cur' = NoSlot                 \* initial は最初の run が取り出した（:143）
   /\ reached' = "undecided" /\ endKind' = "none"
-  /\ failures' = 0 /\ cfgN' = 0                        \* history は run ごと（:95）
+  /\ failures' = 0 /\ cfgN' = 0                        \* history は run ごと（:100）
   /\ UNCHANGED <<reconnecting, served, helper, stopRequested, target, pending, userWant, carried, sends, countedAfterStop>>
 
 Body == ReadNextCurrent \/ ReadNextStopped \/ ReadNextLaunch \/ Launch \/ LaunchConnected \/ LaunchFailed
         \/ FailCheckStopped \/ FailCheckFailed \/ Connect \/ Check \/ Restarted \/ ObsRunning \/ ReachCheck \/ ReachSet
         \/ ServeEnd \/ AwaitExit \/ AfterReadStopped \/ AfterReadFinished \/ AfterReadCrashed \/ Finish \/ GaveUpReached
 
-Next == Body \/ HelperExit \/ HelperKilled \/ SockClose \/ Stop \/ Send \/ Resume
+Next == Body \/ HelperExit \/ HelperKilled \/ SockClose \/ Echo \/ Stop \/ Send \/ Resume
 
 \* body の Fiber は進む。stop の後の kill は効く。終わった子プロセスのソケットはいずれ閉じる。
 \* 起動中の子プロセスは、いずれソケットを開くか終わる（LaunchConnected・LaunchFailed・HelperExit のどれか）
@@ -331,7 +336,7 @@ InvStoppedOnlyWhenGaveUp == shown = "stopped" => pc \in {"GaveUpReached", "Ended
 Connected == target # NoSlot /\ target = cur /\ helper[cur].alive /\ helper[cur].sock
               /\ pc \in {"Check", "Restarted", "ObsRunning", "ReachCheck", "ReachSet", "Serving"}
 InvInstructionFollowsUser == Connected /\ userWant # "none" => Paused(helper[cur].applied) = Paused(userWant)
-\* live では自分の一時停止（self-pause、pending-once）、recorded では読み上げの一時停止（reading-pause、sticky）
+\* live では自分の一時停止（self-pause、self-pause-state まで覚える）、recorded では読み上げの一時停止（reading-pause、sticky）
 InvSelfPauseFollowsUser == InvInstructionFollowsUser
 InvReadingPauseFollowsUser == InvInstructionFollowsUser
 

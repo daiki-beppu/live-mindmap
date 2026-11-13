@@ -21,7 +21,7 @@ description: 取り込みの再起動（server/src/intakeAttempts.ts の openInt
 | `PropReachedSettles`（live） | resume が待つ reached は、いつか決まる | `resume` が返らず、CLI の resume が待ち続ける |
 | `PropEndAfterStop` | stop の後、`end` はいつか返る | stop が終わらず、セッションが閉じない |
 
-今のコードでは `InvSelfPauseFollowsUser` と `PropReachedSettles` が破れます（末尾の「既知の発見」）。どちらも `server/formal/IntakeAttempts.checks` に `known` として載せてあり、`check.sh` は `KNOWN` と出して終了コードに数えません。直さずに残す不具合を新しく見つけたときは、その性質を `known` に足し、「既知の発見」に反例を書きます。
+今のコードでは `PropReachedSettles` が破れます（末尾の「既知の発見」）。`server/formal/IntakeAttempts.checks` に `known` として載せてあり、`check.sh` は `KNOWN` と出して終了コードに数えません。直さずに残す不具合を新しく見つけたときは、その性質を `known` に足し、「既知の発見」に反例を書きます。
 
 ## 手順
 
@@ -38,7 +38,7 @@ description: 取り込みの再起動（server/src/intakeAttempts.ts の openInt
 
 ## 範囲
 
-最後に合わせた PR: #2011（2026-11-09）
+最後に合わせた PR: #2011（2026-11-09）、#2017 の修正の PR
 
 この PR が main に入った後に次のファイルが変わっていたら、手順 2 から見直します。PR の squash コミットは件名の末尾に `(#2011)` が付くので、`git log "$(git log -1 --format=%H --grep='(#2011)$' origin/main)"..origin/main -- <ファイル>` で後の変更を出せます。
 
@@ -46,29 +46,19 @@ description: 取り込みの再起動（server/src/intakeAttempts.ts の openInt
 - `server/src/core/intake.ts`: `decideIntakeRestart`・`isConfigurationChangeExit`・`MAX_CONSECUTIVE_FAILURES`・`MAX_CONFIGURATION_CHANGES`・`RESTART_WINDOW_MS`・`CONFIGURATION_CHANGE_WINDOW_MS`
 - `server/src/helpers.ts`: `launch` の中の、stop の要求で kill する Fiber と `raceFirst(connect, helperEnded)`
 - `server/src/helperSocket.ts`: `send` が `OPEN` でないときに捨てるところ、`close` で events を終えるところ
-- `server/src/sessions.ts`: `openIntake` に渡す `commands`（`self-pause` が `pending-once`、`reading-pause` が `sticky`）と `launchOptions`（`selfPause` に `selfPauseState` を渡す）、`runLive` の `observe` が `live.intake` を変えるところ、`resume` の条件と順番
+- `server/src/sessions.ts`: `openIntake` に渡す `commands`（`self-pause` が `{ until: "self-pause-state" }`、`reading-pause` が `sticky`）と `launchOptions`（`selfPause` に `selfPauseState` を渡す）、`runLive` の `observe` が `live.intake` を変えるところ、`resume` の条件と順番
 
 ## 調べている範囲と前提
 
-- 構成は 2 つです（`server/formal/intake-live.cfg`・`intake-recorded.cfg`）。live は start の取り込み（`self-pause` が `pending-once`、終了コード 0 でも起動し直す、resume が 1 回まで）。recorded は録画の取り込み（`reading-pause` が `sticky`、終了コード 0 で終える、resume は無い）。
+- 構成は 2 つです（`server/formal/intake-live.cfg`・`intake-recorded.cfg`）。live は start の取り込み（`self-pause` はヘルパーが `self-pause-state` を返すまで覚えて、つながるたびに送り直す、終了コード 0 でも起動し直す、resume が 1 回まで）。recorded は録画の取り込み（`reading-pause` が `sticky`、終了コード 0 で終える、resume は無い）。
 - 構成の変化での終了を諦める上限は 2 回（本物の `MAX_CONFIGURATION_CHANGES` は 10）、続けての失敗の上限は本物と同じ 3 回、利用者の send は 2 回までです。それを超える振る舞いは調べ切れていません。
 - 時刻は入れていません。落ちるたびに、60 秒より長く動いたか（`ranLong`）と、窓に残る構成の変化の数を、どちらも自由に選び直します（実際より広く調べます）。
-- ヘルパーは、届いた指示をすぐ当てて、その状態を `self-pause-state` で返すとしています。届いた後、返す前に落ちる場合は含めていません。
+- ヘルパーは、届いた指示をすぐ当てるとしています。当てた状態を `self-pause-state` で返すのは別の遷移（`Echo`）で、生きてソケットが開いている間だけ返すとしています。指示より前に返した状態を、server が指示を送った後に読み、そのままヘルパーが指示を読む前に落ちる順は含めていません（含めると `InvSelfPauseFollowsUser` が破れます。`Echo` の条件から `helper[cur].alive` を外すと確かめられます）。
 - 起動中のヘルパーは、いずれソケットを開くか終わるとしています（いつまでも開かずに生き続ける場合は含めていません）。
 - 含めていないもの: イベントの中身と `apply`・`log` の書き込み（`SessionWriteFailed` で止める `tapError` を含む）、`stats` の数、`openIntake` の最初の起動の失敗（start が失敗するだけなので、最初の試行はつながった状態から始めます）、セッション側の状態（`Sessions` の idle・starting・live・stopping）。
 - 通ったときに言えるのは、この範囲のモデルで成り立つということだけです。システム全体で成り立つとまでは言えません。
 
 ## 既知の発見
-
-### `InvSelfPauseFollowsUser`: ヘルパーが落ちた直後の一時停止の指示が消える（live）
-
-1. ヘルパーがつながって読んでいる（`link.target` がその試行）。
-2. ヘルパーの子プロセスが落ちる。ソケットはまだ閉じていないか、閉じても events のストリームは残りのイベントを `apply` している最中で、`serve` の `ensuring` が `link.target` を外す前（intakeAttempts.ts:84・:85）。
-3. 利用者が自分の一時停止を押す（`setSelfPause` → `controller.send`）。`target` があるので `pending` に残さず（:163、`pending-once` は target が無いときだけ残す）、死んだ試行に送る（:164）。`helperSocket.ts:46` は `OPEN` でなければ捨て、`OPEN` でも相手のプロセスはもういない。
-4. `serve` が終わり、`finishAttempt` が起動し直しを決め（:110）、次の試行を起動する。`launchOptions` の `selfPause` は、落ちたヘルパーが最後に返した `selfPauseState`（sessions.ts:304）で、押した指示を含まない。
-5. 次の試行がつながる（:115）。`pending` は空なので何も送らない。ヘルパーは一時停止していない。画面も一時停止に変わらないので、押した利用者は効かなかったことに気づけるが、押し直すまで自分の声が取り込まれ続ける。
-
-recorded の `reading-pause` は `sticky` なので、同じ順でも `pending` に残り、つながり直しで再送されます（`InvReadingPauseFollowsUser` は通ります）。
 
 ### `PropReachedSettles`: 起動のたびに 60 秒より長くかかって失敗すると、resume が返らない（live）
 

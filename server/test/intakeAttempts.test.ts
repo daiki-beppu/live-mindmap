@@ -346,25 +346,23 @@ describe("取り込みの試行", () => {
     yield* r.running.end;
   }));
 
-  it.effect("self-pauseは接続待ちの最新値だけを一回送り、次の回へ持ち越さない", () => Effect.gen(function* () {
+  it.effect("self-pauseは接続待ちの間の最新値だけを次の回へ送る", () => Effect.gen(function* () {
     const gate = yield* Deferred.make<void>();
-    const r = yield* setup([crashed(1), { ...crashed(1), connectGate: gate }, {}], { commands: { "self-pause": "pending-once" } });
+    const r = yield* setup([crashed(1), { connectGate: gate }], { commands: { "self-pause": { until: "self-pause-state" } } });
     yield* r.intake.send({ type: "self-pause", paused: true });
     yield* TestClock.adjust(1);
     yield* r.intake.send({ type: "self-pause", paused: true });
     yield* r.intake.send({ type: "self-pause", paused: false });
     expect(r.fake.sentPauses).toEqual([{ attempt: 0, paused: true }]);
     yield* Deferred.succeed(gate, undefined);
-    yield* waitFor(() => r.fake.sentPauses.length === 2, "接続待ちの最新の指令の送信");
-    yield* TestClock.adjust(1);
-    expect(r.fake.calls).toHaveLength(3);
+    yield* waitFor(() => r.transitions.filter((transition) => transition.kind === "connected").length === 2, "再接続の通知");
     expect(r.fake.sentPauses).toEqual([{ attempt: 0, paused: true }, { attempt: 1, paused: false }]);
     yield* r.intake.stop;
     yield* r.running.end;
   }));
 
   it.effect("self-pauseを送った回が引き継ぎの状態を返さずに落ちたら、次の回へ送り直す", () => Effect.gen(function* () {
-    const r = yield* setup([crashed(1), {}], { commands: { "self-pause": "pending-once" } });
+    const r = yield* setup([crashed(1), {}], { commands: { "self-pause": { until: "self-pause-state" } } });
     yield* r.intake.send({ type: "self-pause", paused: true });
     yield* TestClock.adjust(1);
     yield* waitFor(() => r.transitions.filter((transition) => transition.kind === "connected").length === 2, "再接続の通知");
@@ -374,7 +372,7 @@ describe("取り込みの試行", () => {
   }));
 
   it.effect("self-pauseを送った回が引き継ぎの状態を返した後に落ちたら、次の回へ送り直さない", () => Effect.gen(function* () {
-    const r = yield* setup([crashed(1), {}], { commands: { "self-pause": "pending-once" } });
+    const r = yield* setup([crashed(1), {}], { commands: { "self-pause": { until: "self-pause-state" } } });
     yield* r.intake.send({ type: "self-pause", paused: true });
     r.fake.send(0, { type: "self-pause-state", ...INITIAL_SELF_PAUSE_STATE, manual: "pause", basis: "using" });
     yield* waitFor(() => r.events.length === 1, "引き継ぎの状態");

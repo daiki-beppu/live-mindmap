@@ -23,7 +23,7 @@ type Intake = {
   stats: Effect.Effect<{ attempt: number; restarts: number }>;
 };
 type Launched = { attempt: HelperAttempt; scope: Scope.Closeable; startedAt: number };
-type Commands = Partial<Record<HelperInstruction["type"], "pending-once" | "sticky">>;
+type Commands = Partial<Record<HelperInstruction["type"], "sticky" | { until: HelperEvent["type"] }>>;
 type Link = { target: HelperAttempt | undefined; pending: ReadonlyMap<HelperInstruction["type"], HelperInstruction> };
 
 const note = (text: string) => Console.error(withoutFinalNewline(text));
@@ -71,17 +71,22 @@ export const openIntake = Effect.fnUntraced(function* (options: {
 
   const connect = (attempt: HelperAttempt) => SynchronizedRef.updateEffect(link, (current) => Effect.gen(function* () {
     if (current.target === attempt) return current;
-    const pending = new Map(current.pending);
-    for (const [type, instruction] of pending) {
-      if (options.commands[type] === "pending-once" || instruction.paused) yield* attempt.send(instruction);
-      if (options.commands[type] === "pending-once") pending.delete(type);
+    for (const [type, instruction] of current.pending) {
+      if (options.commands[type] !== "sticky" || instruction.paused) yield* attempt.send(instruction);
     }
-    return { target: attempt, pending };
+    return { ...current, target: attempt };
+  }));
+  const forgetEchoed = (event: HelperEvent) => SynchronizedRef.update(link, (current) => ({
+    ...current,
+    pending: new Map([...current.pending].filter(([type]) => {
+      const mode = options.commands[type];
+      return mode === "sticky" || mode?.until !== event.type;
+    })),
   }));
   const serve = Effect.fnUntraced(function* (current: Launched, apply: RunOptions["apply"]) {
     const noticedTypes = yield* Ref.make<ReadonlySet<string>>(new Set());
     yield* Effect.forkIn(Effect.andThen(Deferred.await(stopRequested), current.attempt.stop), current.scope);
-    yield* Stream.runForEach(current.attempt.events, handleEvent(apply, noticedTypes)).pipe(
+    yield* Stream.runForEach(current.attempt.events, handleEvent((event) => Effect.andThen(forgetEchoed(event), apply(event)), noticedTypes)).pipe(
       Effect.ensuring(SynchronizedRef.update(link, (value) => ({ ...value, target: undefined }))),
     );
     const exit = yield* current.attempt.exit;
@@ -158,11 +163,9 @@ export const openIntake = Effect.fnUntraced(function* (options: {
   return {
     run,
     send: (instruction) => SynchronizedRef.updateEffect(link, (current) => Effect.gen(function* () {
-      const pending = new Map(current.pending);
-      const mode = options.commands[instruction.type];
-      if (mode === "sticky" || (mode === "pending-once" && current.target === undefined)) pending.set(instruction.type, instruction);
       if (current.target !== undefined) yield* current.target.send(instruction);
-      return { ...current, pending };
+      if (options.commands[instruction.type] === undefined) return current;
+      return { ...current, pending: new Map(current.pending).set(instruction.type, instruction) };
     })),
     stop: Effect.asVoid(Deferred.succeed(stopRequested, undefined)),
     stats: Ref.get(stats),
