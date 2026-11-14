@@ -7,5 +7,3 @@ InvStatusTruthful session-live
 InvScreenQuietWhenIdle session-live
 PropStopReturns session-live session-recorded
 PropResumeReturns session-live
-# 既知の発見（.agents/skills/verify-session-lifecycle/SKILL.md の「既知の発見」）
-known InvStatusTruthful

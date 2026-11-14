@@ -45,10 +45,13 @@ export type RecordedStart = { file: string; selfFile?: string; title: string | u
 export class SessionsDir extends Context.Service<SessionsDir, string>()("live-mindmap/server/SessionsDir") {}
 
 type IntakeKind = "running" | "interrupted" | "stopped";
+// halted: 書き込みの失敗で止めた。run の知らせも resume も、ここから書き換えない
+type IntakeState = IntakeKind | "halted";
 const INITIAL_INTAKE: IntakeKind = "running";
+const intakeKind = (state: IntakeState): IntakeKind => state === "halted" ? "stopped" : state;
 
-const showIntake = (intake: SubscriptionRef.SubscriptionRef<IntakeKind>, send: SendFrame) =>
-  Stream.runFoldEffect(SubscriptionRef.changes(intake), (): IntakeKind => INITIAL_INTAKE, (shown, status) =>
+const showIntake = (intake: SubscriptionRef.SubscriptionRef<IntakeState>, send: SendFrame) =>
+  Stream.runFoldEffect(Stream.map(SubscriptionRef.changes(intake), intakeKind), (): IntakeKind => INITIAL_INTAKE, (shown, status) =>
     status === shown ? Effect.succeed(shown) : Effect.as(send({ type: "intake", status }), status));
 
 type Intake = Effect.Success<ReturnType<typeof openIntake>>;
@@ -66,7 +69,7 @@ type Live = {
   controller: Intake;
   running: Ref.Ref<IntakeRun | undefined>;
   scope: Scope.Closeable;
-  intake: SubscriptionRef.SubscriptionRef<IntakeKind>;
+  intake: SubscriptionRef.SubscriptionRef<IntakeState>;
   origin: Ref.Ref<string | undefined>;
   lastInterruptedAt: Ref.Ref<string | undefined>;
   selfPauseFrame: Ref.Ref<SelfPauseFrame>;
@@ -250,8 +253,10 @@ export class Sessions extends Context.Service<Sessions, {
               break;
             case "running":
             case "interrupted":
-            case "stopped":
-              yield* SubscriptionRef.set(live.intake, transition.kind);
+            case "stopped": {
+              const kind = transition.kind;
+              yield* SubscriptionRef.updateSome(live.intake, (state) => state === "halted" ? Option.none() : Option.some(kind));
+            }
           }
         }),
       });
@@ -323,7 +328,7 @@ export class Sessions extends Context.Service<Sessions, {
           scope,
           controller,
           running: yield* Ref.make<IntakeRun | undefined>(undefined),
-          intake: yield* SubscriptionRef.make(INITIAL_INTAKE),
+          intake: yield* SubscriptionRef.make<IntakeState>(INITIAL_INTAKE),
           origin,
           lastInterruptedAt: yield* Ref.make<string | undefined>(undefined),
           selfPauseFrame: yield* Ref.make<SelfPauseFrame>({ type: "self-pause", paused: false }),
@@ -333,12 +338,10 @@ export class Sessions extends Context.Service<Sessions, {
         yield* Ref.set(live.running, yield* runLive(live, "auto"));
         yield* Effect.forkIn(Effect.gen(function* () {
           yield* sink.writeFailure;
+          yield* SubscriptionRef.set(live.intake, "halted");
           yield* live.meetingTabNotice.stop;
           yield* controller.stop;
           yield* sink.stopRelays;
-          const running = yield* Ref.get(live.running);
-          if (running !== undefined) yield* running.end.pipe(Effect.catchTag("SessionWriteFailed", () => Effect.void));
-          yield* SubscriptionRef.set(live.intake, "stopped");
         }), scope);
         return { active: { kind: "live", live } satisfies Active, local: model.local, result: { dir, warnings } };
       }));
@@ -545,8 +548,9 @@ export class Sessions extends Context.Service<Sessions, {
         const { warnings } = yield* checks.prepare({ entry: "resume", route: live.model.route, screen: live.screen }).pipe(Effect.provideService(Helpers, helpers));
         const afterCheck = yield* Ref.get(state);
         if (afterCheck.kind !== "live" || afterCheck.live !== live) return yield* new Aborted();
-        const taken = yield* SubscriptionRef.modifySome(live.intake, (kind): [boolean, Option.Option<IntakeKind>] => (kind === "stopped" ? [true, Option.some("interrupted")] : [false, Option.none()]));
-        if (!taken) return yield* new IntakeNotStopped();
+        const taken = yield* SubscriptionRef.modifySome(live.intake, (state): [IntakeState, Option.Option<IntakeState>] => [state, state === "stopped" ? Option.some("interrupted") : Option.none()]);
+        if (taken === "halted") return yield* yield* live.sink.writeFailure;
+        if (taken !== "stopped") return yield* new IntakeNotStopped();
         const previous = yield* Ref.get(live.running);
         if (previous !== undefined) yield* previous.end;
         const beforeRun = yield* Ref.get(state);
@@ -583,7 +587,7 @@ export class Sessions extends Context.Service<Sessions, {
         const meetingTab = yield* live.meetingTabNotice.status;
         const diffUpdate = yield* live.sink.diffUpdateStatus;
         return {
-          status: yield* SubscriptionRef.get(live.intake),
+          status: intakeKind(yield* SubscriptionRef.get(live.intake)),
           dir: live.dir,
           restarts: (yield* live.controller.stats).restarts,
           ...(lastInterruptedAt === undefined ? {} : { lastInterruptedAt }),

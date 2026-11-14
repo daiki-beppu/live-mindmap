@@ -7,9 +7,9 @@ description: セッションの受け付け（server/src/sessions.ts の Session
 
 `server/formal/SessionLifecycle.tla` は、`Sessions.layer`（`server/src/sessions.ts`）がセッションを始め、止め、取り込みを再開するまでのモデルです。モデルの 1 つの遷移は、コードの中で他の Fiber に割り込まれない 1 歩（`Ref.modify`・`Ref.set`・`Ref.get`・`SubscriptionRef.set`・`SubscriptionRef.modifySome`・`send` の 1 回）か、I/O を待つ 1 回（`checks.prepare`・`running.end`・`writeOut` など）に当たります。Effect 4 の Fiber は `MaxOpsBeforeYield` ごとに順番を譲るので、同期の `Ref` の歩の間にも他の Fiber が入れます。`live.intake` は `SubscriptionRef` で、`set` は値の書き換えと `changes` への publish を 1 歩で行います。`send`（`viewers.ts` の `forSession` が返す関数）も、`sent`・retained・publish を 1 歩で行います。遷移の条件の注釈に、対応する行を書いてあります。
 
-モデルに入る者は、要求（`start`・`startRecorded`・`stop`・`resume`・`reserveDeps`。resume のうち新しい run を始めてからの歩は、`live.scope` に fork した Fiber）、取り込みの run（`intakeAttempts.ts` の `run` の body のうち、`sessions.ts` に見える `observe`・`reached`・`end` と `stopRequested` を見る条件だけ）、書き込みの失敗を待つ fork（`sessions.ts:334`）、録画の終わりを待つ fork（`afterPublish`）、`showIntake`（`sessions.ts:50-52`。`start` が Scope に fork する）です。`live.intake` を書く者（observe・書き込みの失敗を待つ fork・resume）は書くだけで、画面に intake を送るのは `showIntake` だけです。`showIntake` は `changes` を順に読み、最後に送った値と違うときだけ送ります。run の中身（ヘルパーの起動、指示の再送）は `verify-intake-attempts` スキル、画面への配信の順は `verify-viewer-feed` スキルが見ます。`shown` は Viewers の retained の intake、つまり後から開いた画面が受け取る値です。
+モデルに入る者は、要求（`start`・`startRecorded`・`stop`・`resume`・`reserveDeps`。resume のうち新しい run を始めてからの歩は、`live.scope` に fork した Fiber）、取り込みの run（`intakeAttempts.ts` の `run` の body のうち、`sessions.ts` に見える `observe`・`reached`・`end` と `stopRequested` を見る条件だけ）、書き込みの失敗を待つ fork（`sessions.ts:339`）、録画の終わりを待つ fork（`afterPublish`）、`showIntake`（`sessions.ts:53-55`。`start` が Scope に fork する）です。`live.intake` を書く者（observe・書き込みの失敗を待つ fork・resume）は書くだけで、画面に intake を送るのは `showIntake` だけです。`live.intake` の値には、`status` と画面に出す 3 つ（running・interrupted・stopped）のほかに `halted` があります。書き込みの失敗を待つ fork が、`controller.stop` より前に `halted` にします。`halted` からは observe（`updateSome`）も resume の `modifySome` も書き換えないので、後から書く者がいません。`status` と `showIntake` は `halted` を stopped と言います。モデルでは `Status(v)` がこの読み替え、`ObserveIntake` が observe の書き込みです。`showIntake` は `changes` を順に読み、最後に送った値と違うときだけ送ります。run の中身（ヘルパーの起動、指示の再送）は `verify-intake-attempts` スキル、画面への配信の順は `verify-viewer-feed` スキルが見ます。`shown` は Viewers の retained の intake、つまり後から開いた画面が受け取る値です。
 
-resume は、新しい run を始めて `reached` を待つまでを、`live.scope` に fork した Fiber で行います（`sessions.ts:554-558`）。閉じた Scope への `Effect.forkIn` は、Fiber を始めずに中断します（`server/node_modules/effect/src/internal/effect.ts` の `forkIn`）。そのため、stop が先に Scope を閉じていれば、resume は何も始めずに Aborted を返します（`sessions.ts:559-560`）。fork した後に Scope を閉じると、その Fiber は forSession の終わりのフレームより前に中断され、resume は同じく Aborted を返します。モデルの `ResFork` と `CloseScope` はこれに合わせています。effect を上げたときは、この振る舞いが変わっていないか確かめます。
+resume は、新しい run を始めて `reached` を待つまでを、`live.scope` に fork した Fiber で行います（`sessions.ts:558-562`）。閉じた Scope への `Effect.forkIn` は、Fiber を始めずに中断します（`server/node_modules/effect/src/internal/effect.ts` の `forkIn`）。そのため、stop が先に Scope を閉じていれば、resume は何も始めずに Aborted を返します（`sessions.ts:563-564`）。fork した後に Scope を閉じると、その Fiber は forSession の終わりのフレームより前に中断され、resume は同じく Aborted を返します。モデルの `ResFork` と `CloseScope` はこれに合わせています。effect を上げたときは、この振る舞いが変わっていないか確かめます。
 
 ## 守っている約束
 
@@ -26,7 +26,7 @@ resume は、新しい run を始めて `reached` を待つまでを、`live.sco
 
 「落ち着いたとき」は、利用者や外から起きること（要求の始まり、ヘルパーが勝手に終わる、書き込みの失敗）を除いて、どの者も次の歩を進められない状態（`Settled == ~ENABLED System`）です。
 
-今のコードでは `InvStatusTruthful` が破れます（末尾の「既知の発見」）。`server/formal/SessionLifecycle.checks` に `known` として載せてあり、`check.sh` は `KNOWN` と出して終了コードに数えません。直さずに残す不具合を新しく見つけたときは、その性質を `known` に足し、「既知の発見」に反例を書きます。
+今のコードでは、すべての性質が成り立ちます（末尾の「既知の発見」）。直さずに残す不具合を新しく見つけたときは、その性質を `server/formal/SessionLifecycle.checks` に `known` として足し、「既知の発見」に反例を書きます。`check.sh` は `known` の性質が破れても `KNOWN` と出し、終了コードに数えません。
 
 ## 手順
 
@@ -38,14 +38,14 @@ resume は、新しい run を始めて `reached` を待つまでを、`live.sco
    - **モデルの書き違い**: 反例の中に、コードでは 1 歩で起きることが 2 歩に分かれている遷移や、コードには無い条件がある。前のセッションの者が次のセッションの値を読んでいないか（run・`intake`・`running` はセッションごとに `gen` で分けてある）も見ます。モデルを直して、手順 3 に戻ります。
 
    `PASS?` が出たら、変更が既知の発見を直しています。`SessionLifecycle.checks` の `known` からその性質を外し、「既知の発見」の節からその項を消します。
-5. **性質が空振りしていないか確かめる**（性質を足した・変えたとき、または遷移や変数を足した・消したとき。既存の遷移の条件や代入を変えただけなら要りません）。その性質が守っている条件をモデルから 1 か所だけ外した版を scratchpad に作り、`bash server/formal/check.sh --model SessionLifecycle --spec <その版の .tla> <性質>` が `FAIL` になることを見ます。版のファイル名は `SessionLifecycle.tla` のままにします。例: `StartClaim` から `state.inst = 0` を外すと `InvNoSessionWhileReserved` が、`ReserveRelease` の減らす式を `state` にすると `InvInstallationsCount` が、`ConcludeClaim` の条件を `state.kind \in {"recorded", "stopping"}` に広げると `InvOneCloser` が、`StopIntake` の `stopReq'` を `stopReq` のままにすると `PropStopReturns` が、`ShowIntake` が `changes` の先頭でなく任意の値を読むようにすると `InvScreenMatchesStatus` が破れます。既知の発見の `InvStatusTruthful` は、今のコードで破れることがその確かめを兼ねます。`FAIL` にならない性質は書き直します。
+5. **性質が空振りしていないか確かめる**（性質を足した・変えたとき、または遷移や変数を足した・消したとき。既存の遷移の条件や代入を変えただけなら要りません）。その性質が守っている条件をモデルから 1 か所だけ外した版を scratchpad に作り、`bash server/formal/check.sh --model SessionLifecycle --spec <その版の .tla> <性質>` が `FAIL` になることを見ます。版のファイル名は `SessionLifecycle.tla` のままにします。例: `StartClaim` から `state.inst = 0` を外すと `InvNoSessionWhileReserved` が、`ReserveRelease` の減らす式を `state` にすると `InvInstallationsCount` が、`ConcludeClaim` の条件を `state.kind \in {"recorded", "stopping"}` に広げると `InvOneCloser` が、`StopIntake` の `stopReq'` を `stopReq` のままにすると `PropStopReturns` が、`ShowIntake` が `changes` の先頭でなく任意の値を読むようにすると `InvScreenMatchesStatus` が破れます。`ObserveIntake` を `SetIntake` に戻す（observe が `halted` を書き換える）と `InvStatusTruthful` が破れます。`FAIL` にならない性質は書き直します。
 6. **モデルの変更の行き先を決める。** 変更がそのまま入るなら、モデルの変更も同じ PR に入れます。そして、下の「最後に合わせた」記録をその PR の番号に書き換えます。書き換えてよいのは、モデルが変更後のコードをそのまま表していると、手順 2 で確かめ終えたときだけです。main は squash マージなので、PR の番号で記録します。コードの不具合と判定して変更を入れないなら、モデルの変更も戻します。
 
 ## 範囲
 
-最後に合わせた PR: #2050（2026-11-13）
+最後に合わせた PR: #2054（2026-11-14）
 
-この PR が main に入った後に次のファイルが変わっていたら、手順 2 から見直します。PR の squash コミットは件名の末尾に `(#2050)` が付くので、`git log "$(git log -1 --format=%H --grep='(#2050)$' origin/main)"..origin/main -- <ファイル>` で後の変更を出せます。
+この PR が main に入った後に次のファイルが変わっていたら、手順 2 から見直します。PR の squash コミットは件名の末尾に `(#2054)` が付くので、`git log "$(git log -1 --format=%H --grep='(#2054)$' origin/main)"..origin/main -- <ファイル>` で後の変更を出せます。
 
 - `server/src/sessions.ts`: `State`・`current`・`claimIdle`・`reserveDeps`・`runLive` の `observe`・`showIntake`・`claimStart`・`openSession`・`start`（`showIntake` の fork、`Ref.set(live.running)` と書き込みの失敗を待つ fork）・`closeSession`・`concludeRecorded`・`startRecorded` の `afterPublish`・`stopLive`・`stopRecorded`・`stop`・`resume`（`live.scope` への fork と、その Fiber の中断の扱い）・`status`
 - `server/src/intakeAttempts.ts`: `run` の body のうち、`observe` に渡す遷移、`reached` を決める所、`end` が返る条件、`stopRequested` を見る所（:107-110・:116-124・:129-133・:144-153）
@@ -65,14 +65,6 @@ resume は、新しい run を始めて `reached` を待つまでを、`live.sco
 
 ## 既知の発見
 
-反例の手順を `sessions.ts` の行で辿り、各遷移が実際の 1 歩に合うことを確かめてあります。実機での再現はしていません。
+今はありません。
 
-1. **書き込みの失敗と resume が重なると、取り込みが止まったまま「再開しています」と出続ける**（`InvStatusTruthful`、構成 live）
-   1. ヘルパーの起動し直しを諦め、`live.intake` が stopped になる（`intakeAttempts.ts:107`）。`showIntake` が画面に stopped を送る。
-   2. 利用者が resume する。`writeError` は無く、`intake` は stopped なので先へ進み、`checks.prepare` を待つ（`sessions.ts:542-545`）。
-   3. その間にディスクへの書き込みが失敗し、待っていた fork が `controller.stop` を呼び、`intake` を stopped にする（`sessions.ts:335-341`）。値は変わらないので、`showIntake` は送らない。
-   4. `prepare` が終わる。`state` は live のままなので、resume は `intake` を stopped から interrupted に書き換え（`sessions.ts:546-549`）、`showIntake` が画面に interrupted を送る。
-   5. 新しい run は `stopRequested` が立っているのですぐ終わり（`intakeAttempts.ts:129`）、resume は Aborted を返す（`sessions.ts:554-563`）。
-   6. 結果: 取り込みは止まっているのに、`status` は interrupted、画面は「音声の取り込みが途切れました。再開しています」のまま変わらない。
-
-   起きやすさ: 2 と 4 の間は `checks.prepare` の I/O（数百 ms〜数秒）なので、その間に書き込みが失敗すれば起きます。書き込みの失敗そのもの（ディスクが一杯など）はまれです。
+#2014 で直した不具合: 起動し直しを諦めて止まった後に resume が `checks.prepare` を待つ間に書き込みが失敗すると、resume が stopped を interrupted に書き換え、新しい run はすぐ終わるので、取り込みは止まっているのに「再開しています」が残りました。直す前は、書き込みの失敗を待つ fork が `live.running` を読んだ後に resume が新しい run を入れると、その run の observe が fork の stopped を書き換える道もありました。今は fork が最初に `halted` にし、`halted` は誰も書き換えないので、どちらも起きません。

@@ -8,7 +8,7 @@ import { describe, expect, it } from "@effect/vitest";
 import { Cause, Console, Context, DateTime, Deferred, Effect, Exit, Fiber, Layer, Queue, Ref, Scope, Stream } from "effect";
 import { Socket } from "effect/socket";
 import { TestClock } from "effect/testing";
-import { DiffUpdater, TAP_NOTICE_TEXT, type HelperPartial, type SettledRemark, type Track } from "../src/core/index.ts";
+import { DiffUpdater, SessionWriteFailed, TAP_NOTICE_TEXT, type HelperPartial, type SettledRemark, type Track } from "../src/core/index.ts";
 import { Helpers, HelperCreationDateFailure } from "../src/helpers.ts";
 import { HelperExited, NoSession, SessionBusy } from "../src/sessionFailure.ts";
 import { ExportFilesFailed } from "../src/sessionFiles.ts";
@@ -45,7 +45,7 @@ type FakeSinksHandle = {
   readonly control: { createDirFails: boolean };
 };
 
-function makeFakeSessionSinks(options: { exportsFails?: boolean; warnings?: readonly string[] } = {}): Effect.Effect<FakeSinksHandle, never, Scope.Scope> {
+function makeFakeSessionSinks(options: { exportsFails?: boolean; warnings?: readonly string[]; writeFailed?: Deferred.Deferred<SessionWriteFailed> } = {}): Effect.Effect<FakeSinksHandle, never, Scope.Scope> {
   return Effect.gen(function* () {
     const opened = { count: 0, closed: 0 };
     const finals: { id: string; track: Track; text: string }[] = [];
@@ -71,8 +71,8 @@ function makeFakeSessionSinks(options: { exportsFails?: boolean; warnings?: read
         yield* Effect.addFinalizer(() => Effect.sync(() => { opened.closed++; order.push("close"); }));
         const sink = {
           dir: args.dir,
-          writeFailure: Effect.never,
-          writeError: Effect.succeed(undefined),
+          writeFailure: options.writeFailed === undefined ? Effect.never : Deferred.await(options.writeFailed),
+          writeError: options.writeFailed === undefined ? Effect.succeed(undefined) : Effect.flatMap(Deferred.isDone(options.writeFailed), (done) => done ? Deferred.await(options.writeFailed!) : Effect.succeed(undefined)),
           diffUpdateStatus: Effect.succeed(args.noMap === true ? undefined : { status: "running" as const }),
           partial: (p: HelperPartial) => Effect.sync(() => { partials.push({ track: p.track, text: p.text }); words.partial.push((p as { words?: unknown }).words); }),
           final: (r: SettledRemark) => Effect.sync(() => { count++; sequence.push("final"); finals.push({ id: `r${count}`, track: r.track, text: r.text }); words.final.push((r as { words?: unknown }).words); }),
@@ -2487,6 +2487,42 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
         expect(after.status).toBe("stopped");
         if (connected) expect(after.lastInterruptedAt! > before.lastInterruptedAt!).toBe(true);
         else expect(after.lastInterruptedAt).toBe(before.lastInterruptedAt);
+      }));
+    it.effect("諦めて止まった後の resume が準備を待つ間に書き込みが失敗したら、resume は書き込みの失敗を返し、status と画面は stopped のまま", () =>
+      Effect.gen(function* () {
+        const fakeHelpers = yield* makeFakeHelpers([
+          { unexpectedExit: { afterMs: 500, exit: { code: 1, signal: null } } },
+          { connect: false, stderrTail: ["起動に失敗"] },
+          { connect: false, stderrTail: ["起動に失敗"] },
+        ]);
+        const checkEntered = yield* Deferred.make<void>();
+        const releaseCheck = yield* Deferred.make<void>();
+        let checks = 0;
+        const helpers = Helpers.of({ ...fakeHelpers.helpers, check: (options) => Effect.suspend(() => ++checks === 1
+          ? fakeHelpers.helpers.check(options)
+          : Effect.andThen(Effect.andThen(Deferred.succeed(checkEntered, undefined), Deferred.await(releaseCheck)), fakeHelpers.helpers.check(options))) });
+        const writeFailed = yield* Deferred.make<SessionWriteFailed>();
+        const fakeSinks = yield* makeFakeSessionSinks({ writeFailed });
+        const { sessions, viewers } = yield* bootSessions(Layer.succeed(Helpers)(helpers), Layer.succeed(SessionSinks)(fakeSinks.sinks));
+        const watcher = yield* viewerClient();
+        yield* Effect.forkChild(viewers.connect(watcher.socket));
+        yield* sessions.start(start());
+        yield* TestClock.adjust(500);
+        yield* TestClock.adjust(10);
+        expect((yield* sessions.status).status).toBe("stopped");
+
+        const resumeFiber = yield* Effect.forkChild(Effect.exit(sessions.resume));
+        yield* Deferred.await(checkEntered);
+        yield* Deferred.succeed(writeFailed, new SessionWriteFailed({ path: "/tmp/live-mindmap-fake/1/log.jsonl", cause: "ENOSPC" }));
+        yield* TestClock.adjust(10);
+        yield* Deferred.succeed(releaseCheck, undefined);
+        const resumed = yield* Fiber.join(resumeFiber);
+        yield* TestClock.adjust(10);
+
+        expect((yield* sessions.status).status).toBe("stopped");
+        expect((yield* watcher.intakeStatuses).at(-1)).toBe("stopped");
+        expect(Exit.isFailure(resumed) && Cause.squash(resumed.cause)).toMatchObject({ _tag: "SessionWriteFailed" });
+        expect(fakeHelpers.calls).toHaveLength(3);
       }));
   });
 
