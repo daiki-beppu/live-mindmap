@@ -190,7 +190,7 @@ struct WebSocketServerITTests {
             .screenOff(start: 3, reason: .許可なし),
             .tapSilent(start: 10),
             .selfPause(.paused(.manual), start: 3),
-            .selfPauseState(.initial),
+            .selfPauseState(.initial, handled: .none),
             .speakerOff(start: 1, reason: .モデルなし),
             .fileDuration(duration: 120),
             .fileAudioTracks(count: 2),

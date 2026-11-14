@@ -49,7 +49,7 @@ public enum HelperEvent: Sendable, Equatable {
     case screenOff(start: Double, reason: ScreenOffReason)
     case tapSilent(start: Double)
     case selfPause(SelfPauseChange, start: Double)
-    case selfPauseState(SelfPauseCarryOver)
+    case selfPauseState(SelfPauseCarryOver, handled: SelfPauseSeq)
     case speaker(track: Track, start: Double, end: Double, slot: Int, isFinal: Bool)
     case speakerOff(start: Double, reason: SpeakerOffReason)
     case fileDuration(duration: Double)
@@ -116,7 +116,7 @@ extension HelperEvent: Encodable {
     private enum CodingKeys: String, CodingKey {
         case type, track, start, end, text, duplicate, words, wordTimes, hostTime, image, lines, reason, paused, slot, final, duration, to, count
         case ocrFailed
-        case manual, basis, lastKnown, idleFor, centroid, meetingTabTitle
+        case manual, basis, lastKnown, idleFor, handled, centroid, meetingTabTitle
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -166,11 +166,12 @@ extension HelperEvent: Encodable {
             try container.encode(state.paused, forKey: .paused)
             try container.encode(state.reason.rawValue, forKey: .reason)
             try container.encode(start, forKey: .start)
-        case let .selfPauseState(state):
+        case let .selfPauseState(state, handled):
             try container.encode(state.manual.rawValue, forKey: .manual)
             try container.encode(state.basis.rawValue, forKey: .basis)
             try container.encode(state.lastKnown.rawValue, forKey: .lastKnown)
             try container.encode(state.idleFor, forKey: .idleFor)
+            try container.encode(handled.value, forKey: .handled)
         case let .speaker(track, start, end, slot, isFinal):
             try container.encode(track.rawValue, forKey: .track)
             try container.encode(start, forKey: .start)

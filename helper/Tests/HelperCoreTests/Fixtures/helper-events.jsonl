@@ -4,7 +4,7 @@
 {"image":"AQID","lines":["港南店","Zendesk"],"start":7,"type":"screen"}
 {"image":"AQID","lines":[],"meetingTabTitle":"定例会議","start":8,"type":"screen"}
 {"start":10.5,"type":"tap-silent"}
-{"basis":"using","idleFor":1.5,"lastKnown":"idle","manual":"pause","type":"self-pause-state"}
+{"basis":"using","handled":3,"idleFor":1.5,"lastKnown":"idle","manual":"pause","type":"self-pause-state"}
 {"duration":120.5,"type":"file-duration"}
 {"count":2,"type":"file-audio-tracks"}
 {"duplicate":false,"end":3,"start":1.5,"text":"こんにちは𠮷","track":"自分","type":"remark","wordTimes":[{"end":2.25,"length":5,"location":0,"start":1.5}],"words":[{"length":5,"location":0,"romaji":"konnichiwa","surface":"こんにちは"},{"length":2,"location":5,"romaji":"","surface":"𠮷"}]}
@@ -28,9 +28,9 @@
 {"paused":false,"reason":"手動","start":12,"type":"self-pause"}
 {"paused":false,"reason":"自動","start":12,"type":"self-pause"}
 {"paused":false,"reason":"判定できない","start":12,"type":"self-pause"}
-{"basis":"unknown","idleFor":0,"lastKnown":"unknown","manual":"none","type":"self-pause-state"}
-{"basis":"unknown","idleFor":0,"lastKnown":"unknown","manual":"pause","type":"self-pause-state"}
-{"basis":"unknown","idleFor":0,"lastKnown":"unknown","manual":"take","type":"self-pause-state"}
-{"basis":"using","idleFor":0,"lastKnown":"using","manual":"none","type":"self-pause-state"}
-{"basis":"idle","idleFor":0,"lastKnown":"idle","manual":"none","type":"self-pause-state"}
-{"basis":"unknown","idleFor":0,"lastKnown":"unknown","manual":"none","type":"self-pause-state"}
+{"basis":"unknown","handled":0,"idleFor":0,"lastKnown":"unknown","manual":"none","type":"self-pause-state"}
+{"basis":"unknown","handled":0,"idleFor":0,"lastKnown":"unknown","manual":"pause","type":"self-pause-state"}
+{"basis":"unknown","handled":0,"idleFor":0,"lastKnown":"unknown","manual":"take","type":"self-pause-state"}
+{"basis":"using","handled":0,"idleFor":0,"lastKnown":"using","manual":"none","type":"self-pause-state"}
+{"basis":"idle","handled":0,"idleFor":0,"lastKnown":"idle","manual":"none","type":"self-pause-state"}
+{"basis":"unknown","handled":0,"idleFor":0,"lastKnown":"unknown","manual":"none","type":"self-pause-state"}

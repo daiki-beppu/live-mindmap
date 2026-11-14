@@ -1,6 +1,6 @@
 import { Clock, Console, Deferred, Effect, Exit, Fiber, Ref, Result, Scope, Stream, SynchronizedRef } from "effect";
-import { type SessionWriteFailed, CONFIGURATION_CHANGE_WINDOW_MS, MAX_CONFIGURATION_CHANGES, decideIntakeRestart, decodeHelperEvent, type HelperEvent, type IntakeLogEvent } from "./core/index.ts";
-import { Helpers, type HelperAttempt, type HelperExitInfo, type HelperInstruction, type HelperLaunchOptions } from "./helpers.ts";
+import { type SessionWriteFailed, CONFIGURATION_CHANGE_WINDOW_MS, MAX_CONFIGURATION_CHANGES, SelfPauseSeq, decideIntakeRestart, decodeHelperEvent, type HelperEvent, type IntakeLogEvent } from "./core/index.ts";
+import { Helpers, type HelperAttempt, type HelperExitInfo, type HelperInstruction, type HelperLaunchOptions, type HelperMessage } from "./helpers.ts";
 import { HelperExited } from "./sessionFailure.ts";
 import { withoutFinalNewline } from "./consoleText.ts";
 
@@ -23,8 +23,29 @@ type Intake = {
   stats: Effect.Effect<{ attempt: number; restarts: number }>;
 };
 type Launched = { attempt: HelperAttempt; scope: Scope.Closeable; startedAt: number };
-type Commands = Partial<Record<HelperInstruction["type"], "sticky" | { until: HelperEvent["type"] }>>;
-type Link = { target: HelperAttempt | undefined; pending: ReadonlyMap<HelperInstruction["type"], HelperInstruction> };
+/** 利用者の最後の自分の一時停止。seq は次の指示の番号の元にもなる。ヘルパーが handled で seq に届いたと返すまで、つながる回ごとに送り直す */
+type SelfPausePress = { readonly paused: boolean; readonly seq: SelfPauseSeq; readonly acknowledged: boolean };
+/** readingPaused は録画ファイルの読み取りの一時停止。止めている間は、つながる回ごとに送り直す（sticky） */
+type Link = { readonly target: HelperAttempt | undefined; readonly selfPause: SelfPausePress | undefined; readonly readingPaused: boolean };
+
+const remember = (link: Link, instruction: HelperInstruction): { link: Link; message: HelperMessage } => {
+  switch (instruction.type) {
+    case "self-pause": {
+      const press = { paused: instruction.paused, seq: SelfPauseSeq.make((link.selfPause?.seq ?? 0) + 1), acknowledged: false };
+      return { link: { ...link, selfPause: press }, message: { type: "self-pause", paused: press.paused, seq: press.seq } };
+    }
+    case "reading-pause":
+      return { link: { ...link, readingPaused: instruction.paused }, message: { type: "reading-pause", paused: instruction.paused } };
+  }
+};
+const carried = (link: Link): ReadonlyArray<HelperMessage> => [
+  ...(link.readingPaused ? [{ type: "reading-pause", paused: true } as const] : []),
+  ...(link.selfPause !== undefined && !link.selfPause.acknowledged ? [{ type: "self-pause", paused: link.selfPause.paused, seq: link.selfPause.seq } as const] : []),
+];
+const acknowledge = (link: Link, event: HelperEvent): Link =>
+  link.selfPause !== undefined && !link.selfPause.acknowledged && event.type === "self-pause-state" && event.handled >= link.selfPause.seq
+    ? { ...link, selfPause: { ...link.selfPause, acknowledged: true } }
+    : link;
 
 const note = (text: string) => Console.error(withoutFinalNewline(text));
 const defectReason = (defect: unknown) => defect instanceof Error ? defect.message : String(defect);
@@ -46,12 +67,11 @@ const handleEvent = (apply: RunOptions["apply"], noticedTypes: Ref.Ref<ReadonlyS
 export const openIntake = Effect.fnUntraced(function* (options: {
   scope: Scope.Closeable;
   launchOptions: (attemptNo: number) => Effect.Effect<HelperLaunchOptions>;
-  commands: Commands;
 }): Effect.fn.Return<Intake, HelperExited, Helpers> {
   const helpers = yield* Helpers;
   const stopRequested = yield* Deferred.make<void>();
   const stats = yield* Ref.make({ attempt: 0, restarts: 0 });
-  const link = yield* SynchronizedRef.make<Link>({ target: undefined, pending: new Map() });
+  const link = yield* SynchronizedRef.make<Link>({ target: undefined, selfPause: undefined, readingPaused: false });
   const launch = Effect.gen(function* () {
     const { attempt: attemptNo } = yield* Ref.updateAndGet(stats, (s) => ({ ...s, attempt: s.attempt + 1 }));
     const startedAt = yield* Clock.currentTimeMillis;
@@ -71,22 +91,13 @@ export const openIntake = Effect.fnUntraced(function* (options: {
 
   const connect = (attempt: HelperAttempt) => SynchronizedRef.updateEffect(link, (current) => Effect.gen(function* () {
     if (current.target === attempt) return current;
-    for (const [type, instruction] of current.pending) {
-      if (options.commands[type] !== "sticky" || instruction.paused) yield* attempt.send(instruction);
-    }
+    for (const message of carried(current)) yield* attempt.send(message);
     return { ...current, target: attempt };
-  }));
-  const forgetEchoed = (event: HelperEvent) => SynchronizedRef.update(link, (current) => ({
-    ...current,
-    pending: new Map([...current.pending].filter(([type]) => {
-      const mode = options.commands[type];
-      return mode === "sticky" || mode?.until !== event.type;
-    })),
   }));
   const serve = Effect.fnUntraced(function* (current: Launched, apply: RunOptions["apply"]) {
     const noticedTypes = yield* Ref.make<ReadonlySet<string>>(new Set());
     yield* Effect.forkIn(Effect.andThen(Deferred.await(stopRequested), current.attempt.stop), current.scope);
-    yield* Stream.runForEach(current.attempt.events, handleEvent((event) => Effect.andThen(forgetEchoed(event), apply(event)), noticedTypes)).pipe(
+    yield* Stream.runForEach(current.attempt.events, handleEvent((event) => Effect.andThen(SynchronizedRef.update(link, (current) => acknowledge(current, event)), apply(event)), noticedTypes)).pipe(
       Effect.ensuring(SynchronizedRef.update(link, (value) => ({ ...value, target: undefined }))),
     );
     const exit = yield* current.attempt.exit;
@@ -163,9 +174,9 @@ export const openIntake = Effect.fnUntraced(function* (options: {
   return {
     run,
     send: (instruction) => SynchronizedRef.updateEffect(link, (current) => Effect.gen(function* () {
-      if (current.target !== undefined) yield* current.target.send(instruction);
-      if (options.commands[instruction.type] === undefined) return current;
-      return { ...current, pending: new Map(current.pending).set(instruction.type, instruction) };
+      const { link: next, message } = remember(current, instruction);
+      if (current.target !== undefined) yield* current.target.send(message);
+      return next;
     })),
     stop: Effect.asVoid(Deferred.succeed(stopRequested, undefined)),
     stats: Ref.get(stats),

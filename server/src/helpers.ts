@@ -3,7 +3,7 @@ import { createServer } from "node:net";
 import { Context, Deferred, Effect, Fiber, Layer, Predicate, Schedule, Schema, Stream, type Scope } from "effect";
 import type { PlatformError } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
-import { HELPER_RUN_STDERR_TAIL_LINES, INITIAL_SELF_PAUSE_STATE, STDERR_TAIL_LINES, tailLines, type SelfPauseState, type Track } from "./core/index.ts";
+import { HELPER_RUN_STDERR_TAIL_LINES, INITIAL_SELF_PAUSE_STATE, STDERR_TAIL_LINES, tailLines, type SelfPauseSeq, type SelfPauseState, type Track } from "./core/index.ts";
 import { openHelperSocket } from "./helperSocket.ts";
 
 export const HELPER_STOP_TIMEOUT_MS = Context.Reference("live-mindmap/HelperStopTimeoutMs", { defaultValue: (): number => 5_000 });
@@ -36,10 +36,15 @@ export type HelperAttempt = {
   stop: Effect.Effect<void>;
   exit: Effect.Effect<HelperExitInfo>;
   stderrTail: Effect.Effect<ReadonlyArray<string>>;
-  send: (instruction: HelperInstruction) => Effect.Effect<void>;
+  send: (message: HelperMessage) => Effect.Effect<void>;
 };
 
-export type HelperInstruction = { type: "self-pause" | "reading-pause"; paused: boolean };
+export type HelperInstruction = { readonly type: "self-pause" | "reading-pause"; readonly paused: boolean };
+
+/** ソケットに書く指示。self-pause の seq は openIntake だけが振る。 */
+export type HelperMessage =
+  | { readonly type: "self-pause"; readonly paused: boolean; readonly seq: SelfPauseSeq }
+  | { readonly type: "reading-pause"; readonly paused: boolean };
 
 export type HelperCommand = { command: string; args: string[] };
 
@@ -277,7 +282,7 @@ const make = Effect.fnUntraced(function* (helper: HelperCommand) {
       return yield* new HelperLaunchFailure({ stderrTail: yield* stderrTail, exit });
     });
     const socket = yield* Effect.raceFirst(connect, helperEnded);
-    const send = (instruction: HelperInstruction) => socket.send(JSON.stringify({ ...instruction, token: controlToken }));
+    const send = (message: HelperMessage) => socket.send(JSON.stringify({ ...message, token: controlToken }));
 
     return { events: socket.events, stop, exit: Deferred.await(exited), stderrTail, send };
   });

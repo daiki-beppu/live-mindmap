@@ -11,7 +11,7 @@ struct HelperEventDeliveryTests {
             (.screenOff(start: 1, reason: .許可なし), .retain(.screenOff)),
             (.tapSilent(start: 10), .retain(.tapSilent)),
             (.selfPause(.paused(.manual), start: 1), .retain(.selfPause)),
-            (.selfPauseState(.initial), .retain(.selfPauseState)),
+            (.selfPauseState(.initial, handled: .none), .retain(.selfPauseState)),
             (.speakerOff(start: 1, reason: .モデルなし), .retain(.speakerOff)),
             (.fileDuration(duration: 120), .retain(.fileDuration)),
             (.fileAudioTracks(count: 2), .retain(.fileAudioTracks)),

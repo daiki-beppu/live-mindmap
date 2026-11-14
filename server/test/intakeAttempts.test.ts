@@ -22,7 +22,7 @@ const waitFor = (condition: () => boolean, label: string) => Effect.promise(() =
 
 const setup = Effect.fnUntraced(function* (
   scripts: AttemptScript[],
-  options: Partial<Pick<OpenOptions, "launchOptions" | "commands">> & Partial<Pick<RunOptions, "apply" | "observe" | "exitZero" | "log">> = {},
+  options: Partial<Pick<OpenOptions, "launchOptions">> & Partial<Pick<RunOptions, "apply" | "observe" | "exitZero" | "log">> = {},
 ) {
   const fake = yield* makeFakeHelpers(scripts);
   const scope = yield* Scope.fork(yield* Effect.scope, "sequential");
@@ -32,7 +32,6 @@ const setup = Effect.fnUntraced(function* (
   const intake = yield* openIntake({
     scope,
     launchOptions: options.launchOptions ?? ((attemptNo) => Effect.succeed({ kind: "run", app: "test.app", screen: true, selfPause: INITIAL_SELF_PAUSE_STATE, audio: { dir: "/session", attempt: attemptNo } })),
-    commands: options.commands ?? {},
   }).pipe(Effect.provideService(Helpers, fake.helpers));
   const run = (trigger: "auto" | "resume") => intake.run({
     trigger,
@@ -72,7 +71,7 @@ describe("取り込みの試行", () => {
   it.effect.each([0, 2])("最初の接続失敗はコード%sでもHelperExitedで返し、起動し直さない", (code) => Effect.gen(function* () {
     const fake = yield* makeFakeHelpers([{ connect: false, launchExit: { code, signal: null }, stderrTail: ["初回の失敗"] }]);
     const result = yield* Effect.result(openIntake({
-      scope: yield* Scope.fork(yield* Effect.scope, "sequential"), launchOptions: () => Effect.succeed({ kind: "run", app: "test.app", screen: true, selfPause: INITIAL_SELF_PAUSE_STATE }), commands: {},
+      scope: yield* Scope.fork(yield* Effect.scope, "sequential"), launchOptions: () => Effect.succeed({ kind: "run", app: "test.app", screen: true, selfPause: INITIAL_SELF_PAUSE_STATE }),
     }).pipe(Effect.provideService(Helpers, fake.helpers)));
     expect(Result.isFailure(result)).toBe(true);
     if (Result.isFailure(result)) expect(result.failure).toMatchObject({ _tag: "HelperExited", code, signal: null, stderrTail: ["初回の失敗"] });
@@ -295,7 +294,7 @@ describe("取り込みの試行", () => {
 
   it.effect("reading-pauseは現在の回へ送り、接続待ちでは最新値を覚えて前の回へ送らない", () => Effect.gen(function* () {
     const gate = yield* Deferred.make<void>();
-    const r = yield* setup([crashed(1), { connectGate: gate }, {}], { commands: { "reading-pause": "sticky" } });
+    const r = yield* setup([crashed(1), { connectGate: gate }, {}]);
     yield* r.intake.send({ type: "reading-pause", paused: true });
     expect(r.fake.sentInstructions).toEqual([{ attempt: 0, instruction: { type: "reading-pause", paused: true } }]);
     yield* TestClock.adjust(1);
@@ -316,7 +315,6 @@ describe("取り込みの試行", () => {
     let sentBeforeApply = false;
     let isPaused = () => false;
     const r = yield* setup([crashed(1), { connectGate: gate, events: [JSON.stringify(remark)] }], {
-      commands: { "reading-pause": "sticky" },
       apply: () => Effect.sync(() => { sentBeforeApply = isPaused(); }),
     });
     isPaused = () => r.fake.sentInstructions.some(({ attempt, instruction }) => attempt === 1 && instruction.paused);
@@ -335,7 +333,7 @@ describe("取り込みの試行", () => {
 
   it.effect("接続待ちにstickyを既定へ戻したら次の回へ停止を再送しない", () => Effect.gen(function* () {
     const gate = yield* Deferred.make<void>();
-    const r = yield* setup([crashed(1), { connectGate: gate }], { commands: { "reading-pause": "sticky" } });
+    const r = yield* setup([crashed(1), { connectGate: gate }]);
     yield* r.intake.send({ type: "reading-pause", paused: true });
     yield* TestClock.adjust(1);
     yield* r.intake.send({ type: "reading-pause", paused: false });
@@ -348,50 +346,68 @@ describe("取り込みの試行", () => {
 
   it.effect("self-pauseは接続待ちの間の最新値だけを次の回へ送る", () => Effect.gen(function* () {
     const gate = yield* Deferred.make<void>();
-    const r = yield* setup([crashed(1), { connectGate: gate }], { commands: { "self-pause": { until: "self-pause-state" } } });
+    const r = yield* setup([crashed(1), { connectGate: gate }]);
     yield* r.intake.send({ type: "self-pause", paused: true });
     yield* TestClock.adjust(1);
     yield* r.intake.send({ type: "self-pause", paused: true });
     yield* r.intake.send({ type: "self-pause", paused: false });
-    expect(r.fake.sentPauses).toEqual([{ attempt: 0, paused: true }]);
+    expect(r.fake.sentPauses).toEqual([{ attempt: 0, paused: true, seq: 1 }]);
     yield* Deferred.succeed(gate, undefined);
     yield* waitFor(() => r.transitions.filter((transition) => transition.kind === "connected").length === 2, "再接続の通知");
-    expect(r.fake.sentPauses).toEqual([{ attempt: 0, paused: true }, { attempt: 1, paused: false }]);
+    expect(r.fake.sentPauses).toEqual([{ attempt: 0, paused: true, seq: 1 }, { attempt: 1, paused: false, seq: 3 }]);
     yield* r.intake.stop;
     yield* r.running.end;
   }));
 
-  it.effect("self-pauseを送った回が引き継ぎの状態を返さずに落ちたら、次の回へ送り直す", () => Effect.gen(function* () {
-    const r = yield* setup([crashed(1), {}], { commands: { "self-pause": { until: "self-pause-state" } } });
+  it.effect("self-pauseを送った回が処理したと返さずに落ちたら、次の回へ同じseqで送り直す", () => Effect.gen(function* () {
+    const r = yield* setup([crashed(1), {}]);
     yield* r.intake.send({ type: "self-pause", paused: true });
     yield* TestClock.adjust(1);
     yield* waitFor(() => r.transitions.filter((transition) => transition.kind === "connected").length === 2, "再接続の通知");
-    expect(r.fake.sentPauses).toEqual([{ attempt: 0, paused: true }, { attempt: 1, paused: true }]);
+    expect(r.fake.sentPauses).toEqual([{ attempt: 0, paused: true, seq: 1 }, { attempt: 1, paused: true, seq: 1 }]);
+    yield* r.intake.send({ type: "self-pause", paused: false });
+    expect(r.fake.sentPauses[2]).toEqual({ attempt: 1, paused: false, seq: 2 });
     yield* r.intake.stop;
     yield* r.running.end;
   }));
 
-  it.effect("self-pauseを送った回が引き継ぎの状態を返した後に落ちたら、次の回へ送り直さない", () => Effect.gen(function* () {
-    const r = yield* setup([crashed(1), {}], { commands: { "self-pause": { until: "self-pause-state" } } });
+  it.effect.each([
+    { name: "状態を変えた", manual: "pause" as const },
+    { name: "状態を変えなかった", manual: "none" as const },
+  ])("self-pauseを送った回が$name指示を処理したと返した後に落ちたら、次の回へ送り直さない", ({ manual }) => Effect.gen(function* () {
+    const r = yield* setup([crashed(1), {}]);
     yield* r.intake.send({ type: "self-pause", paused: true });
-    r.fake.send(0, { type: "self-pause-state", ...INITIAL_SELF_PAUSE_STATE, manual: "pause", basis: "using" });
+    r.fake.send(0, { type: "self-pause-state", ...INITIAL_SELF_PAUSE_STATE, manual, handled: 1 });
     yield* waitFor(() => r.events.length === 1, "引き継ぎの状態");
     yield* TestClock.adjust(1);
     yield* waitFor(() => r.transitions.filter((transition) => transition.kind === "connected").length === 2, "再接続の通知");
-    expect(r.fake.sentPauses).toEqual([{ attempt: 0, paused: true }]);
+    expect(r.fake.sentPauses).toEqual([{ attempt: 0, paused: true, seq: 1 }]);
+    yield* r.intake.stop;
+    yield* r.running.end;
+  }));
+
+  it.effect("前の指示までしか処理していない状態を読んでも、最後の指示は次の回へ送り直す", () => Effect.gen(function* () {
+    const r = yield* setup([crashed(1), {}]);
+    yield* r.intake.send({ type: "self-pause", paused: true });
+    yield* r.intake.send({ type: "self-pause", paused: false });
+    r.fake.send(0, { type: "self-pause-state", ...INITIAL_SELF_PAUSE_STATE, manual: "pause", handled: 1 });
+    yield* waitFor(() => r.events.length === 1, "前の指示の状態");
+    yield* TestClock.adjust(1);
+    yield* waitFor(() => r.transitions.filter((transition) => transition.kind === "connected").length === 2, "再接続の通知");
+    expect(r.fake.sentPauses.filter(({ attempt }) => attempt === 1)).toEqual([{ attempt: 1, paused: false, seq: 2 }]);
     yield* r.intake.stop;
     yield* r.running.end;
   }));
 
   it.effect("送り直した回が指示を読む前の状態だけを返して落ちたら、その次の回へも送り直す", () => Effect.gen(function* () {
-    const announced = JSON.stringify({ type: "self-pause-state", ...INITIAL_SELF_PAUSE_STATE });
-    const r = yield* setup([crashed(1), { ...crashed(1), events: [announced] }, {}], { commands: { "self-pause": { until: "self-pause-state" } } });
+    const announced = JSON.stringify({ type: "self-pause-state", ...INITIAL_SELF_PAUSE_STATE, handled: 0 });
+    const r = yield* setup([crashed(1), { ...crashed(1), events: [announced] }, {}]);
     yield* r.intake.send({ type: "self-pause", paused: true });
     yield* TestClock.adjust(1);
     yield* waitFor(() => r.events.length === 1, "送り直した回が起動したときの状態");
     yield* TestClock.adjust(1);
     yield* waitFor(() => r.transitions.filter((transition) => transition.kind === "connected").length === 3, "二度目の再接続の通知");
-    expect(r.fake.sentPauses).toEqual([{ attempt: 0, paused: true }, { attempt: 1, paused: true }, { attempt: 2, paused: true }]);
+    expect(r.fake.sentPauses).toEqual([{ attempt: 0, paused: true, seq: 1 }, { attempt: 1, paused: true, seq: 1 }, { attempt: 2, paused: true, seq: 1 }]);
     yield* r.intake.stop;
     yield* r.running.end;
   }));

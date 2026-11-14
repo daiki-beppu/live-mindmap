@@ -1627,7 +1627,7 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
         return { fakeHelpers, fakeSinks, ...booted };
       });
     const pauseEvent = (paused: boolean, startSeconds: number, reason: string = "手動") => ({ type: "self-pause", paused, reason, start: startSeconds });
-    const stateEvent = (manual: string, basis: string, lastKnown: string, idleFor: number) => ({ type: "self-pause-state", manual, basis, lastKnown, idleFor });
+    const stateEvent = (manual: string, basis: string, lastKnown: string, idleFor: number, handled = 0) => ({ type: "self-pause-state", manual, basis, lastKnown, idleFor, handled });
     const selfLogs = (appended: ReadonlyArray<LogLineEvent>) => appended.filter((e) => e.type === "self-paused" || e.type === "self-resumed");
 
     it.effect("setSelfPause は動いている起動回の helper へ指示を送る。値は呼んだとおり（true → false）", () =>
@@ -1636,9 +1636,9 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
         yield* sessions.start(start());
 
         yield* sessions.setSelfPause(true);
-        expect(fakeHelpers.sentPauses).toEqual([{ attempt: 0, paused: true }]);
+        expect(fakeHelpers.sentPauses).toEqual([{ attempt: 0, paused: true, seq: 1 }]);
         yield* sessions.setSelfPause(false);
-        expect(fakeHelpers.sentPauses).toEqual([{ attempt: 0, paused: true }, { attempt: 0, paused: false }]);
+        expect(fakeHelpers.sentPauses).toEqual([{ attempt: 0, paused: true, seq: 1 }, { attempt: 0, paused: false, seq: 2 }]);
       }));
 
     it.effect("helper の休止イベントは self-paused / self-resumed の組として start・reason のままログ（sink）に残り、画面へフレームが届く。セッションは running のまま", () =>
@@ -1849,7 +1849,7 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
         expect(fakeHelpers.calls[2]).toMatchObject({ kind: "run", selfPause: INITIAL_SELF_PAUSE_STATE });
       }));
 
-    it.effect("壊れた self-pause-state（値が決まった語でない・待ちが負や数でない）は引き継がない", () =>
+    it.effect("壊れた self-pause-state（値が決まった語でない・待ちが負や数でない・handled が無いか負）は引き継がない", () =>
       Effect.gen(function* () {
         const { fakeHelpers, sessions } = yield* boot([{ unexpectedExit: { afterMs: 500, exit: { code: 75, signal: null } } }, {}]);
         yield* sessions.start(start());
@@ -1857,7 +1857,9 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
         fakeHelpers.send(0, stateEvent("pause", "pause", "idle", 1));
         fakeHelpers.send(0, stateEvent("pause", "using", "take", 1));
         fakeHelpers.send(0, stateEvent("pause", "using", "idle", -1));
-        fakeHelpers.send(0, { type: "self-pause-state", manual: "pause", basis: "using", lastKnown: "idle", idleFor: "1" });
+        fakeHelpers.send(0, { type: "self-pause-state", manual: "pause", basis: "using", lastKnown: "idle", idleFor: "1", handled: 0 });
+        fakeHelpers.send(0, { type: "self-pause-state", manual: "pause", basis: "using", lastKnown: "idle", idleFor: 1 });
+        fakeHelpers.send(0, stateEvent("pause", "using", "idle", 1, -1));
         yield* TestClock.adjust(1);
         yield* relaunchAfter(500);
 
@@ -1885,12 +1887,12 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
         yield* sessions.start(start());
 
         yield* sessions.setSelfPause(true);
-        expect(fakeHelpers.sentPauses).toEqual([{ attempt: 0, paused: true }]);
+        expect(fakeHelpers.sentPauses).toEqual([{ attempt: 0, paused: true, seq: 1 }]);
         yield* relaunchAfter(500);
 
         expect(fakeHelpers.calls).toHaveLength(2);
         expect(fakeHelpers.calls[1]).toMatchObject({ kind: "run", selfPause: INITIAL_SELF_PAUSE_STATE });
-        expect(fakeHelpers.sentPauses.filter((s) => s.attempt === 1)).toEqual([{ attempt: 1, paused: true }]);
+        expect(fakeHelpers.sentPauses.filter((s) => s.attempt === 1)).toEqual([{ attempt: 1, paused: true, seq: 1 }]);
       }));
 
     it.effect("接続待ちの間の休止の要求は、接続した回へ送られる", () =>
@@ -1908,7 +1910,7 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
         expect(fakeHelpers.sentPauses).toEqual([]);
         yield* Deferred.succeed(gate, undefined);
         yield* TestClock.adjust(1);
-        expect(fakeHelpers.sentPauses).toEqual([{ attempt: 1, paused: true }]);
+        expect(fakeHelpers.sentPauses).toEqual([{ attempt: 1, paused: true, seq: 1 }]);
       }));
 
     it.effect("引き継ぎの状態で起動し直した回の接続待ちの間に再開を求めると、その起動回へ paused:false が送られる", () =>
@@ -1926,7 +1928,7 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
         yield* Deferred.succeed(gate, undefined);
         yield* TestClock.adjust(1);
 
-        expect(fakeHelpers.sentPauses.filter((s) => s.attempt === 1)).toEqual([{ attempt: 1, paused: false }]);
+        expect(fakeHelpers.sentPauses.filter((s) => s.attempt === 1)).toEqual([{ attempt: 1, paused: false, seq: 1 }]);
       }));
 
     it.effect("再開が受け付けられた（pause → resume のイベント）後に起動し直すと、引き継ぎの初期状態を渡し、休止も送らない", () =>
