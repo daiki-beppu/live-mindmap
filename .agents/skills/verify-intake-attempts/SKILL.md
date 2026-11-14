@@ -65,7 +65,7 @@ description: 取り込みの再起動（server/src/intakeAttempts.ts の openInt
 1. ヘルパーがつながって読んでいる（`link.target` がその試行）。
 2. ヘルパーの子プロセスが落ちる。ソケットはまだ閉じていないか、閉じても events のストリームは残りのイベントを `apply` している最中で、`serve` の `ensuring` が `link.target` を外す前（intakeAttempts.ts:84・:85）。
 3. 利用者が自分の一時停止を押す（`setSelfPause` → `controller.send`）。`target` があるので `pending` に残さず（:163、`pending-once` は target が無いときだけ残す）、死んだ試行に送る（:164）。`helperSocket.ts:46` は `OPEN` でなければ捨て、`OPEN` でも相手のプロセスはもういない。
-4. `serve` が終わり、`finishAttempt` が起動し直しを決め（:110）、次の試行を起動する。`launchOptions` の `selfPause` は、落ちたヘルパーが最後に返した `selfPauseState`（sessions.ts:304）で、押した指示を含まない。
+4. `serve` が終わり、`finishAttempt` が起動し直しを決め（:110）、次の試行を起動する。`launchOptions` の `selfPause` は、落ちたヘルパーが最後に返した `selfPauseState`（sessions.ts:308）で、押した指示を含まない。
 5. 次の試行がつながる（:115）。`pending` は空なので何も送らない。ヘルパーは一時停止していない。画面も一時停止に変わらないので、押した利用者は効かなかったことに気づけるが、押し直すまで自分の声が取り込まれ続ける。
 
 recorded の `reading-pause` は `sticky` なので、同じ順でも `pending` に残り、つながり直しで再送されます（`InvReadingPauseFollowsUser` は通ります）。
@@ -73,7 +73,7 @@ recorded の `reading-pause` は `sticky` なので、同じ順でも `pending` 
 ### `PropReachedSettles`: 起動のたびに 60 秒より長くかかって失敗すると、resume が返らない（live）
 
 1. 起動し直しを諦めて表示が stopped になる（:102〜:108）。
-2. 利用者が resume する。`sessions.ts` の `resume` が新しい run を始め（sessions.ts:551）、`running.reached` を待つ（sessions.ts:554）。
+2. 利用者が resume する。`sessions.ts` の `resume` が新しい run を始め（sessions.ts:555）、`running.reached` を待つ（sessions.ts:557）。
 3. 新しい試行を起動する（:130）。ヘルパーはソケットを開かないまま 60 秒より長く動いてから終わる。`launch` は `HelperLaunchFailure` で失敗し（helpers.ts:276）、`connectionFailed` になる（:133）。
 4. `decideIntakeRestart` は `ranMs > RESTART_WINDOW_MS` なので `failures` を 0 に戻して起動し直しを決める（intake.ts:58）。
 5. 3〜4 が続く限り、`reached` は running にも gaveUp にもならず、`resume` が返らない。表示は interrupted のまま。構成の変化での終了（終了コード 75）がソケットを開く前に 6 秒より間を空けて続く場合も、`failures` が増えないので（intake.ts:53）同じになります。

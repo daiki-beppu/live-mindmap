@@ -17,7 +17,7 @@ import type { DiffUpdateStatusReport } from "./core/diffUpdate.ts";
 import { ReviewBuild } from "./review.ts";
 import { SpeakerNameRejected } from "./sessionFailure.ts";
 import { errorMessage, fileReason } from "./truthFile.ts";
-import type { SendFrame, ViewerFrame } from "./viewers.ts";
+import type { NotIntakeFrame, SendFrame } from "./viewers.ts";
 
 type Written = {
   paths: string[];
@@ -60,7 +60,7 @@ export type OpenSessionSink = SinkMode & {
   vocab?: ReadonlyArray<string> | undefined;
   criteria?: readonly string[];
   logShiftMs?: number;
-  send: SendFrame;
+  send: SendFrame<NotIntakeFrame>;
 };
 
 export type RecordedOptions = {
@@ -108,7 +108,7 @@ export class SessionSinks extends Context.Service<SessionSinks, {
             criteria,
             logShiftMs,
             carriedTerms: started?.words.map((word) => word.surface) ?? [],
-            send: (frame: ViewerFrame) => Effect.gen(function* () {
+            send: (frame: NotIntakeFrame) => Effect.gen(function* () {
               yield* send(frame);
               if ("type" in frame && frame.type === "diff-update" && observe !== undefined) yield* observe(frame);
             }),
