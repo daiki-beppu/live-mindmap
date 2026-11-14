@@ -430,7 +430,7 @@ struct LiveSessionITTests {
         #expect(fixture.tap.stopped.value && fixture.microphone.stopped.value && fixture.usage.stopped.value && screen.stopped.value)
         try await client.waitForEvent(.screen(start: 1, image: String(repeating: "A", count: 1024 * 1024), lines: ["last screen"]))
         try await client.waitForEvent(.screenOff(start: 2, reason: .許可なし))
-        try await client.waitForEvent(.selfPauseState(SelfPauseCarryOver(manual: .none, basis: .unknown, lastKnown: .using, idleFor: 0)))
+        try await client.waitForEvent(.selfPauseState(SelfPauseCarryOver(manual: .none, basis: .unknown, lastKnown: .using, idleFor: 0), handled: .none))
     }
 
     @Test("準備後に接続すると原点・画面の許可なし・モデルなしが注入時計の時刻で届く", arguments: [false, true])
@@ -454,6 +454,25 @@ struct LiveSessionITTests {
         try await waitForCompletion(result)
     }
 
+    @Test("ソケットで届いた self-pause の指示は、状態を変えなくても、処理した seq を handled にした self-pause-state で返す")
+    func pressOverSocketIsAcknowledgedBySeq() async throws {
+        let fixture = Fixture()
+        let session = fixture.session(screen: .off)
+        defer { session.stop() }
+        let client = Client(port: try await session.start())
+        defer { client.close() }
+        try await client.waitForEvent(.origin(hostTime: fixture.origin))
+        let (running, result) = runSession(session)
+        defer { running.cancel() }
+        try await waitFor("休止監視の開始") { fixture.usage.reads.value > 0 }
+        try await client.task.send(.string(#"{"type":"self-pause","paused":true,"seq":4,"token":"test-control"}"#))
+        try await waitFor("seq 4 を処理した self-pause-state") {
+            client.frames.value.contains { $0.contains(#""type":"self-pause-state""#) && $0.contains(#""handled":4"#) }
+        }
+        session.stop()
+        try await waitForCompletion(result)
+    }
+
     @Test("共有画面を取らず話者の末尾を出した直後に止めても発言・話者・最後の休止状態を配送し録音を閉じる", arguments: [false, true])
     func noScreenDrainsFinalEventsAndRecording(screenDenied: Bool) async throws {
         let fixture = Fixture()
@@ -472,7 +491,7 @@ struct LiveSessionITTests {
         fixture.tap.input.yield(try fixture.sample())
         fixture.microphone.input.yield(try fixture.sample())
         try await waitFor("話者分離と休止監視の開始") { diarizer.ready.value && fixture.usage.reads.value > 0 }
-        try await client.waitForEvent(.selfPauseState(SelfPauseCarryOver(manual: .pause, basis: .idle, lastKnown: .idle, idleFor: 3)))
+        try await client.waitForEvent(.selfPauseState(SelfPauseCarryOver(manual: .pause, basis: .idle, lastKnown: .idle, idleFor: 3), handled: .none))
         fixture.usage.beginUsing()
         diarizer.afterProducing.update { $0 = { session.stop() } }
         defer { diarizer.afterProducing.update { $0 = nil } }
@@ -483,7 +502,7 @@ struct LiveSessionITTests {
         let settled = HelperEvent.speakerSettled(track: .相手, to: 1)
         let off = HelperEvent.speakerOff(start: offsetSeconds(from: fixture.origin, to: fixture.time), reason: .途中で停止)
         let remark = event(from: TranscriptionResult(text: finalText, isFinal: true, start: 0, end: 1), track: .相手)
-        let state = HelperEvent.selfPauseState(SelfPauseCarryOver(manual: .none, basis: .unknown, lastKnown: .using, idleFor: 0))
+        let state = HelperEvent.selfPauseState(SelfPauseCarryOver(manual: .none, basis: .unknown, lastKnown: .using, idleFor: 0), handled: .none)
         let resumed = HelperEvent.selfPause(.resumed(.automatic), start: offsetSeconds(from: fixture.origin, to: fixture.time))
         for event in [segment, settled, off, remark, state, resumed] { try await client.waitForEvent(event) }
         let speakerFrames = client.frames.value.filter { text in [segment, settled, off].contains { (try? $0.jsonString()) == text } }

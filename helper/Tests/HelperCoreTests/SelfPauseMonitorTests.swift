@@ -127,9 +127,11 @@ private final class Harness: @unchecked Sendable {
         }
     }
 
-    var states: [SelfPauseCarryOver] {
+    var states: [SelfPauseCarryOver] { reports.map(\.state) }
+
+    var reports: [(state: SelfPauseCarryOver, handled: SelfPauseSeq)] {
         events.value.compactMap {
-            if case let .selfPauseState(state) = $0 { return state }
+            if case let .selfPauseState(state, handled) = $0 { return (state, handled) }
             return nil
         }
     }
@@ -242,14 +244,14 @@ struct SelfPauseMonitorTests {
         harness.processes.value = using
         try await harness.start()
         try await harness.tick()
-        try await harness.send { harness.monitor.press(paused: true) }
+        try await harness.send { harness.monitor.press(SelfPausePress(paused: true, seq: SelfPauseSeq(value: 1))) }
         try await waitUntil("手動の休止が届く") { harness.pauses.count == 1 }
         #expect(harness.pauses.first?.paused == true)
         #expect(harness.pauses.first?.reason == .manual)
         #expect(abs((harness.pauses.first?.start ?? -1) - 0.5) < 0.001)
         #expect(harness.gate.value.map(\.paused) == [true])
 
-        try await harness.send { harness.monitor.press(paused: true) }
+        try await harness.send { harness.monitor.press(SelfPausePress(paused: true, seq: SelfPauseSeq(value: 2))) }
 
         for _ in 0..<6 { try await harness.tick() }
         harness.processes.value = idle
@@ -264,7 +266,26 @@ struct SelfPauseMonitorTests {
         #expect(harness.gate.value.map(\.paused) == [true])
     }
 
-    @Test("送り直す状態（self-pause-state）は、値が変わったときだけ出し、最新の値が規則の carryOver と一致する")
+    @Test("状態を変えない指示も、処理したら self-pause-state をその seq で返す。休止の変化は出さない")
+    func noOpPressStillAcknowledgesItsSeq() async throws {
+        let harness = Harness()
+        harness.processes.value = using
+        try await harness.start()
+        try await harness.tick()
+        let before = harness.reports.count
+        let carry = harness.states.last
+        try await harness.send { harness.monitor.press(SelfPausePress(paused: false, seq: SelfPauseSeq(value: 4))) }
+        try await waitUntil("seq 4 を処理した状態が届く") { harness.reports.count == before + 1 }
+        try await harness.send { harness.monitor.press(SelfPausePress(paused: false, seq: SelfPauseSeq(value: 5))) }
+        try await waitUntil("seq 5 を処理した状態が届く") { harness.reports.count == before + 2 }
+        harness.monitor.stop()
+        await harness.task?.value
+        #expect(harness.reports.suffix(2).map(\.handled) == [SelfPauseSeq(value: 4), SelfPauseSeq(value: 5)])
+        #expect(harness.reports.suffix(2).allSatisfy { $0.state == carry })
+        #expect(harness.pauses.isEmpty)
+    }
+
+    @Test("読み取りでは、送り直す状態（self-pause-state）を値が変わったときだけ出し、最新の値が規則の carryOver と一致する。指示を処理する前は handled が 0")
     func announcesCarryOverOnlyWhenChanged() async throws {
         let harness = Harness()
         try await harness.start()
@@ -281,6 +302,7 @@ struct SelfPauseMonitorTests {
         await harness.task?.value
         #expect(harness.states.count == settled)
         for (before, after) in zip(harness.states, harness.states.dropFirst()) { #expect(before != after) }
+        #expect(harness.reports.allSatisfy { $0.handled == .none })
     }
 
     @Test("復元した状態で始めると、読めた最初の回で待たずに休止する")

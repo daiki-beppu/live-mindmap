@@ -1,4 +1,4 @@
-import { INITIAL_SELF_PAUSE_STATE } from "../src/core/selfPause.ts";
+import { INITIAL_SELF_PAUSE_STATE, SelfPauseSeq } from "../src/core/selfPause.ts";
 import { createServer, type Server } from "node:net";
 import { describe, expect, it } from "@effect/vitest";
 import { Deferred, Effect, Fiber, Layer, Stream } from "effect";
@@ -187,22 +187,22 @@ const wsSpawner = (received: string[], envs: Array<Record<string, string | undef
   );
 
 describe("HelperAttempt.send（自分の休止の指示。Issue #1069）", () => {
-  it.live("指示（self-pause と reading-pause）を、その起動回のトークンつきの {type,paused,token} の JSON にして helper の WebSocket へ、呼んだ順に送る（SCN-U3-P2）", () =>
+  it.live("指示（self-pause と reading-pause）を、その起動回のトークンつきの JSON（self-pause は seq つき）にして helper の WebSocket へ、呼んだ順に送る（SCN-U3-P2）", () =>
     Effect.gen(function* () {
       const received: string[] = [];
       const envs: Array<Record<string, string | undefined> | undefined> = [];
       const helpers = yield* Helpers.pipe(Effect.provide(Helpers.layer({ command: "fake", args: [] }).pipe(Layer.provide(wsSpawner(received, envs)))));
       const attempt = yield* helpers.launch({ kind: "run", app: "test.app", screen: true, selfPause: INITIAL_SELF_PAUSE_STATE }, yield* Deferred.make<void>());
-      yield* attempt.send({ type: "self-pause", paused: true });
-      yield* attempt.send({ type: "self-pause", paused: false });
+      yield* attempt.send({ type: "self-pause", paused: true, seq: SelfPauseSeq.make(1) });
+      yield* attempt.send({ type: "self-pause", paused: false, seq: SelfPauseSeq.make(2) });
       yield* attempt.send({ type: "reading-pause", paused: true });
       yield* attempt.send({ type: "reading-pause", paused: false });
       for (let i = 0; i < 100 && received.length < 4; i++) yield* realDelay(20);
       const token = envs[0]?.[HELPER_CONTROL_TOKEN_ENV];
       expect(token).toMatch(/^[0-9a-f]{64}$/);
       expect(received.map((text) => JSON.parse(text))).toEqual([
-        { type: "self-pause", paused: true, token },
-        { type: "self-pause", paused: false, token },
+        { type: "self-pause", paused: true, seq: 1, token },
+        { type: "self-pause", paused: false, seq: 2, token },
         { type: "reading-pause", paused: true, token },
         { type: "reading-pause", paused: false, token },
       ]);

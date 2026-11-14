@@ -12,7 +12,7 @@ server の取り込みの試行（`server/src/intakeAttempts.ts`）と、それ�
 
 | | ライブ | 録画からのセッション |
 |---|---|---|
-| `commands` | `self-pause: "pending-once"` | `reading-pause: "sticky"` |
+| 送る指令（`send`） | `self-pause`（処理したと返るまで覚える） | `reading-pause`（sticky） |
 | `exitZero` | `"restart"` | `"finish"` |
 | `observe(crashed)` | `sink.interrupted`・`lastInterruptedAt` | `from` に `sink.drainForRestart` の結果を入れる |
 | `end` の扱い | stop だけが受ける | finished → `sink.end({ kind: "入れ切る" })`、gaveUp → `sink.end({ kind: "捨てる", quiesce: Effect.void })`（`concludeRecorded` の claim を通す） |
@@ -38,16 +38,24 @@ server の取り込みの試行（`server/src/intakeAttempts.ts`）と、それ�
 
 本番の Scope を延ばすのは仕様に反するので、テストの側を直した。偽物の `stop` そのものからも `stopSeen` を立て、待つのはヘルパーを接続したまま保った回だけにした。偽物に、試行より長く生きる見張りを持たせない。
 
-## `sticky` の指令は、接続のたびに既定と違うときだけ送り直す。初めの回へは送り直さない
+## 指令の覚え方は種類で決まる。self-pause は処理したと返るまで、reading-pause は sticky。初めの回へは送り直さない
 
-`send` は、送り先と覚えている指令を `SynchronizedRef` 1 つで持つ。
+`send` は、送り先と覚えている指令を `SynchronizedRef` 1 つ（`Link`）で持つ。覚え方は呼び手が選ばない（前の `commands` の設定は消した。`self-pause` を `sticky` にする、`reading-pause` を返事まで覚える、といった誤った組み合わせを書けなくするため）。
 
-- **`pending-once`（ライブの self-pause）**: 接続待ちの間の最新の値だけを、接続した回へ 1 回送り、送ったら忘れる
-- **`sticky`（録画の reading-pause）**: 求める状態をいつも覚えておき、新しい回に接続したとき、既定（`paused: false`）と違えば送り直す。終わった前の回へは送らない
+- **ライブの self-pause（`Link.selfPause`）**: 最後の押下を、`openIntake` が振った番号 `seq`（1 から）と一緒に覚える。読んでいる回が `handled` がその `seq` 以上の `self-pause-state` を返したら忘れる。返す前に回が終われば、次に接続した回へ同じ `seq` のまま送り直す
+- **録画の reading-pause（`Link.readingPaused`、sticky）**: 求める状態をいつも覚えておき、新しい回に接続したとき、既定（`paused: false`）と違えば送り直す。終わった前の回へは送らない
+
+self-pause を送ったら忘れる形（前の `pending-once`）にしていたときは、回が落ちてから `link.target` が外れるまでに押した一時停止が、死んだ回へ送られて消えた（[#2017](https://github.com/daiki-beppu/live-mindmap/issues/2017)、TLA+ の `InvSelfPauseFollowsUser`）。送り先の回へ渡したことは、その回が受け取ったことにならない。self-pause を `sticky` にしないのは、ヘルパーの手動の休止は入力の使い方が変わると外れる（`SelfPauseRule` の `released`・`normalized`）ので、外れた後の指示を起動のたびに送り直すと、話している利用者を止めてしまうため。
+
+次に「`self-pause-state` を読んだら忘れる」形にしたところ、まだ窓が残った（PR #2049 の検証）。起動し直したヘルパーが指示を読む前に出す起動時の状態（`announceSelfPause`）と、死んだ回のバッファに残った状態が、送り直した指示より後に読まれて指示を消した。状態には押下とのつながりが無いので、server だけではこれと本当の返事を見分けられない（状態を変えない押下は何の跡も残さない）。そこでプロトコルに番号を入れた。
+
+- server は押下ごとに `seq` を 1 から振る。番号は `openIntake` の `Link` の中だけにあり、`sessions.ts` は `self-pause-state` から `handled` を外して引き継ぎの状態を覚える
+- ヘルパーは、押下を処理したら、状態が変わらなくても `self-pause-state` を返す（`SelfPauseMonitor`）。`handled` は、そのプロセスが処理した最後の `seq` で、起動したプロセスは 0 から始める。番号を起動引数で引き継がないので、起動時の知らせは必ず 0 で、どの押下も消さない
+- 古いヘルパーや古い server との互換は持たない（同じ checkout から作り、`pnpm dev` は起動のたびにヘルパーを作り直す）。古いヘルパーの状態は `handled` が無いので読み飛ばされ、押下は起動し直しのたびに送り直される
 
 「接続したら送り直す」を素直に書くと、`openIntake` が最初の回をつないだ直後と、`run` が同じ回を読み始めるときの 2 回、同じ回へ送る。#1316 の実装はこれで `intakeAttempts.test` の 3 件を落とした（`expected length 1 but got 2`）。今の `connect` は、送り先が同じ回なら何もしない。
 
-`pending-once` と `sticky` の違いは、同じ `Intake` を「接続 → 切れる → 指令を変える → 接続 → また接続」と続けて動かす 1 本のテストで見る。条件ごとに `Intake` を作り直すと、次の回へ持ち越すかどうかが見えない。
+self-pause と `sticky` の違いは、同じ `Intake` を「接続 → 切れる → 指令を変える → 接続 → また接続」と続けて動かす 1 本のテストで見る。条件ごとに `Intake` を作り直すと、次の回へ持ち越すかどうかが見えない。
 
 ## `startRecorded` の配線は、本物の `Sessions` と `openIntake` を通し、偽の `Helpers` と偽の sink の境界で見る
 

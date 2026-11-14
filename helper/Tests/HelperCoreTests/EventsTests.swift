@@ -28,7 +28,7 @@ private let helperEventExamples: [HelperEvent] = {
         .screen(start: 7, image: "AQID", lines: ["港南店", "Zendesk"]),
         .screen(start: 8, image: "AQID", lines: [], meetingTabTitle: "定例会議"),
         .tapSilent(start: 10.5),
-        .selfPauseState(SelfPauseCarryOver(manual: .pause, basis: .using, lastKnown: .idle, idleFor: 1.5)),
+        .selfPauseState(SelfPauseCarryOver(manual: .pause, basis: .using, lastKnown: .idle, idleFor: 1.5), handled: SelfPauseSeq(value: 3)),
         .fileDuration(duration: 120.5),
         .fileAudioTracks(count: 2),
     ]
@@ -48,10 +48,10 @@ private let helperEventExamples: [HelperEvent] = {
     examples += PausedReason.allCases.map { .selfPause(.paused($0), start: 11) }
     examples += SelfPauseReason.allCases.map { .selfPause(.resumed($0), start: 12) }
     examples += SelfPauseManual.allCases.map {
-        .selfPauseState(SelfPauseCarryOver(manual: $0, basis: .unknown, lastKnown: .unknown, idleFor: 0))
+        .selfPauseState(SelfPauseCarryOver(manual: $0, basis: .unknown, lastKnown: .unknown, idleFor: 0), handled: .none)
     }
     examples += InputJudgement.allCases.map {
-        .selfPauseState(SelfPauseCarryOver(manual: .none, basis: $0, lastKnown: $0, idleFor: 0))
+        .selfPauseState(SelfPauseCarryOver(manual: .none, basis: $0, lastKnown: $0, idleFor: 0), handled: .none)
     }
     return examples
 }()
@@ -371,18 +371,19 @@ struct EventsTests {
             == "{\"paused\":true,\"reason\":\"自動\",\"start\":12.5,\"type\":\"self-pause\"}")
     }
 
-    @Test("self-pause-state は手動・基準・最後に読めた値・待ちの進み具合だけを持つ。server が起動し直しで送り直すため")
+    @Test("self-pause-state は手動・基準・最後に読めた値・待ちの進み具合と、処理した最後の指示の番号（handled）だけを持つ。server が起動し直しで送り直すため")
     func selfPauseStateEventShape() throws {
         let state = SelfPauseCarryOver(manual: .pause, basis: .using, lastKnown: .idle, idleFor: 1.5)
-        let json = try decode(.selfPauseState(state))
-        #expect(Set(json.keys) == ["type", "manual", "basis", "lastKnown", "idleFor"])
+        let json = try decode(.selfPauseState(state, handled: SelfPauseSeq(value: 3)))
+        #expect(Set(json.keys) == ["type", "manual", "basis", "lastKnown", "idleFor", "handled"])
         #expect(json["type"] as? String == "self-pause-state")
         #expect(json["manual"] as? String == "pause")
         #expect(json["basis"] as? String == "using")
         #expect(json["lastKnown"] as? String == "idle")
         #expect(json["idleFor"] as? Double == 1.5)
-        #expect(try HelperEvent.selfPauseState(.initial).jsonString()
-            == "{\"basis\":\"unknown\",\"idleFor\":0,\"lastKnown\":\"unknown\",\"manual\":\"none\",\"type\":\"self-pause-state\"}")
+        #expect(json["handled"] as? Int == 3)
+        #expect(try HelperEvent.selfPauseState(.initial, handled: .none).jsonString()
+            == "{\"basis\":\"unknown\",\"handled\":0,\"idleFor\":0,\"lastKnown\":\"unknown\",\"manual\":\"none\",\"type\":\"self-pause-state\"}")
     }
 
     @Test("speaker は type・track・start・end・slot・final だけを持つ")

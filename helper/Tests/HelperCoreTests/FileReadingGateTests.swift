@@ -29,8 +29,8 @@ struct FileReadingGateInstructionTests {
 
     @Test("自分の休止の指示の読み取りは変わらない: self-pause の指示は読み取り、reading-pause の指示は自分の休止として読み取らない")
     func selfPauseIsUnchanged() {
-        #expect(SelfPause.requestedState(in: message(type: "self-pause", paused: true, token: token), token: token) == true)
-        #expect(SelfPause.requestedState(in: message(type: "reading-pause", paused: true, token: token), token: token) == nil)
+        #expect(SelfPause.requestedPress(in: #"{"type":"self-pause","paused":true,"seq":1,"token":"\#(token)"}"#, token: token) == SelfPausePress(paused: true, seq: SelfPauseSeq(value: 1)))
+        #expect(SelfPause.requestedPress(in: #"{"type":"reading-pause","paused":true,"seq":1,"token":"\#(token)"}"#, token: token) == nil)
     }
 }
 
