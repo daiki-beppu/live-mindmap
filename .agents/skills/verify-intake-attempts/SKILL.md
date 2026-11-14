@@ -5,7 +5,7 @@ description: 取り込みの再起動（server/src/intakeAttempts.ts の openInt
 
 # 取り込みの再起動を TLC で確かめる
 
-`server/formal/IntakeAttempts.tla` は、`openIntake`（`server/src/intakeAttempts.ts`）がヘルパーの子プロセスを起動し、落ちたら起動し直し、止める要求で終えるまでのモデルです。モデルの 1 つの遷移は、コードの中で他の Fiber に割り込まれない 1 歩、つまり `Ref`・`SynchronizedRef`・`Deferred` の 1 回の操作か、非同期の境目までの同期の区間に当たります。`send` と `connect` はどちらも `SynchronizedRef.updateEffect` の中なので、それぞれ 1 歩です。`Deferred.isDone(stopRequested)` で見てから動くところ（:132・:140・:145・:148・:160）は、見る歩と動く歩の間に stop が入れます。遷移の条件の注釈に、対応する行を書いてあります。
+`server/formal/IntakeAttempts.tla` は、`openIntake`（`server/src/intakeAttempts.ts`）がヘルパーの子プロセスを起動し、落ちたら起動し直し、止める要求で終えるまでのモデルです。モデルの 1 つの遷移は、コードの中で他の Fiber に割り込まれない 1 歩、つまり `Ref`・`SynchronizedRef`・`Deferred` の 1 回の操作か、非同期の境目までの同期の区間に当たります。`send` と `connect` はどちらも `SynchronizedRef.updateEffect` の中なので、それぞれ 1 歩です。`Deferred.isDone(stopRequested)` で見てから動くところ（:133・:141・:146・:149・:161）は、見る歩と動く歩の間に stop が入れます。遷移の条件の注釈に、対応する行を書いてあります。
 
 モデルに入る外の者は、利用者（`stop`・`send`）、ヘルパーの子プロセス（落ちる・ソケットを閉じる・stop の後に kill される・live では `self-pause-state` を出し、入力の使い方の変化で自分から休止・再開する）、`sessions.ts` の `resume`（live だけ。表示が stopped のときに、前の run の `end` を待ってから次の run を始める）です。
 
@@ -22,7 +22,7 @@ description: 取り込みの再起動（server/src/intakeAttempts.ts の openInt
 | `PropReachedSettles`（live） | resume が待つ reached は、いつか決まる | `resume` が返らず、CLI の resume が待ち続ける |
 | `PropEndAfterStop` | stop の後、`end` はいつか返る | stop が終わらず、セッションが閉じない |
 
-今のコードでは `PropReachedSettles` が破れます（末尾の「既知の発見」）。`server/formal/IntakeAttempts.checks` に `known` として載せてあり、`check.sh` は `KNOWN` と出して終了コードに数えません。直さずに残す不具合を新しく見つけたときは、その性質を `known` に足し、「既知の発見」に反例を書きます。
+今のコードで破れている性質はありません。直さずに残す不具合を見つけたときは、その性質を `server/formal/IntakeAttempts.checks` の `known` に足し、末尾に「既知の発見」の節を作って反例を書きます。`check.sh` は `known` の性質が破れると `KNOWN` と出し、終了コードに数えません。
 
 ## 手順
 
@@ -39,9 +39,9 @@ description: 取り込みの再起動（server/src/intakeAttempts.ts の openInt
 
 ## 範囲
 
-最後に合わせた PR: #2049（2026-11-14）
+最後に合わせた PR: #2055（2026-11-14）
 
-この PR が main に入った後に次のファイルが変わっていたら、手順 2 から見直します。PR の squash コミットは件名の末尾に `(#2049)` が付くので、`git log "$(git log -1 --format=%H --grep='(#2049)$' origin/main)"..origin/main -- <ファイル>` で後の変更を出せます。
+この PR が main に入った後に次のファイルが変わっていたら、手順 2 から見直します。PR の squash コミットは件名の末尾に `(#2055)` が付くので、`git log "$(git log -1 --format=%H --grep='(#2055)$' origin/main)"..origin/main -- <ファイル>` で後の変更を出せます。
 
 - `server/src/intakeAttempts.ts`: 指令の覚え方（`Link`・`remember`・`carried`・`acknowledge`）と、`openIntake` の中の `launch`・`connect`・`serve`・`run`（`finishAttempt`・`readConnected`・`readNext`・`body`）・返す `send`・`stop`
 - `server/src/core/intake.ts`: `decideIntakeRestart`・`isConfigurationChangeExit`・`MAX_CONSECUTIVE_FAILURES`・`MAX_CONFIGURATION_CHANGES`・`RESTART_WINDOW_MS`・`CONFIGURATION_CHANGE_WINDOW_MS`
@@ -54,22 +54,10 @@ description: 取り込みの再起動（server/src/intakeAttempts.ts の openInt
 
 - 構成は 2 つです（`server/formal/intake-live.cfg`・`intake-recorded.cfg`）。live は start の取り込み（`self-pause` は、ヘルパーが `handled` をその `seq` 以上にした `self-pause-state` を返すまで覚えて、つながるたびに送り直す、終了コード 0 でも起動し直す、resume が 1 回まで）。recorded は録画の取り込み（`reading-pause` が `sticky`、終了コード 0 で終える、resume は無い）。
 - 構成の変化での終了を諦める上限は 2 回（本物の `MAX_CONFIGURATION_CHANGES` は 10）、続けての失敗の上限は本物と同じ 3 回、利用者の send は 2 回まで（`seq` は 2 まで）です。それを超える振る舞いは調べ切れていません。
-- 時刻は入れていません。落ちるたびに、60 秒より長く動いたか（`ranLong`）と、窓に残る構成の変化の数を、どちらも自由に選び直します（実際より広く調べます）。
+- 時刻は入れていません。落ちるたびに、60 秒より長く動いたか（`ranLong`）と、窓に残る構成の変化の数を、どちらも自由に選び直します（実際より広く調べます）。どちらも効くのはつながった回（`served`）だけで、つながらなかった回は `failures` を 0 に戻さず、構成の変化を窓から外しません（`decideIntakeRestart` の `connected: false`）。
 - ヘルパーは、届いた指示をすぐ当て、その `seq` を処理済みにするとしています（届いた後に読む前に落ちる場合は、当てた状態ごと消えるので同じです）。`self-pause-state` は、ヘルパーが出す歩（起動したときの `Launch` と、生きている間の `Echo`）と、server が読む歩（`ReadEcho`）に分け、その間は回ごとの `outbox`（2 つまで）に並べています。起動時の知らせは指示を読む前に出すので `handled` が 0 で、指示より前に出した状態や死んだ回の読み残しは、指示を送った後に読まれることがあります。出したまま届かずに消える場合（`LoseUnread`）も含めています。
 - `Echo` はいつ出してもよいとしています（押下のたびに必ず返すことは、モデルでは確かめていません。`SelfPauseMonitorTests` の「状態を変えない指示も、処理したら self-pause-state をその seq で返す」と `LiveSessionITTests` が確かめます）。
 - live のヘルパーは、入力の使い方の変化でいつでも自分から休止・再開し、そのとき手動の休止を外します（`AutoFlip`）。利用者の最後の指示を取り込んだ状態で外れたら、その指示はもう効いていなくてよいとして、見張りの `userWant` を `none` にします。
 - 起動中のヘルパーは、いずれソケットを開くか終わるとしています（いつまでも開かずに生き続ける場合は含めていません）。
 - 含めていないもの: イベントの中身と `apply`・`log` の書き込み（`SessionWriteFailed` で止める `tapError` を含む）、`stats` の数、`openIntake` の最初の起動の失敗（start が失敗するだけなので、最初の試行はつながった状態から始めます）、セッション側の状態（`Sessions` の idle・starting・live・stopping）。
 - 通ったときに言えるのは、この範囲のモデルで成り立つということだけです。システム全体で成り立つとまでは言えません。
-
-## 既知の発見
-
-### `PropReachedSettles`: 起動のたびに 60 秒より長くかかって失敗すると、resume が返らない（live）
-
-1. 起動し直しを諦めて表示が stopped になる（:118〜:124）。
-2. 利用者が resume する。`sessions.ts` の `resume` が新しい run を始め（sessions.ts:555）、`running.reached` を待つ（sessions.ts:557）。
-3. 新しい試行を起動する（:146）。ヘルパーはソケットを開かないまま 60 秒より長く動いてから終わる。`launch` は `HelperLaunchFailure` で失敗し（helpers.ts:282）、`connectionFailed` になる（:149）。
-4. `decideIntakeRestart` は `ranMs > RESTART_WINDOW_MS` なので `failures` を 0 に戻して起動し直しを決める（intake.ts:58）。
-5. 3〜4 が続く限り、`reached` は running にも gaveUp にもならず、`resume` が返らない。表示は interrupted のまま。構成の変化での終了（終了コード 75）がソケットを開く前に 6 秒より間を空けて続く場合も、`failures` が増えないので（intake.ts:53）同じになります。
-
-起動のたびに 60 秒より長くかかってから失敗するヘルパーという条件付きです。stop すれば `end` は返ります（`PropEndAfterStop` は通ります）。

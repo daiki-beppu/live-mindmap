@@ -109,11 +109,12 @@ export const openIntake = Effect.fnUntraced(function* (options: {
     const reached = yield* Deferred.make<Reached>();
     const trigger = yield* Ref.make(p.trigger);
     const history = yield* Ref.make<{ failures: number; configurationChanges: ReadonlyArray<number> }>({ failures: 0, configurationChanges: [] });
-    const finishAttempt = Effect.fnUntraced(function* (last: AttemptEnd, startedAt: number) {
+    const finishAttempt = Effect.fnUntraced(function* (last: AttemptEnd, attempt: { connected: true; startedAt: number } | { connected: false }) {
       yield* p.log({ type: "intake-stopped", ...last.exit, stderrTail: [...last.stderrTail] });
       yield* note(`取り込みが止まった（${last.exit.code ?? last.exit.signal ?? "不明"}）\n`);
       const now = yield* Clock.currentTimeMillis;
-      const decision = decideIntakeRestart({ ...(yield* Ref.get(history)), ranMs: now - startedAt, exit: last.exit, now });
+      const ran = attempt.connected ? { connected: true as const, ranMs: now - attempt.startedAt } : { connected: false as const };
+      const decision = decideIntakeRestart({ ...(yield* Ref.get(history)), ...ran, exit: last.exit, now });
       yield* Ref.set(history, { failures: decision.failures, configurationChanges: decision.configurationChanges });
       if (decision.action === "giveup") {
         yield* p.log({ type: "intake-gave-up", reason: decision.reason });
@@ -146,7 +147,7 @@ export const openIntake = Effect.fnUntraced(function* (options: {
       const next = yield* launch;
       if (Result.isFailure(next.result)) {
         if (yield* Deferred.isDone(stopRequested)) return { kind: "stopped" as const, exit: next.result.failure.exit };
-        return { kind: "connectionFailed" as const, last: { exit: next.result.failure.exit ?? { code: null, signal: null }, stderrTail: next.result.failure.stderrTail }, startedAt: next.startedAt };
+        return { kind: "connectionFailed" as const, last: { exit: next.result.failure.exit ?? { code: null, signal: null }, stderrTail: next.result.failure.stderrTail } };
       }
       return { kind: "served" as const, last: yield* readConnected({ attempt: next.result.success, scope: next.scope, startedAt: next.startedAt }, true), startedAt: next.startedAt };
     });
@@ -155,14 +156,15 @@ export const openIntake = Effect.fnUntraced(function* (options: {
       for (;;) {
         const next = yield* readNext(current);
         if (next.kind === "stopped") return next;
-        const { last, startedAt } = next;
+        const { last } = next;
         current = undefined;
         if (yield* Deferred.isDone(stopRequested)) return { kind: "stopped", exit: last.exit };
         if (next.kind === "served") {
           if (p.exitZero === "finish" && last.exit.code === 0) return { kind: "finished" };
           yield* p.observe({ kind: "crashed" });
         }
-        if ((yield* finishAttempt(last, startedAt)) === "giveup") return { kind: "gaveUp", last };
+        const attempt = next.kind === "served" ? { connected: true as const, startedAt: next.startedAt } : { connected: false as const };
+        if ((yield* finishAttempt(last, attempt)) === "giveup") return { kind: "gaveUp", last };
       }
     }).pipe(
       Effect.tapError(() => Deferred.succeed(stopRequested, undefined)),

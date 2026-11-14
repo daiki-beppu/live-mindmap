@@ -7,5 +7,3 @@ InvReadingPauseFollowsUser intake-recorded
 InvNoResendAfterHandled intake-live
 PropReachedSettles intake-live
 PropEndAfterStop intake-live intake-recorded
-# 既知の発見（.agents/skills/verify-intake-attempts/SKILL.md の「既知の発見」）
-known PropReachedSettles

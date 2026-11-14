@@ -29,7 +29,7 @@ describe("decideIntakeRestart（起動し直しの上限）", () => {
   });
 
   it("ちょうど RESTART_WINDOW_MS で終わった（境界）のは、失敗として数える", () => {
-    expect(decideIntakeRestart({ failures: 0, configurationChanges: [], ranMs: RESTART_WINDOW_MS, exit: CRASH, now: NOW })).toEqual({
+    expect(decideIntakeRestart({ failures: 0, configurationChanges: [], connected: true, ranMs: RESTART_WINDOW_MS, exit: CRASH, now: NOW })).toEqual({
       failures: 1,
       configurationChanges: [],
       action: "restart",
@@ -37,7 +37,7 @@ describe("decideIntakeRestart（起動し直しの上限）", () => {
   });
 
   it("RESTART_WINDOW_MS を 1ms でも超えて動いてから終わったのは、失敗を数え直す（0 に戻る）", () => {
-    expect(decideIntakeRestart({ failures: 2, configurationChanges: [], ranMs: RESTART_WINDOW_MS + 1, exit: CRASH, now: NOW })).toEqual({
+    expect(decideIntakeRestart({ failures: 2, configurationChanges: [], connected: true, ranMs: RESTART_WINDOW_MS + 1, exit: CRASH, now: NOW })).toEqual({
       failures: 0,
       configurationChanges: [],
       action: "restart",
@@ -45,12 +45,12 @@ describe("decideIntakeRestart（起動し直しの上限）", () => {
   });
 
   it("失敗が 1 回目・2 回目は起動し直す", () => {
-    expect(decideIntakeRestart({ failures: 0, configurationChanges: [], ranMs: 100, exit: CRASH, now: NOW })).toEqual({
+    expect(decideIntakeRestart({ failures: 0, configurationChanges: [], connected: true, ranMs: 100, exit: CRASH, now: NOW })).toEqual({
       failures: 1,
       configurationChanges: [],
       action: "restart",
     });
-    expect(decideIntakeRestart({ failures: 1, configurationChanges: [], ranMs: 100, exit: CRASH, now: NOW })).toEqual({
+    expect(decideIntakeRestart({ failures: 1, configurationChanges: [], connected: true, ranMs: 100, exit: CRASH, now: NOW })).toEqual({
       failures: 2,
       configurationChanges: [],
       action: "restart",
@@ -58,7 +58,7 @@ describe("decideIntakeRestart（起動し直しの上限）", () => {
   });
 
   it("失敗が 3 回続くと諦める（止まった状態にする。理由は failures）", () => {
-    expect(decideIntakeRestart({ failures: 2, configurationChanges: [], ranMs: 100, exit: CRASH, now: NOW })).toEqual({
+    expect(decideIntakeRestart({ failures: 2, configurationChanges: [], connected: true, ranMs: 100, exit: CRASH, now: NOW })).toEqual({
       failures: 3,
       configurationChanges: [],
       action: "giveup",
@@ -67,23 +67,23 @@ describe("decideIntakeRestart（起動し直しの上限）", () => {
   });
 
   it("長く動いた後に失敗が続いても、数え直しているので 1 回だけでは諦めない", () => {
-    const afterLongRun = decideIntakeRestart({ failures: 0, configurationChanges: [], ranMs: RESTART_WINDOW_MS + 5_000, exit: CRASH, now: NOW });
+    const afterLongRun = decideIntakeRestart({ failures: 0, configurationChanges: [], connected: true, ranMs: RESTART_WINDOW_MS + 5_000, exit: CRASH, now: NOW });
     expect(afterLongRun).toEqual({ failures: 0, configurationChanges: [], action: "restart" });
     expect(
-      decideIntakeRestart({ failures: afterLongRun.failures, configurationChanges: afterLongRun.configurationChanges, ranMs: 100, exit: CRASH, now: NOW }),
+      decideIntakeRestart({ failures: afterLongRun.failures, configurationChanges: afterLongRun.configurationChanges, connected: true, ranMs: 100, exit: CRASH, now: NOW }),
     ).toEqual({ failures: 1, configurationChanges: [], action: "restart" });
   });
 
   it("コード 1 とシグナルの終了は、同じ ranMs なら同じ判断になる（75 以外の止まり方は区別しない）", () => {
-    const byCode = decideIntakeRestart({ failures: 1, configurationChanges: [], ranMs: 500, exit: CRASH, now: NOW });
-    const bySignal = decideIntakeRestart({ failures: 1, configurationChanges: [], ranMs: 500, exit: { code: null, signal: "SIGKILL" }, now: NOW });
+    const byCode = decideIntakeRestart({ failures: 1, configurationChanges: [], connected: true, ranMs: 500, exit: CRASH, now: NOW });
+    const bySignal = decideIntakeRestart({ failures: 1, configurationChanges: [], connected: true, ranMs: 500, exit: { code: null, signal: "SIGKILL" }, now: NOW });
     expect(byCode).toEqual(bySignal);
   });
 });
 
 describe("decideIntakeRestart（構成の変化による終了: 終了コード 75）", () => {
   it("failures を増やさずに起動し直す（failures: 2 のまま restart）。終わった時刻を記録する", () => {
-    expect(decideIntakeRestart({ failures: 2, configurationChanges: [], ranMs: 500, exit: CONFIG_CHANGE, now: NOW })).toEqual({
+    expect(decideIntakeRestart({ failures: 2, configurationChanges: [], connected: true, ranMs: 500, exit: CONFIG_CHANGE, now: NOW })).toEqual({
       failures: 2,
       configurationChanges: [NOW],
       action: "restart",
@@ -91,13 +91,13 @@ describe("decideIntakeRestart（構成の変化による終了: 終了コード 
   });
 
   it("failures が 2 のとき 75 が来ても諦めない（3 回目の失敗に数えない）", () => {
-    const decision = decideIntakeRestart({ failures: MAX_CONSECUTIVE_FAILURES - 1, configurationChanges: [], ranMs: 100, exit: CONFIG_CHANGE, now: NOW });
+    const decision = decideIntakeRestart({ failures: MAX_CONSECUTIVE_FAILURES - 1, configurationChanges: [], connected: true, ranMs: 100, exit: CONFIG_CHANGE, now: NOW });
     expect(decision.action).toBe("restart");
     expect(decision.failures).toBe(MAX_CONSECUTIVE_FAILURES - 1);
   });
 
   it("RESTART_WINDOW_MS を超えて動いてから終わったときは、今までどおり failures を 0 に戻す", () => {
-    expect(decideIntakeRestart({ failures: 2, configurationChanges: [], ranMs: RESTART_WINDOW_MS + 1, exit: CONFIG_CHANGE, now: NOW })).toEqual({
+    expect(decideIntakeRestart({ failures: 2, configurationChanges: [], connected: true, ranMs: RESTART_WINDOW_MS + 1, exit: CONFIG_CHANGE, now: NOW })).toEqual({
       failures: 0,
       configurationChanges: [NOW],
       action: "restart",
@@ -105,19 +105,19 @@ describe("decideIntakeRestart（構成の変化による終了: 終了コード 
   });
 
   it("ちょうど RESTART_WINDOW_MS で終わったときは failures を 0 に戻さない（境界は失敗側と同じ向き）", () => {
-    expect(decideIntakeRestart({ failures: 2, configurationChanges: [], ranMs: RESTART_WINDOW_MS, exit: CONFIG_CHANGE, now: NOW }).failures).toBe(2);
+    expect(decideIntakeRestart({ failures: 2, configurationChanges: [], connected: true, ranMs: RESTART_WINDOW_MS, exit: CONFIG_CHANGE, now: NOW }).failures).toBe(2);
   });
 
   it("窓の中に 9 件ある状態での 10 回目は起動し直す", () => {
     const previous = Array.from({ length: MAX_CONFIGURATION_CHANGES - 1 }, (_, i) => NOW - 1_000 * (i + 1));
-    const decision = decideIntakeRestart({ failures: 0, configurationChanges: previous, ranMs: 500, exit: CONFIG_CHANGE, now: NOW });
+    const decision = decideIntakeRestart({ failures: 0, configurationChanges: previous, connected: true, ranMs: 500, exit: CONFIG_CHANGE, now: NOW });
     expect(decision.action).toBe("restart");
     expect(decision.configurationChanges).toHaveLength(MAX_CONFIGURATION_CHANGES);
   });
 
   it("窓の中に 10 件ある状態での 11 回目は諦める（理由は configuration-changes）。failures は増やさない", () => {
     const previous = Array.from({ length: MAX_CONFIGURATION_CHANGES }, (_, i) => NOW - 1_000 * (i + 1));
-    const decision = decideIntakeRestart({ failures: 1, configurationChanges: previous, ranMs: 500, exit: CONFIG_CHANGE, now: NOW });
+    const decision = decideIntakeRestart({ failures: 1, configurationChanges: previous, connected: true, ranMs: 500, exit: CONFIG_CHANGE, now: NOW });
     expect(decision).toEqual({
       failures: 1,
       configurationChanges: [...previous, NOW],
@@ -128,13 +128,13 @@ describe("decideIntakeRestart（構成の変化による終了: 終了コード 
 
   it("窓の境界: ちょうど 60 000 ms 前の記録は数え、60 001 ms 前の記録は除かれる", () => {
     const atBoundary = Array.from({ length: MAX_CONFIGURATION_CHANGES }, () => NOW - CONFIGURATION_CHANGE_WINDOW_MS);
-    expect(decideIntakeRestart({ failures: 0, configurationChanges: atBoundary, ranMs: 500, exit: CONFIG_CHANGE, now: NOW })).toMatchObject({
+    expect(decideIntakeRestart({ failures: 0, configurationChanges: atBoundary, connected: true, ranMs: 500, exit: CONFIG_CHANGE, now: NOW })).toMatchObject({
       action: "giveup",
       reason: "configuration-changes",
     });
 
     const outside = Array.from({ length: MAX_CONFIGURATION_CHANGES }, () => NOW - CONFIGURATION_CHANGE_WINDOW_MS - 1);
-    expect(decideIntakeRestart({ failures: 0, configurationChanges: outside, ranMs: 500, exit: CONFIG_CHANGE, now: NOW })).toEqual({
+    expect(decideIntakeRestart({ failures: 0, configurationChanges: outside, connected: true, ranMs: 500, exit: CONFIG_CHANGE, now: NOW })).toEqual({
       failures: 0,
       configurationChanges: [NOW],
       action: "restart",
@@ -144,13 +144,13 @@ describe("decideIntakeRestart（構成の変化による終了: 終了コード 
   it("窓が進めば数え直す: 古い記録が窓の外に出た分だけ除かれ、新しい記録は残る", () => {
     const old = Array.from({ length: 8 }, (_, i) => NOW - 70_000 - i);
     const recent = [NOW - 5_000, NOW - 1_000];
-    const decision = decideIntakeRestart({ failures: 0, configurationChanges: [...old, ...recent], ranMs: 500, exit: CONFIG_CHANGE, now: NOW });
+    const decision = decideIntakeRestart({ failures: 0, configurationChanges: [...old, ...recent], connected: true, ranMs: 500, exit: CONFIG_CHANGE, now: NOW });
     expect(decision).toEqual({ failures: 0, configurationChanges: [...recent, NOW], action: "restart" });
   });
 
   it("入力の配列を書き換えない", () => {
     const input = [NOW - 70_000, NOW - 1_000];
-    decideIntakeRestart({ failures: 0, configurationChanges: input, ranMs: 500, exit: CONFIG_CHANGE, now: NOW });
+    decideIntakeRestart({ failures: 0, configurationChanges: input, connected: true, ranMs: 500, exit: CONFIG_CHANGE, now: NOW });
     expect(input).toEqual([NOW - 70_000, NOW - 1_000]);
   });
 });
@@ -160,6 +160,7 @@ describe("decideIntakeRestart（75 以外の終了は構成の変化に数えな
     const decision = decideIntakeRestart({
       failures: 0,
       configurationChanges: [NOW - CONFIGURATION_CHANGE_WINDOW_MS - 1, NOW - 1_000],
+      connected: true,
       ranMs: 100,
       exit: CRASH,
       now: NOW,
@@ -169,7 +170,7 @@ describe("decideIntakeRestart（75 以外の終了は構成の変化に数えな
 
   it("構成の変化が溜まっていても、コード 1 は今までどおり 3 回目で諦める（理由は failures）", () => {
     const previous = Array.from({ length: MAX_CONFIGURATION_CHANGES }, (_, i) => NOW - 1_000 * (i + 1));
-    expect(decideIntakeRestart({ failures: 2, configurationChanges: previous, ranMs: 100, exit: CRASH, now: NOW })).toEqual({
+    expect(decideIntakeRestart({ failures: 2, configurationChanges: previous, connected: true, ranMs: 100, exit: CRASH, now: NOW })).toEqual({
       failures: 3,
       configurationChanges: previous,
       action: "giveup",
@@ -179,11 +180,11 @@ describe("decideIntakeRestart（75 以外の終了は構成の変化に数えな
 
   it("構成の変化の記録が 10 件ちょうどあるとき、コード 1 の 1 回目では諦めない（歯止めの理由で止めない）", () => {
     const previous = Array.from({ length: MAX_CONFIGURATION_CHANGES }, (_, i) => NOW - 1_000 * (i + 1));
-    expect(decideIntakeRestart({ failures: 0, configurationChanges: previous, ranMs: 100, exit: CRASH, now: NOW }).action).toBe("restart");
+    expect(decideIntakeRestart({ failures: 0, configurationChanges: previous, connected: true, ranMs: 100, exit: CRASH, now: NOW }).action).toBe("restart");
   });
 
   it("コード 75 でもシグナルが入っているものは、構成の変化に数えず失敗に数える", () => {
-    expect(decideIntakeRestart({ failures: 0, configurationChanges: [], ranMs: 100, exit: { code: 75, signal: "SIGKILL" }, now: NOW })).toEqual({
+    expect(decideIntakeRestart({ failures: 0, configurationChanges: [], connected: true, ranMs: 100, exit: { code: 75, signal: "SIGKILL" }, now: NOW })).toEqual({
       failures: 1,
       configurationChanges: [],
       action: "restart",
@@ -191,11 +192,56 @@ describe("decideIntakeRestart（75 以外の終了は構成の変化に数えな
   });
 
   it("コードが null（シグナル終了）は失敗に数える", () => {
-    expect(decideIntakeRestart({ failures: 2, configurationChanges: [], ranMs: 100, exit: { code: null, signal: "SIGSEGV" }, now: NOW })).toMatchObject({
+    expect(decideIntakeRestart({ failures: 2, configurationChanges: [], connected: true, ranMs: 100, exit: { code: null, signal: "SIGSEGV" }, now: NOW })).toMatchObject({
       failures: 3,
       action: "giveup",
       reason: "failures",
     });
+  });
+});
+
+describe("decideIntakeRestart（つながらないまま終わった回）", () => {
+  type Decision = ReturnType<typeof decideIntakeRestart>;
+  const neverConnected = (exit: typeof CRASH | typeof CONFIG_CHANGE, times: number, gapMs: number): Decision[] => {
+    const decisions: Decision[] = [];
+    let state = { failures: 0, configurationChanges: [] as ReadonlyArray<number> };
+    for (let i = 0; i < times; i++) {
+      const decision = decideIntakeRestart({ ...state, connected: false, exit, now: NOW + i * gapMs });
+      decisions.push(decision);
+      state = { failures: decision.failures, configurationChanges: decision.configurationChanges };
+    }
+    return decisions;
+  };
+
+  it("75 以外は、60 秒より長く間が空いても毎回失敗に数え、3 回目で諦める（理由は failures）", () => {
+    const decisions = neverConnected(CRASH, MAX_CONSECUTIVE_FAILURES, RESTART_WINDOW_MS + 1);
+    expect(decisions.map((d) => d.action)).toEqual(["restart", "restart", "giveup"]);
+    expect(decisions.at(-1)).toEqual({ failures: MAX_CONSECUTIVE_FAILURES, configurationChanges: [], action: "giveup", reason: "failures" });
+  });
+
+  it("75 は failures を増やさず、終わった時刻を構成の変化として記録する", () => {
+    expect(decideIntakeRestart({ failures: 2, configurationChanges: [], connected: false, exit: CONFIG_CHANGE, now: NOW })).toEqual({
+      failures: 2,
+      configurationChanges: [NOW],
+      action: "restart",
+    });
+  });
+
+  it("75 は 60 秒の窓の外に出た記録も除かず、70 秒おきでも 11 回目で諦める（理由は configuration-changes）", () => {
+    const decisions = neverConnected(CONFIG_CHANGE, MAX_CONFIGURATION_CHANGES + 1, 70_000);
+    expect(decisions.slice(0, MAX_CONFIGURATION_CHANGES).every((d) => d.action === "restart")).toBe(true);
+    expect(decisions.at(-1)).toMatchObject({ failures: 0, action: "giveup", reason: "configuration-changes" });
+    expect(decisions.at(-1)?.configurationChanges).toHaveLength(MAX_CONFIGURATION_CHANGES + 1);
+  });
+
+  it("75 以外でも、溜まった構成の変化を窓で除かない", () => {
+    const old = NOW - CONFIGURATION_CHANGE_WINDOW_MS - 1;
+    expect(decideIntakeRestart({ failures: 0, configurationChanges: [old], connected: false, exit: CRASH, now: NOW }).configurationChanges).toEqual([old]);
+  });
+
+  it("つながった回は、今までどおり窓の外に出た構成の変化を除く", () => {
+    const old = NOW - CONFIGURATION_CHANGE_WINDOW_MS - 1;
+    expect(decideIntakeRestart({ failures: 0, configurationChanges: [old], connected: true, ranMs: 100, exit: CONFIG_CHANGE, now: NOW }).configurationChanges).toEqual([NOW]);
   });
 });
 

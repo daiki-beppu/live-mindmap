@@ -9,6 +9,8 @@ const GAP_BEFORE_RELAUNCH_FAILURE_MS = 1;
 export type AttemptScript = {
   events?: string[];
   connect?: boolean;
+  /** connect: false の回が、ソケットを開かないまま終わるまでの時間 */
+  failAfterMs?: number;
   launchExit?: HelperExitInfo;
   stderrTail?: string[];
   unexpectedExit?: { afterMs: number; exit: HelperExitInfo };
@@ -43,7 +45,8 @@ export function makeFakeHelpers(attempts: AttemptScript[]): Effect.Effect<FakeHe
         yield* Effect.addFinalizer(() => Effect.sync(() => { lifecycle.push(`closed:${index}`); }));
         const script = attempts[Math.min(index, attempts.length - 1)] ?? {};
         if (script.connect === false) {
-          if (index > 0) yield* Effect.sleep(GAP_BEFORE_RELAUNCH_FAILURE_MS);
+          if (script.failAfterMs !== undefined) yield* Effect.sleep(script.failAfterMs);
+          else if (index > 0) yield* Effect.sleep(GAP_BEFORE_RELAUNCH_FAILURE_MS);
           return yield* new HelperLaunchFailure({ stderrTail: script.stderrTail ?? [], exit: script.launchExit });
         }
         if (script.hold) {
