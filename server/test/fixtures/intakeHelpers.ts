@@ -1,5 +1,5 @@
 import { Cause, Deferred, Effect, Queue, Ref, Scope, Stream } from "effect";
-import { Helpers, HelperLaunchFailure, type HelperAttempt, type HelperLaunchOptions, type HelperExitInfo, type HelperInstruction } from "../../src/helpers.ts";
+import { Helpers, HelperLaunchFailure, type HelperAttempt, type HelperLaunchOptions, type HelperExitInfo, type HelperMessage } from "../../src/helpers.ts";
 import { helperChecks } from "./helperCheck.ts";
 
 const APPS = [{ bundleID: "us.zoom.xos", name: "zoom.us" }];
@@ -23,19 +23,19 @@ type FakeHelpersHandle = {
   readonly calls: ReadonlyArray<HelperLaunchOptions>;
   readonly send: (attemptIndex: number, event: unknown) => void;
   readonly stops: number[];
-  readonly sentInstructions: { attempt: number; instruction: HelperInstruction }[];
+  readonly sentInstructions: { attempt: number; instruction: HelperMessage }[];
   readonly lifecycle: string[];
-  readonly sentPauses: { attempt: number; paused: boolean }[];
+  readonly sentPauses: { attempt: number; paused: boolean; seq: number }[];
 };
 
 export function makeFakeHelpers(attempts: AttemptScript[]): Effect.Effect<FakeHelpersHandle, never, Scope.Scope> {
   return Effect.gen(function* () {
     const calls: HelperLaunchOptions[] = [];
-    const sentInstructions: { attempt: number; instruction: HelperInstruction }[] = [];
+    const sentInstructions: { attempt: number; instruction: HelperMessage }[] = [];
     const lifecycle: string[] = [];
     const queues: Queue.Queue<string, Cause.Done>[] = [];
     const stops: number[] = [];
-    const sentPauses: { attempt: number; paused: boolean }[] = [];
+    const sentPauses: { attempt: number; paused: boolean; seq: number }[] = [];
     const launch = (args: HelperLaunchOptions, stopRequested: Deferred.Deferred<void>): Effect.Effect<HelperAttempt, HelperLaunchFailure, Scope.Scope> =>
       Effect.gen(function* () {
         const index = calls.length;
@@ -87,9 +87,9 @@ export function makeFakeHelpers(attempts: AttemptScript[]): Effect.Effect<FakeHe
           stop,
           exit: Effect.tap(Deferred.await(exitDeferred), () => Effect.sync(() => { lifecycle.push(`exit:${index}`); })),
           stderrTail: Effect.sync(() => { lifecycle.push(`stderr:${index}`); return script.stderrTail ?? []; }),
-          send: (instruction: HelperInstruction) => Effect.sync(() => {
+          send: (instruction: HelperMessage) => Effect.sync(() => {
             sentInstructions.push({ attempt: index, instruction });
-            if (instruction.type === "self-pause") sentPauses.push({ attempt: index, paused: instruction.paused });
+            if (instruction.type === "self-pause") sentPauses.push({ attempt: index, paused: instruction.paused, seq: instruction.seq });
           }),
         };
       });

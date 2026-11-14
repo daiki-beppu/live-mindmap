@@ -115,7 +115,7 @@ public final class LiveSession {
                     monitorTask = observer.start()
                     if let token = settings.controlToken, !token.isEmpty {
                         controlTask = Task {
-                            await serveSelfPauseRequests(server.messages, token: token) { observer.press(paused: $0) }
+                            await serveSelfPauseRequests(server.messages, token: token) { observer.press($0) }
                         }
                     } else {
                         settings.log(.controlDisabled)

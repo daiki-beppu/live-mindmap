@@ -3,53 +3,59 @@ import Testing
 @testable import HelperCore
 
 private let token = String(repeating: "a", count: 64)
-private func message(paused: Bool, token: String?) -> String {
-    token.map { #"{"type":"self-pause","paused":\#(paused),"token":"\#($0)"}"# } ?? #"{"type":"self-pause","paused":\#(paused)}"#
+private func message(paused: Bool, token: String?, seq: Int = 1) -> String {
+    token.map { #"{"type":"self-pause","paused":\#(paused),"seq":\#(seq),"token":"\#($0)"}"# } ?? #"{"type":"self-pause","paused":\#(paused),"seq":\#(seq)}"#
 }
 
 @Suite("自分の休止の指示と状態")
 struct SelfPauseTests {
-    @Test("SCN-U3-P1: 起動時のトークン付きの指示から paused の値を読み取る")
+    @Test("SCN-U3-P1: 起動時のトークン付きの指示から paused の値と seq を読み取る")
     func readsRequestedState() {
-        #expect(SelfPause.requestedState(in: message(paused: true, token: token), token: token) == true)
-        #expect(SelfPause.requestedState(in: message(paused: false, token: token), token: token) == false)
+        #expect(SelfPause.requestedPress(in: message(paused: true, token: token, seq: 3), token: token) == SelfPausePress(paused: true, seq: SelfPauseSeq(value: 3)))
+        #expect(SelfPause.requestedPress(in: message(paused: false, token: token, seq: 7), token: token) == SelfPausePress(paused: false, seq: SelfPauseSeq(value: 7)))
     }
 
     @Test("SCN-U3-N1: トークンのない指示・違うトークンの指示は読み取らない")
     func rejectsMissingOrWrongToken() {
         let other = String(repeating: "b", count: 64)
-        #expect(SelfPause.requestedState(in: message(paused: false, token: nil), token: token) == nil)
-        #expect(SelfPause.requestedState(in: message(paused: false, token: other), token: token) == nil)
+        #expect(SelfPause.requestedPress(in: message(paused: false, token: nil), token: token) == nil)
+        #expect(SelfPause.requestedPress(in: message(paused: false, token: other), token: token) == nil)
     }
 
     @Test("SCN-U3-N2: トークンの型や長さが違う指示は読み取らない")
     func rejectsMalformedToken() {
         for text in [
-            #"{"type":"self-pause","paused":true,"token":123}"#,
-            #"{"type":"self-pause","paused":true,"token":""}"#,
-            #"{"type":"self-pause","paused":true,"token":"\#(String(repeating: "a", count: 63))"}"#,
-            #"{"type":"self-pause","paused":true,"token":"\#(String(repeating: "a", count: 65))"}"#,
+            #"{"type":"self-pause","paused":true,"seq":1,"token":123}"#,
+            #"{"type":"self-pause","paused":true,"seq":1,"token":""}"#,
+            #"{"type":"self-pause","paused":true,"seq":1,"token":"\#(String(repeating: "a", count: 63))"}"#,
+            #"{"type":"self-pause","paused":true,"seq":1,"token":"\#(String(repeating: "a", count: 65))"}"#,
         ] {
-            #expect(SelfPause.requestedState(in: text, token: token) == nil)
+            #expect(SelfPause.requestedPress(in: text, token: token) == nil)
         }
     }
 
     @Test("期待するトークンが空のときは、空のトークンの指示も受け付けない")
     func emptyExpectedTokenAcceptsNothing() {
-        #expect(SelfPause.requestedState(in: #"{"type":"self-pause","paused":true,"token":""}"#, token: "") == nil)
+        #expect(SelfPause.requestedPress(in: #"{"type":"self-pause","paused":true,"seq":1,"token":""}"#, token: "") == nil)
     }
 
-    @Test("壊れた JSON・知らない type・paused が真偽値でない指示は読み取らない（無視できるように nil）",
+    @Test("壊れた JSON・知らない type・paused が真偽値でない・seq が 1 以上の整数でない指示は読み取らない（無視できるように nil）",
           arguments: [
               "", "not json", "[]", "{}",
               #"{"type":"other","paused":true,"token":"\#(token)"}"#,
-              #"{"type":"self-pause","token":"\#(token)"}"#,
-              #"{"type":"self-pause","paused":"true","token":"\#(token)"}"#,
-              #"{"type":"self-pause","paused":1,"token":"\#(token)"}"#,
-              #"{"type":"self-pause","paused":null,"token":"\#(token)"}"#,
+              #"{"type":"self-pause","seq":1,"token":"\#(token)"}"#,
+              #"{"type":"self-pause","paused":"true","seq":1,"token":"\#(token)"}"#,
+              #"{"type":"self-pause","paused":1,"seq":1,"token":"\#(token)"}"#,
+              #"{"type":"self-pause","paused":null,"seq":1,"token":"\#(token)"}"#,
+              #"{"type":"self-pause","paused":true,"token":"\#(token)"}"#,
+              #"{"type":"self-pause","paused":true,"seq":0,"token":"\#(token)"}"#,
+              #"{"type":"self-pause","paused":true,"seq":-1,"token":"\#(token)"}"#,
+              #"{"type":"self-pause","paused":true,"seq":1.5,"token":"\#(token)"}"#,
+              #"{"type":"self-pause","paused":true,"seq":true,"token":"\#(token)"}"#,
+              #"{"type":"self-pause","paused":true,"seq":"1","token":"\#(token)"}"#,
           ])
     func ignoresInvalidRequests(message: String) {
-        #expect(SelfPause.requestedState(in: message, token: token) == nil)
+        #expect(SelfPause.requestedPress(in: message, token: token) == nil)
     }
 
     @Test("request は状態が変わったときだけ true を返し、同じ状態の指示は何も変えない")
@@ -95,9 +101,9 @@ struct SelfPauseTests {
 struct SelfPauseServingTests {
     private final class Requests: @unchecked Sendable {
         private let lock = NSLock()
-        private var storage: [Bool] = []
-        func append(_ paused: Bool) { lock.withLock { storage.append(paused) } }
-        var values: [Bool] { lock.withLock { storage } }
+        private var storage: [SelfPausePress] = []
+        func append(_ press: SelfPausePress) { lock.withLock { storage.append(press) } }
+        var values: [SelfPausePress] { lock.withLock { storage } }
     }
 
     private final class Events: @unchecked Sendable {
@@ -111,30 +117,30 @@ struct SelfPauseServingTests {
     func servesOnlyAuthenticatedRequestsInOrder() async {
         let (messages, continuation) = AsyncStream.makeStream(of: String.self)
         for text in [
-            message(paused: false, token: token), message(paused: true, token: token), message(paused: true, token: token),
-            "not json", message(paused: false, token: token),
+            message(paused: false, token: token, seq: 1), message(paused: true, token: token, seq: 2), message(paused: true, token: token, seq: 3),
+            "not json", message(paused: false, token: token, seq: 4),
             message(paused: true, token: nil), message(paused: true, token: String(repeating: "b", count: 64)),
         ] { continuation.yield(text) }
         continuation.finish()
         let requests = Requests()
         await serveSelfPauseRequests(messages, token: token) { requests.append($0) }
-        #expect(requests.values == [false, true, true, false])
+        #expect(requests.values == [(false, 1), (true, 2), (true, 3), (false, 4)].map { SelfPausePress(paused: $0, seq: SelfPauseSeq(value: $1)) })
     }
 
-    @Test("起動時に、始めの休止の状態（paused と理由）と送り直す状態を 1 回ずつ通知する。時刻は origin からの秒")
+    @Test("起動時に、始めの休止の状態（paused と理由）と送り直す状態を 1 回ずつ通知する。まだ指示を処理していないので handled は 0。時刻は origin からの秒")
     func announcesInitialState() async {
         let events = Events()
         let rule = SelfPauseRule(app: "x", ownPID: 1)
         await announceSelfPause(rule, at: 7, origin: 7, emit: { events.append($0) })
-        #expect(events.values == [.selfPause(.resumed(.undetermined), start: 0), .selfPauseState(.initial)])
+        #expect(events.values == [.selfPause(.resumed(.undetermined), start: 0), .selfPauseState(.initial, handled: .none)])
     }
 
-    @Test("手動の休止を引き継いで始めたときは、paused=true・理由は手動を通知する")
+    @Test("手動の休止を引き継いで始めたときは、paused=true・理由は手動を通知する。引き継いでも handled は 0")
     func announcesRestoredManualPause() async {
         let events = Events()
         let carry = SelfPauseCarryOver(manual: .pause, basis: .using, lastKnown: .using, idleFor: 0)
         let rule = SelfPauseRule(app: "x", ownPID: 1, restoring: carry)
         await announceSelfPause(rule, at: 7, origin: 7, emit: { events.append($0) })
-        #expect(events.values == [.selfPause(.paused(.manual), start: 0), .selfPauseState(carry)])
+        #expect(events.values == [.selfPause(.paused(.manual), start: 0), .selfPauseState(carry, handled: .none)])
     }
 }

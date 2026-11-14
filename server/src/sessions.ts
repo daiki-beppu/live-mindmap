@@ -210,7 +210,7 @@ export class Sessions extends Context.Service<Sessions, {
             );
           }
           case "self-pause-state": {
-            const { type: _type, ...state } = event;
+            const { type: _type, handled: _handled, ...state } = event;
             return Ref.set(live.selfPauseState, state);
           }
           case "file-duration":
@@ -297,7 +297,7 @@ export class Sessions extends Context.Service<Sessions, {
         const origin = yield* Ref.make<string | undefined>(undefined);
         const selfPauseState = yield* Ref.make<SelfPauseState>(INITIAL_SELF_PAUSE_STATE);
         const controller = yield* openIntake({
-          scope, commands: { "self-pause": "pending-once" },
+          scope,
           launchOptions: (attemptNo) => Effect.gen(function* () {
             return {
               kind: "run",
@@ -432,7 +432,7 @@ export class Sessions extends Context.Service<Sessions, {
         const dir = yield* sinks.createDir(sessionsDir, base);
         const from = yield* Ref.make<Partial<Readonly<Record<Track, number>>>>({});
         const controller = yield* openIntake({
-          scope, commands: { "reading-pause": "sticky" },
+          scope,
           launchOptions: (attemptNo) => Effect.map(Ref.get(from), (position) => ({
             kind: "transcribe-file", file: input.file, selfFile: input.selfFile,
             from: position, audioDir: attemptNo === 1 ? dir : undefined,

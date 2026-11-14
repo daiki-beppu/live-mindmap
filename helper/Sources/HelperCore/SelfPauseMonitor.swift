@@ -5,7 +5,7 @@ public final class SelfPauseMonitor: @unchecked Sendable {
 
     private enum Input: Sendable {
         case read
-        case press(Bool)
+        case press(SelfPausePress)
     }
 
     private let origin: UInt64
@@ -19,6 +19,7 @@ public final class SelfPauseMonitor: @unchecked Sendable {
     private var rule: SelfPauseRule
     private var gated: Bool
     private var announced: SelfPauseCarryOver
+    private var handled = SelfPauseSeq.none
 
     public init(
         rule: SelfPauseRule,
@@ -61,15 +62,21 @@ public final class SelfPauseMonitor: @unchecked Sendable {
 
     public func requestRead() { continuation.yield(.read) }
 
-    public func press(paused: Bool) { continuation.yield(.press(paused)) }
+    public func press(_ press: SelfPausePress) { continuation.yield(.press(press)) }
 
     private func handle(_ input: Input) async {
         let hostTime = now()
         let seconds = offsetSeconds(from: origin, to: hostTime)
         let change: SelfPauseChange?
+        let pressed: Bool
         switch input {
-        case .read: change = rule.read(readProcesses(), at: seconds)
-        case let .press(paused): change = rule.press(paused: paused, at: seconds)
+        case .read:
+            change = rule.read(readProcesses(), at: seconds)
+            pressed = false
+        case let .press(press):
+            change = rule.press(paused: press.paused, at: seconds)
+            handled = press.seq
+            pressed = true
         }
         if let change {
             if change.paused != gated {
@@ -79,9 +86,10 @@ public final class SelfPauseMonitor: @unchecked Sendable {
             await emit(.selfPause(change, start: seconds))
         }
         let state = rule.carryOver
-        if state != announced {
+        // サーバーは handled を見て、送り直すのをやめる。状態を変えない指示にも返さないと、送り直しが止まらない。
+        if pressed || state != announced {
             announced = state
-            await emit(.selfPauseState(state))
+            await emit(.selfPauseState(state, handled: handled))
         }
     }
 }

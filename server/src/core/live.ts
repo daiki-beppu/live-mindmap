@@ -1,6 +1,6 @@
 import { Effect, Schema } from "effect";
 import { Track } from "./remark.ts";
-import { SelfPauseReason, SelfPauseState } from "./selfPause.ts";
+import { SelfPauseReason, SelfPauseSeq, SelfPauseState } from "./selfPause.ts";
 import { Word, WordTime } from "./words.ts";
 
 const helperRemarkFields = {
@@ -26,7 +26,7 @@ export const HelperEvent = Schema.Union([
   Schema.Struct({ type: Schema.Literal("tap-silent"), start: Schema.Finite }),
   Schema.Struct({ type: Schema.Literal("self-pause"), paused: Schema.Literal(true), reason: Schema.Literals(["手動", "自動"]), start: Schema.Finite }),
   Schema.Struct({ type: Schema.Literal("self-pause"), paused: Schema.Literal(false), reason: SelfPauseReason, start: Schema.Finite }),
-  Schema.Struct({ type: Schema.Literal("self-pause-state"), ...SelfPauseState.fields }),
+  Schema.Struct({ type: Schema.Literal("self-pause-state"), ...SelfPauseState.fields, handled: SelfPauseSeq }),
   Schema.Struct({
     type: Schema.Literal("speaker"),
     track: Track,
