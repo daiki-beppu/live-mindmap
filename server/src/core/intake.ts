@@ -27,13 +27,13 @@ export const MAX_CONFIGURATION_CHANGES = 10;
 
 export type HelperExit = { code: number | null; signal: string | null };
 
+/** つながらなかった回は動いた長さを持たない。長く動いたことによる数え直しも、構成の変化の窓による切り捨ても、つながった回だけ */
 export type IntakeRestartInput = {
   failures: number;
   configurationChanges: ReadonlyArray<number>;
-  ranMs: number;
   exit: HelperExit;
   now: number;
-};
+} & ({ connected: true; ranMs: number } | { connected: false });
 
 export type IntakeRestartDecision = { failures: number; configurationChanges: ReadonlyArray<number> } & (
   | { action: "restart" }
@@ -44,21 +44,22 @@ export function isConfigurationChangeExit(exit: HelperExit): boolean {
   return exit.code === HELPER_EXIT_CONFIGURATION_CHANGED && exit.signal === null;
 }
 
-export function decideIntakeRestart({ failures, configurationChanges, ranMs, exit, now }: IntakeRestartInput): IntakeRestartDecision {
-  const inWindow = configurationChanges.filter((t) => now - t <= CONFIGURATION_CHANGE_WINDOW_MS);
-  const ranLong = ranMs > RESTART_WINDOW_MS;
+export function decideIntakeRestart(input: IntakeRestartInput): IntakeRestartDecision {
+  const { failures, configurationChanges, exit, now } = input;
+  const remembered = input.connected ? configurationChanges.filter((t) => now - t <= CONFIGURATION_CHANGE_WINDOW_MS) : configurationChanges;
+  const ranLong = input.connected && input.ranMs > RESTART_WINDOW_MS;
   if (isConfigurationChangeExit(exit)) {
-    const changes = [...inWindow, now];
+    const changes = [...remembered, now];
     const kept = ranLong ? 0 : failures;
     return changes.length > MAX_CONFIGURATION_CHANGES
       ? { failures: kept, configurationChanges: changes, action: "giveup", reason: "configuration-changes" }
       : { failures: kept, configurationChanges: changes, action: "restart" };
   }
-  if (ranLong) return { failures: 0, configurationChanges: inWindow, action: "restart" };
+  if (ranLong) return { failures: 0, configurationChanges: remembered, action: "restart" };
   const next = failures + 1;
   return next >= MAX_CONSECUTIVE_FAILURES
-    ? { failures: next, configurationChanges: inWindow, action: "giveup", reason: "failures" }
-    : { failures: next, configurationChanges: inWindow, action: "restart" };
+    ? { failures: next, configurationChanges: remembered, action: "giveup", reason: "failures" }
+    : { failures: next, configurationChanges: remembered, action: "restart" };
 }
 
 export function tailLines(text: string, n: number): string[] {

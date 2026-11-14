@@ -3,7 +3,7 @@ import { Deferred, Effect, Result, Scope } from "effect";
 import { TestClock, TestConsole } from "effect/testing";
 import { vi } from "vitest";
 import { INITIAL_SELF_PAUSE_STATE } from "../src/core/selfPause.ts";
-import { MAX_CONSECUTIVE_FAILURES, RESTART_WINDOW_MS, SessionWriteFailed } from "../src/core/index.ts";
+import { MAX_CONFIGURATION_CHANGES, MAX_CONSECUTIVE_FAILURES, RESTART_WINDOW_MS, SessionWriteFailed } from "../src/core/index.ts";
 import { Helpers } from "../src/helpers.ts";
 import { openIntake } from "../src/intakeAttempts.ts";
 import { makeFakeHelpers, type AttemptScript } from "./fixtures/intakeHelpers.ts";
@@ -426,21 +426,24 @@ describe("取り込みの試行", () => {
     yield* resumed.end;
   }));
 
-  it.effect.each([1, 75])("resumeの後、つながらないまま60秒より長く動いて終わる回が続いても、3回目で諦めてreachedを決める（コード%s）", (code) => Effect.gen(function* () {
+  it.effect.each([
+    [MAX_CONSECUTIVE_FAILURES, 1, "failures"],
+    [MAX_CONFIGURATION_CHANGES + 1, 75, "configuration-changes"],
+  ] as const)("resumeの後、つながらないまま60秒より長く動いて終わる回が続いても、%i回目で諦めてreachedを決める（コード%i）", ([attempts, code, reason]) => Effect.gen(function* () {
     const neverConnects = { connect: false, failAfterMs: RESTART_WINDOW_MS + 1, launchExit: { code, signal: null }, stderrTail: ["再開の最後"] };
     const r = yield* setup([crashed(1), { connect: false }, { connect: false }, neverConnects]);
     yield* TestClock.adjust(10);
     yield* r.running.end;
     const resumed = yield* r.run("resume");
-    for (let launched = 1; launched <= MAX_CONSECUTIVE_FAILURES; launched++) {
+    for (let launched = 1; launched <= attempts; launched++) {
       yield* waitFor(() => r.fake.calls.length === 3 + launched, `再開の ${launched} 回目の起動`);
       yield* TestClock.adjust(RESTART_WINDOW_MS + 1);
     }
     yield* waitFor(() => r.logs.filter((line) => line.type === "intake-gave-up").length === 2, "再開の後に諦めた");
     expect(yield* resumed.reached).toEqual({ kind: "gaveUp", stderrTail: ["再開の最後"] });
     expect(yield* resumed.end).toMatchObject({ kind: "gaveUp", last: { exit: { code, signal: null } } });
-    expect(r.fake.calls).toHaveLength(3 + MAX_CONSECUTIVE_FAILURES);
-    expect(r.logs.at(-1)).toEqual({ type: "intake-gave-up", reason: "failures" });
+    expect(r.fake.calls).toHaveLength(3 + attempts);
+    expect(r.logs.at(-1)).toEqual({ type: "intake-gave-up", reason });
   }));
 
   it.effect("resumeで構成変化を数え直し、ログのtriggerは最初の成功だけresumeになる", () => Effect.gen(function* () {
