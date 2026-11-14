@@ -67,7 +67,7 @@ description: 取り込みの再起動（server/src/intakeAttempts.ts の openInt
 ### `PropReachedSettles`: 起動のたびに 60 秒より長くかかって失敗すると、resume が返らない（live）
 
 1. 起動し直しを諦めて表示が stopped になる（:118〜:124）。
-2. 利用者が resume する。`sessions.ts` の `resume` が新しい run を始め（sessions.ts:550）、`running.reached` を待つ（sessions.ts:553）。
+2. 利用者が resume する。`sessions.ts` の `resume` が新しい run を始め（sessions.ts:555）、`running.reached` を待つ（sessions.ts:557）。
 3. 新しい試行を起動する（:146）。ヘルパーはソケットを開かないまま 60 秒より長く動いてから終わる。`launch` は `HelperLaunchFailure` で失敗し（helpers.ts:282）、`connectionFailed` になる（:149）。
 4. `decideIntakeRestart` は `ranMs > RESTART_WINDOW_MS` なので `failures` を 0 に戻して起動し直しを決める（intake.ts:58）。
 5. 3〜4 が続く限り、`reached` は running にも gaveUp にもならず、`resume` が返らない。表示は interrupted のまま。構成の変化での終了（終了コード 75）がソケットを開く前に 6 秒より間を空けて続く場合も、`failures` が増えないので（intake.ts:53）同じになります。

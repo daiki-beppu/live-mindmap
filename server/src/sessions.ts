@@ -1,4 +1,4 @@
-import { Cause, Clock, Console, Context, DateTime, Effect, Exit, Fiber, Layer, Option, Queue, Ref, Result, Scope, Stream } from "effect";
+import { Cause, Clock, Console, Context, DateTime, Effect, Exit, Fiber, Layer, Option, Queue, Ref, Result, Scope, Stream, SubscriptionRef } from "effect";
 import { parse } from "node:path";
 import {
   type SessionWriteFailed,
@@ -32,7 +32,7 @@ import {
 } from "./sessionFailure.ts";
 import { planModel } from "./updatePlan.ts";
 import { audioFileNames, SessionSinks, type LiveSink, type RecordedSink } from "./sessionSinks.ts";
-import { Viewers, type SendFrame } from "./viewers.ts";
+import { Viewers, type NotIntakeFrame, type SendFrame } from "./viewers.ts";
 import { StartupChecks } from "./startupChecks.ts";
 import type { CheckReport } from "./managedDepsProtocol.ts";
 
@@ -45,6 +45,11 @@ export type RecordedStart = { file: string; selfFile?: string; title: string | u
 export class SessionsDir extends Context.Service<SessionsDir, string>()("live-mindmap/server/SessionsDir") {}
 
 type IntakeKind = "running" | "interrupted" | "stopped";
+const INITIAL_INTAKE: IntakeKind = "running";
+
+const showIntake = (intake: SubscriptionRef.SubscriptionRef<IntakeKind>, send: SendFrame) =>
+  Stream.runFoldEffect(SubscriptionRef.changes(intake), (): IntakeKind => INITIAL_INTAKE, (shown, status) =>
+    status === shown ? Effect.succeed(shown) : Effect.as(send({ type: "intake", status }), status));
 
 type Intake = Effect.Success<ReturnType<typeof openIntake>>;
 type IntakeRun = Effect.Success<ReturnType<Intake["run"]>>;
@@ -57,11 +62,11 @@ type Live = {
   noticeShown: Ref.Ref<boolean>;
   meetingTabNotice: Effect.Success<ReturnType<typeof makeMeetingTabNotice>>;
   sink: LiveSink;
-  send: SendFrame;
+  send: SendFrame<NotIntakeFrame>;
   controller: Intake;
   running: Ref.Ref<IntakeRun | undefined>;
   scope: Scope.Closeable;
-  intake: Ref.Ref<IntakeKind>;
+  intake: SubscriptionRef.SubscriptionRef<IntakeKind>;
   origin: Ref.Ref<string | undefined>;
   lastInterruptedAt: Ref.Ref<string | undefined>;
   selfPauseFrame: Ref.Ref<SelfPauseFrame>;
@@ -246,8 +251,7 @@ export class Sessions extends Context.Service<Sessions, {
             case "running":
             case "interrupted":
             case "stopped":
-              yield* Ref.set(live.intake, transition.kind);
-              yield* live.send({ type: "intake", status: transition.kind });
+              yield* SubscriptionRef.set(live.intake, transition.kind);
           }
         }),
       });
@@ -319,12 +323,13 @@ export class Sessions extends Context.Service<Sessions, {
           scope,
           controller,
           running: yield* Ref.make<IntakeRun | undefined>(undefined),
-          intake: yield* Ref.make<IntakeKind>("running"),
+          intake: yield* SubscriptionRef.make(INITIAL_INTAKE),
           origin,
           lastInterruptedAt: yield* Ref.make<string | undefined>(undefined),
           selfPauseFrame: yield* Ref.make<SelfPauseFrame>({ type: "self-pause", paused: false }),
           selfPauseState,
         };
+        yield* Effect.forkIn(showIntake(live.intake, send), scope);
         yield* Ref.set(live.running, yield* runLive(live, "auto"));
         yield* Effect.forkIn(Effect.gen(function* () {
           yield* sink.writeFailure;
@@ -333,8 +338,7 @@ export class Sessions extends Context.Service<Sessions, {
           yield* sink.stopRelays;
           const running = yield* Ref.get(live.running);
           if (running !== undefined) yield* running.end.pipe(Effect.catchTag("SessionWriteFailed", () => Effect.void));
-          yield* Ref.set(live.intake, "stopped");
-          yield* send({ type: "intake", status: "stopped" });
+          yield* SubscriptionRef.set(live.intake, "stopped");
         }), scope);
         return { active: { kind: "live", live } satisfies Active, local: model.local, result: { dir, warnings } };
       }));
@@ -537,20 +541,24 @@ export class Sessions extends Context.Service<Sessions, {
         const live = yield* current("live");
         const failure = yield* live.sink.writeError;
         if (failure !== undefined) return yield* failure;
-        if ((yield* Ref.get(live.intake)) !== "stopped") return yield* new IntakeNotStopped();
+        if ((yield* SubscriptionRef.get(live.intake)) !== "stopped") return yield* new IntakeNotStopped();
         const { warnings } = yield* checks.prepare({ entry: "resume", route: live.model.route, screen: live.screen }).pipe(Effect.provideService(Helpers, helpers));
         const afterCheck = yield* Ref.get(state);
         if (afterCheck.kind !== "live" || afterCheck.live !== live) return yield* new Aborted();
-        const taken = yield* Ref.modify(live.intake, (kind): [boolean, IntakeKind] => (kind === "stopped" ? [true, "interrupted"] : [false, kind]));
+        const taken = yield* SubscriptionRef.modifySome(live.intake, (kind): [boolean, Option.Option<IntakeKind>] => (kind === "stopped" ? [true, Option.some("interrupted")] : [false, Option.none()]));
         if (!taken) return yield* new IntakeNotStopped();
         const previous = yield* Ref.get(live.running);
         if (previous !== undefined) yield* previous.end;
         const beforeRun = yield* Ref.get(state);
         if (beforeRun.kind !== "live" || beforeRun.live !== live) return yield* new Aborted();
-        const running = yield* runLive(live, "resume");
-        yield* Ref.set(live.running, running);
-        yield* live.send({ type: "intake", status: "interrupted" });
-        const result = yield* running.reached;
+        const resumed = yield* Effect.forkIn(Effect.gen(function* () {
+          const running = yield* runLive(live, "resume");
+          yield* Ref.set(live.running, running);
+          return yield* running.reached;
+        }), live.scope, { startImmediately: true });
+        const exit = yield* Fiber.await(resumed);
+        if (Exit.isFailure(exit) && Cause.hasInterruptsOnly(exit.cause)) return yield* new Aborted();
+        const result = yield* exit;
         if (result.kind === "gaveUp") return yield* new RestartGaveUp({ stderrTail: result.stderrTail });
         if (result.kind === "aborted") return yield* new Aborted();
         return { warnings };
@@ -575,7 +583,7 @@ export class Sessions extends Context.Service<Sessions, {
         const meetingTab = yield* live.meetingTabNotice.status;
         const diffUpdate = yield* live.sink.diffUpdateStatus;
         return {
-          status: yield* Ref.get(live.intake),
+          status: yield* SubscriptionRef.get(live.intake),
           dir: live.dir,
           restarts: (yield* live.controller.stats).restarts,
           ...(lastInterruptedAt === undefined ? {} : { lastInterruptedAt }),

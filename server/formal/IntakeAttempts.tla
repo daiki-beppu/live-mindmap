@@ -43,7 +43,7 @@ VARIABLES
   endKind,      \* body の返り値（IntakeEnd の kind）
   failures,     \* history.failures（:111）
   cfgN,         \* history.configurationChanges のうち、窓の中に残っている数
-  shown,        \* sessions.ts の live.intake（observe の running / interrupted / stopped で変わる、sessions.ts:249）
+  shown,        \* sessions.ts の live.intake（observe の running / interrupted / stopped で変わる、sessions.ts:254）
   target,       \* link.target（:74）
   pending,      \* この Mode の覚えている指示の値。live は link.selfPause（acknowledged なら "none"）、recorded は link.readingPaused
   pendingSeq,   \* live: pending の self-pause の seq
@@ -131,8 +131,8 @@ ReadNextLaunch ==
   /\ pc' = "Launch"
   /\ UNCHANGED <<cur, reconnecting, served, helper, stopRequested, reached, endKind, failures, cfgN, shown, target, pending, userWant, carried, sends, runs, countedAfterStop, outbox, pendingSeq, confirmed, revived>>
 
-\* launch（:75）: 子プロセスを起動する。launchOptions は selfPauseState（carried）を渡し（sessions.ts:304）、
-\* reading-pause は渡さない（sessions.ts:433）。前の試行の子プロセスは serve が終わりを待ってから閉じている（:103）。
+\* launch（:75）: 子プロセスを起動する。launchOptions は selfPauseState（carried）を渡し（sessions.ts:308）、
+\* reading-pause は渡さない（sessions.ts:437）。前の試行の子プロセスは serve が終わりを待ってから閉じている（:103）。
 \* seq は起動引数に無いので、新しいヘルパーはまだ指示を処理していない（seq 0）
 Launch ==
   /\ pc = "Launch"
@@ -207,7 +207,7 @@ Restarted ==
 
 ObsRunning ==
   /\ pc = "ObsRunning"
-  /\ shown' = "running"                              \* intakeAttempts.ts:138 → sessions.ts:249
+  /\ shown' = "running"                              \* intakeAttempts.ts:138 → sessions.ts:254
   /\ pc' = "ReachCheck"
   /\ UNCHANGED <<cur, reconnecting, served, helper, stopRequested, reached, endKind, failures, cfgN, target, pending, userWant, carried, sends, runs, countedAfterStop, outbox, pendingSeq, confirmed, revived>>
 
@@ -247,7 +247,7 @@ AfterReadFinished ==
   /\ Return("finished")
   /\ UNCHANGED <<cur, reconnecting, served, helper, stopRequested, failures, cfgN, shown, target, pending, userWant, carried, sends, runs, countedAfterStop, outbox, pendingSeq, confirmed, revived>>
 
-\* served なら crashed を observe する（:163。表示は変えない、sessions.ts:241）
+\* served なら crashed を observe する（:163。表示は変えない、sessions.ts:246）
 AfterReadCrashed ==
   /\ pc = "AfterRead" /\ ~stopRequested
   /\ ~(served /\ Mode = "recorded" /\ helper[cur].exit = "zero")
@@ -318,7 +318,7 @@ LoseUnread ==
     /\ UNCHANGED <<pc, cur, reconnecting, served, helper, stopRequested, reached, endKind, failures, cfgN, shown, target, pending, userWant, carried, sends, runs, countedAfterStop, pendingSeq, confirmed, revived>>
 
 \* serve が self-pause-state を読む。handled（r.seq）が pending の seq に届いていれば pending の self-pause を忘れ（intakeAttempts.ts:100・:45 acknowledge）、
-\* それから sessions.ts が selfPauseState に入れる（sessions.ts:209）
+\* それから sessions.ts が selfPauseState に入れる（sessions.ts:214）
 ReadEcho ==
   /\ pc = "Serving" /\ outbox[cur] # <<>>
   /\ LET r == Head(outbox[cur]) IN
@@ -353,12 +353,12 @@ Send ==
     /\ helper' = IF target # NoSlot THEN [helper EXCEPT ![target] = Deliver(target, v, sends + 1)] ELSE helper   \* intakeAttempts.ts:178
     /\ UNCHANGED <<pc, cur, reconnecting, served, stopRequested, reached, endKind, failures, cfgN, shown, target, carried, runs, countedAfterStop, outbox, confirmed, revived>>
 
-\* sessions.ts の resume（:536）: 表示が stopped のときだけ、表示を interrupted にし、前の end を待ってから次の run を始める
+\* sessions.ts の resume（:540）: 表示が stopped のときだけ、表示を interrupted にし、前の end を待ってから次の run を始める
 Resume ==
   /\ Mode = "live" /\ runs < MaxRuns
   /\ ~stopRequested
-  /\ shown = "stopped"                                 \* sessions.ts:540・:544
-  /\ pc = "Ended"                                      \* sessions.ts:547（previous.end）
+  /\ shown = "stopped"                                 \* sessions.ts:544・:548
+  /\ pc = "Ended"                                      \* sessions.ts:551（previous.end）
   /\ runs' = runs + 1
   /\ shown' = "interrupted"
   /\ pc' = "ReadNext" /\ cur' = NoSlot                 \* initial は最初の run が取り出した（:154）
@@ -404,7 +404,7 @@ InvReadingPauseFollowsUser == InvInstructionFollowsUser
 \* ヘルパーが処理したと返した self-pause を、次の回へ送り直さない（外れた手動の休止を、起動し直しで戻さない）
 InvNoResendAfterHandled == ~revived
 
-\* resume が待つ reached は、いつか決まる（reached を待つのは live の resume だけ、sessions.ts:553）
+\* resume が待つ reached は、いつか決まる（reached を待つのは live の resume だけ、sessions.ts:557）
 PropReachedSettles == [](reached = "undecided" => <>(reached # "undecided"))
 
 \* stop の後、end はいつか返る

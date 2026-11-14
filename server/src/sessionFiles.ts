@@ -21,7 +21,7 @@ import {
 } from "./core/index.ts";
 import { errorMessage, fileReason, formatIssues, oneLine } from "./truthFile.ts";
 import type { ExecutableModel } from "./modelSelection.ts";
-import type { SendFrame } from "./viewers.ts";
+import type { NotIntakeFrame, SendFrame } from "./viewers.ts";
 
 export const EXPORT_FILE = "export.json";
 export const LOG_FILE = "log.jsonl";
@@ -228,7 +228,8 @@ export type LoggedSessionOptions = {
   criteria?: readonly string[];
   logShiftMs?: number;
   carriedTerms?: readonly string[];
-  send?: SendFrame;
+  // SessionLog の書き込みのロックの中で呼ぶ。ここからログへ書くと、ロックを待ち合って止まる
+  send?: SendFrame<NotIntakeFrame>;
   onDiff?: Effect.Effect<void>;
 };
 
@@ -259,16 +260,11 @@ const openLogged = Effect.fnUntraced(function* ({ dir, title, criteria, logShift
   const log = Layer.succeed(SessionLog)(
     SessionLog.of({
       write: (event) =>
-        Effect.gen(function* () {
-          const session = yield* serialized(
-            Effect.gen(function* () {
-              yield* writeLogLine(event.type === "start" && model !== undefined ? { ...event, model: { name: model.name, route: model.route, local: model.local } } : event);
-              const session = yield* Ref.get(current);
-              if (session) yield* writeExport(session);
-              return session;
-            }),
-          );
+        serialized(Effect.gen(function* () {
+          yield* writeLogLine(event.type === "start" && model !== undefined ? { ...event, model: { name: model.name, route: model.route, local: model.local } } : event);
+          const session = yield* Ref.get(current);
           if (!session) return;
+          yield* writeExport(session);
           if (send && (event.type === "diff" || event.type === "diff-update-paused" || event.type === "diff-update-state")) {
             yield* send({ type: "diff-update", state: yield* session.diffUpdate });
           }
@@ -277,7 +273,7 @@ const openLogged = Effect.fnUntraced(function* ({ dir, title, criteria, logShift
             yield* send({ type: "speaker-names", names: Object.entries(json.speakerNames ?? {}).map(([label, name]) => ({ label, name })) });
           }
           if (send && event.type === "discussion-notice") yield* send({ type: "discussion-notice", text: event.text });
-        }),
+        })),
       reflected: (success) => Effect.gen(function* () {
         const session = yield* Ref.get(current);
         if (session === undefined) return;
@@ -295,12 +291,14 @@ const openLogged = Effect.fnUntraced(function* ({ dir, title, criteria, logShift
   const images = model === undefined || (model.route !== "apple" && model.images !== false);
   const options = { title: title ?? basename(dir), criteria, images, logShiftMs, carriedTerms };
   const session = yield* (updater === undefined ? makeTranscriptSession(options) : makeSession(options).pipe(Effect.provideService(DiffUpdater, updater))).pipe(Effect.provide(log));
-  yield* Ref.set(current, session);
-  if (send) {
-    yield* send({ type: "speaker-names", names: [] });
-    yield* send({ type: "diff-update", state: yield* session.diffUpdate });
-  }
-  yield* serialized(writeExport(session));
+  yield* serialized(Effect.gen(function* () {
+    yield* Ref.set(current, session);
+    if (send) {
+      yield* send({ type: "speaker-names", names: [] });
+      yield* send({ type: "diff-update", state: yield* session.diffUpdate });
+    }
+    yield* writeExport(session);
+  }));
   if (send) yield* Effect.flatMap(session.snapshot, (snapshot) => send({ type: "snapshot", snapshot }));
   return { session, appendLog, writeFailure, writeError };
 });
