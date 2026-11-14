@@ -374,7 +374,7 @@ describe("取り込みの試行", () => {
   it.effect.each([
     { name: "状態を変えた", manual: "pause" as const },
     { name: "状態を変えなかった", manual: "none" as const },
-  ])("self-pauseを送った回が$name指示を処理したと返した後に落ちたら、次の回へ送り直さない", ({ manual }) => Effect.gen(function* () {
+  ])("self-pauseを送った回が $name 指示を処理したと返した後に落ちたら、次の回へ送り直さない", ({ manual }) => Effect.gen(function* () {
     const r = yield* setup([crashed(1), {}]);
     yield* r.intake.send({ type: "self-pause", paused: true });
     r.fake.send(0, { type: "self-pause-state", ...INITIAL_SELF_PAUSE_STATE, manual, handled: 1 });
