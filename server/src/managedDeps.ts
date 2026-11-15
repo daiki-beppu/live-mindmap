@@ -404,6 +404,7 @@ const make = Effect.fnUntraced(function* (options: ManagedDepsOptions) {
       const pkg = yield* readJson(join(work, "node_modules", packageName, "package.json"), PackageRecord);
       if (pkg.version !== version) return yield* new ManagedDepsFailed({ message: "導入版が固定版と一致しません" });
       const binary = yield* installedBinary(work);
+      // Claude は npm ci が lock の integrity で照合済み、headless shell は Playwright が取得するため期待値を持たない。
       const recorded = yield* hash(binary);
       const now = yield* DateTime.now;
       const publishedBinary = name === "claude" ? claudeBinary(entity) : binary;
