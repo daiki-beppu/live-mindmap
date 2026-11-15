@@ -210,9 +210,6 @@ describe("Helpers の実物 Layer の契約（本物の子プロセス・HTTP・
       expect(JSON.parse(yield* cli("export", "--format", "json"))).toEqual(JSON.parse(readFileSync(paths[1]!, "utf8")));
     }));
 
-  // 実時間で HELPER_STOP_TIMEOUT_MS を待つ唯一の本物の時間のテスト（forceKillAfter は Node のタイマーで測るので
-  // TestClock では進まない）。上限はテストだけ短い値を与え、経過時間を「上限以上」（待たずに kill する誤りを落とす）と
-  // 「上限 + 2 秒未満」（既定の 5 秒のまま待つ誤りを落とす）で挟む。stop・close の両方の経路を 1 本にまとめる
   const STOP_LIMIT_MS = 400;
   it.live(
     "SIGTERM を無視するヘルパーを、stop でも close でも与えた上限の後に SIGKILL で止める",

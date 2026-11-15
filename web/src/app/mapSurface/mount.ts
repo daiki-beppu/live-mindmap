@@ -30,7 +30,6 @@ export const ObserveMapSurface = Mount.defineStream("ObserveMapSurface", {
   messages: [Message.MeasuredMapSurface, Message.PressedMapSurface, Message.PressedNodeButton, Message.ClickedNodeButton, Message.ClickedNodeButtonWithoutPointer, Message.WheeledMapSurface, Message.ClickedMapSurfaceWithModifier, Message.StartedMapSurfaceGesture, Message.ChangedMapSurfaceGesture],
   execute: ({ element }) =>
     Stream.merge(
-      // wheel は preventDefault を効かせるため、リスナーの中で同期して行う（passive: false）。ノードの上でも受ける
       Dom.streamFromEventFilterMapPreventDefault({
         target: element,
         type: "wheel",
@@ -118,7 +117,6 @@ const observeSurface = (surface: HTMLElement): Stream.Stream<Emitted> =>
           const origin = surface.getBoundingClientRect();
           Queue.offerUnsafe(queue, Message.ClickedMapSurfaceWithModifier({ x: event.clientX - origin.left, y: event.clientY - origin.top, ctrlKey: event.ctrlKey, metaKey: event.metaKey, altKey: event.altKey }));
         };
-        // gesture はページ全体のズームを止めるため、リスナーの中で同期して preventDefault する
         const onGestureStart = (event: Event) => {
           event.preventDefault();
           Queue.offerUnsafe(queue, Message.StartedMapSurfaceGesture());

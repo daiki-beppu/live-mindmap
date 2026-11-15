@@ -193,7 +193,6 @@ const fileFailed = (e: PlatformError.PlatformError) => new CommandFailed({ messa
 const orFileFailed = <A, E, R>(effect: Effect.Effect<A, E | PlatformError.PlatformError, R>) =>
   effect.pipe(Effect.catchIf(PlatformError.isPlatformError, (e) => Effect.fail(fileFailed(e))));
 
-// 待ち受けの失敗（ServeError は message を持たないので cause から作る）を入口の 1 行にする
 const listenFailed = (port: number, e: { readonly cause: unknown }) =>
   new CommandFailed({
     message: Predicate.hasProperty(e.cause, "code") && e.cause.code === "EADDRINUSE"

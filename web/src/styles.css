@@ -75,7 +75,6 @@ body { font-family: system-ui, "Hiragino Sans", sans-serif; background: var(--co
 .map-node__count { position: absolute; top: 50%; right: 6px; transform: translateY(-50%); min-width: 18px; height: 18px; padding: 0 4px; box-sizing: border-box; border-radius: 9px; background: var(--color-gray-200); color: var(--color-gray-600); font-size: 11px; line-height: 18px; text-align: center; pointer-events: none; }
 .map-node__count--pressable { pointer-events: all; cursor: pointer; border: 0; margin: 0; font-family: inherit; }
 .map-node__count--pressable:focus-visible { outline: 2px solid var(--color-yellow-400); }
-/* 人が開いたノードの、畳む小さな丸: ホバーか :focus-visible のときだけ出す（opacity で隠し、Tab で届くようにする）。絶対配置で、ノードの実寸は変えない */
 .map-node__fold-dot { position: absolute; top: 50%; right: 6px; transform: translateY(-50%); width: 12px; height: 12px; border-radius: 50%; background: var(--color-gray-200); border: 1px solid var(--color-gray-400); box-sizing: border-box; display: block; opacity: 0; padding: 0; margin: 0; cursor: pointer; pointer-events: all; }
 .map-node:hover .map-node__fold-dot { opacity: 1; }
 .map-node__fold-dot:focus-visible { opacity: 1; outline: 2px solid var(--color-yellow-400); }
@@ -172,14 +171,12 @@ body { font-family: system-ui, "Hiragino Sans", sans-serif; background: var(--co
 /* キー一覧: Popover が left・top を書くので、右の位置（top 12px・right 12px）は外し、中身の大きさに合わせる */
 .key-list__anchor .key-list { right: auto; width: max-content; }
 
-/* 見返し（map.html）のシークバー: ポインタを乗せている間・ドラッグ中は、トラックを太くし、つまみと吹き出しを出す。つまみは display: none や visibility: hidden では隠さない（Tab でフォーカスできなくなる） */
 .review-seek[data-pointing] .review-seek__track, .review-seek[data-dragging] .review-seek__track { top: 5px; height: 5px; }
 .review-seek[data-pointing] .review-seek__thumb, .review-seek[data-dragging] .review-seek__thumb, .review-seek__thumb:focus-visible { opacity: 1; }
 .review-seek__thumb:focus-visible { outline: 2px solid var(--color-yellow-400); }
 .review-seek[data-pointing] .review-seek__preview, .review-seek[data-dragging] .review-seek__preview { display: flex; }
 .review-bar__button svg { width: 18px; height: 18px; }
 
-/* 音量: ミュートのボタンにポインタを乗せている間（ドラッグ中・キーボードのフォーカス中も）だけ、横にスライダーが出る。幅 0 で隠すのでフォーカスは保てる */
 .review-volume:hover .review-volume__slider, .review-volume:focus-within .review-volume__slider, .review-volume__slider[data-dragging] { width: 64px; margin: 0 4px; opacity: 1; }
 .review-volume__thumb:focus-visible { outline: 2px solid var(--color-yellow-400); }
 

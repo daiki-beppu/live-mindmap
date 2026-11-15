@@ -1,4 +1,4 @@
-// 位置は offsetTop（変形を含まない位置）で測る。getBoundingClientRect は動いている途中の見かけの位置を返し、次の動きの起点を誤って揺れが止まらなくなる（試作の失敗）。
+// 位置は offsetTop（変形を含まない位置）で測る。getBoundingClientRect は動いている途中の見かけの位置を返し、次の動きの起点を誤って揺れが止まらなくなる。
 import { Effect } from "effect";
 import { Mount } from "foldkit";
 import { CAPTION_SLIDE_MS, slideDeltas } from "../../captions.ts";

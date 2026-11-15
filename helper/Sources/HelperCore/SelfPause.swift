@@ -9,7 +9,6 @@ public struct SelfPauseSeq: Sendable, Equatable {
 
     public init(value: Int) { self.value = value }
 
-    /// 1 以上の JSON の整数だけを読む。
     init?(json: Any?) {
         guard let number = json as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(),
               let value = Int(exactly: number.doubleValue), value >= 1

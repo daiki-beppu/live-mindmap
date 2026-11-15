@@ -85,8 +85,6 @@ export const startup = Effect.fnUntraced(function* (options: ListenOptions, laye
   }).pipe(Effect.provide(context));
 });
 
-// SIGINT・SIGTERM で終わったときの終了コードは 0 にする（頼まれた終了であって、失敗ではない）。
-// 既定の teardown は中断だけの Exit を 130 にするが、待受けの失敗などの本当の失敗は既定の規則に任せる
 const teardown: Runtime.Teardown = (exit, onExit) => {
   if (Exit.isFailure(exit) && Cause.hasInterruptsOnly(exit.cause)) {
     process.exitCode = 0;

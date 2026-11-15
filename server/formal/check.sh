@@ -1,13 +1,4 @@
 #!/usr/bin/env bash
-# server/formal の TLA+ モデルを、TLC で性質ごとに調べる。
-# 使い方: bash server/formal/check.sh [--model <名前>] [--spec <file.tla>] [性質の名前 ...]
-#   --model: 調べるモデル（既定 DiffUpdateScheduler）。<名前>.tla と、性質と構成を並べた <名前>.checks を読む
-#   --spec: 同じモデルの別の版（壊した版など）を調べる。モジュール名はファイル名から取る
-#   性質の名前を並べると、その性質だけを調べる（省略するとすべて）
-# <名前>.checks の行: 「<性質> <構成> ...」（構成は server/formal/<構成>.cfg の CONSTANTS）、または「known <性質>」
-#   known の性質は破れても KNOWN と出し、終了コードに数えない。通るようになったら PASS? と出す
-# 終了コード: 新しく破れた性質が無ければ 0、あれば 1、TLC が調べ切れなければ 2
-# TLC（tla2tools.jar）は版を固定して server/formal/.tla/ に一度だけ取る。Java 11 以上が要る
 set -euo pipefail
 
 FORMAL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -85,7 +76,6 @@ for entry in "${checks[@]}"; do
         echo "FAIL  $name ($kind) 反例の全文: $trace"
         status=1
       fi
-      # 反例の手順（遷移の名前）だけを並べる
       grep -oE '^State [0-9]+: <[A-Za-z]+' "$trace" | sed -E 's/^State ([0-9]+): <(.*)/      \1. \2/'
     else
       echo "ERROR $name ($kind)"

@@ -31,8 +31,6 @@ public struct EchoCancellerSettings: Equatable, Sendable, Encodable {
     public static let baseline = EchoCancellerSettings(epStrengthDefaultGain: 1)
 
     /// 本番の設定（Issue #119）。`baseline` との違いは、エコー経路の強さの初期値を 1 から 0.01 に下げたことだけ。
-    /// 漏れの無い条件では、開始直後に参照との相関が無いのに、既定の初期値（1）が発話を削る。
-    /// 漏れのある条件では、5 秒以降の発話の残り方・漏れの低下量は変わらない（`docs/investigations/2026-10-04-aec-startup-config.md`）。
     public static let production = EchoCancellerSettings(epStrengthDefaultGain: 0.01)
 }
 

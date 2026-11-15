@@ -86,7 +86,6 @@ public final class SelfPauseMonitor: @unchecked Sendable {
             await emit(.selfPause(change, start: seconds))
         }
         let state = rule.carryOver
-        // サーバーは handled を見て、送り直すのをやめる。状態を変えない指示にも返さないと、送り直しが止まらない。
         if pressed || state != announced {
             announced = state
             await emit(.selfPauseState(state, handled: handled))

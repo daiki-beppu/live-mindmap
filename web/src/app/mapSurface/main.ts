@@ -247,7 +247,7 @@ type Return = Update.ReturnWithOutMessage<Model, Message, OutMessage>;
 const CLICK_SLOP = 4;
 const awayFrom = (press: { x: number; y: number }, x: number, y: number): boolean => Math.hypot(x - press.x, y - press.y) > CLICK_SLOP;
 const startsPan = (button: number, ctrlKey: boolean): boolean => button <= 1 && !ctrlKey;
-// MouseEvent.buttons のビットは主=1・右=2・中=4 で、button の番号（主=0・中=1）とは並びが違う。押したボタンに対応するビットを返す
+// MouseEvent.buttons のビットは主=1・右=2・中=4 で、button の番号（主=0・中=1）とは並びが違う
 const buttonsBit = (button: number): number => (button === 1 ? 4 : 1);
 
 const movedByUser = (model: Model, viewport: Viewport): Model => {
@@ -382,7 +382,6 @@ export const update = (model: Model, message: Message): Return =>
         const moved = scrollAlongAxis(IDENTITY, lock.axis, { x: deltaX, y: deltaY });
         return { model: modifyFields(panBy(model, moved.x, moved.y), { scrollAxisLock: () => Option.some(lock) }) };
       }
-      // Ctrl 付きの wheel はトラックパッドのピンチ
       if (ctrlKey) return { model: zoomBy(model, { x, y }, pinchZoomFactor({ deltaY, deltaMode, ctrlKey }, model.isMac)) };
       if (model.isMac && metaKey) return { model };
       const moved = scrollPanDelta({ deltaX, deltaY, deltaMode, shiftKey }, model.isMac);

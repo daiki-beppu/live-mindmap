@@ -4,8 +4,6 @@ import Foundation
 import Testing
 import HelperCore
 
-// CI のランナーはモデルを持たず、テストのプロセスはモデルのダウンロードの状態も確かめられない（SFSpeechErrorDomain Code=1）ので、CI では流さない。
-
 @Suite("SpeechAnalyzerTranscriber の停止", .timeLimit(.minutes(2)), .disabled(if: ProcessInfo.processInfo.environment["CI"] != nil, "CI のランナーには ja-JP の音声認識モデルが無い"))
 struct SpeechAnalyzerTranscriberHeavyTests {
     private static let finishDeadline: Duration = .seconds(10)

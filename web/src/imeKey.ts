@@ -42,7 +42,6 @@ function charOfCode(code: string, shiftKey: boolean): string | null {
   return US_UNSHIFTED[code] ?? null;
 }
 
-// 全角の字は 0xFEE0 を引くと半角になる（U+FF01〜FF5E）。
 function fullWidthToHalf(key: string): string | null {
   if (key.length !== 1) return null;
   const cp = key.charCodeAt(0);

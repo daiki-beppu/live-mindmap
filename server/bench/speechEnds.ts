@@ -9,7 +9,6 @@ import type { SpokenLine } from "./sttLatency.ts";
 
 export type Silence = { start: number; end?: number };
 
-// ffmpeg（silencedetect）の出力から、無音区間の列と録音の長さ（秒）を読む。末尾の無音は end が無いことがある
 export function parseSilenceDetect(text: string): { duration: number | undefined; silences: Silence[] } {
   const dur = /Duration: (\d+):(\d+):([\d.]+)/.exec(text);
   const duration = dur ? Number(dur[1]) * 3600 + Number(dur[2]) * 60 + Number(dur[3]) : undefined;

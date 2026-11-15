@@ -1,4 +1,3 @@
-# 性質と、それを調べる構成（session-live: 会議の start・resume、session-recorded: 録画の startRecorded・自然な終わり）
 InvNoSessionWhileReserved session-live session-recorded
 InvInstallationsCount session-live session-recorded
 InvOneCloser session-recorded

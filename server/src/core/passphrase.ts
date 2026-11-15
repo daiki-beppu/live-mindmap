@@ -10,7 +10,7 @@ const SEALED_ELEMENT_ID = "live-mindmap-sealed";
 
 export type Sealed = { readonly salt: string; readonly iv: string; readonly data: string };
 
-// 32 は 256 を割り切るので、バイトを 32 で割った余りに偏りが出ない。Discord の markdown が解釈する * _ ~ | ` と空白を含まない
+// Discord の markdown が解釈する * _ ~ | ` と空白を含まない
 export function generatePassphrase(): string {
   const bytes = crypto.getRandomValues(new Uint8Array(PASSPHRASE_GROUPS * PASSPHRASE_GROUP_LENGTH));
   const chars = Array.from(bytes, (byte) => PASSPHRASE_ALPHABET[byte % PASSPHRASE_ALPHABET.length]!);

@@ -1,6 +1,5 @@
 # wordfreq 3.1.1 top_n_list('ja', 50000) / https://github.com/rspeer/wordfreq
 # License: CC BY-SA 4.0 (https://creativecommons.org/licenses/by-sa/4.0/)
-# 1 行 1 語。# で始まる行は注記
 の
 に
 て

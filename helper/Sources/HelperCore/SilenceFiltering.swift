@@ -1,10 +1,7 @@
 import AVFoundation
 import Foundation
 
-// 音声認識が完全な無音から文字を作ることがある（Issue #144）。認識結果の区間（start〜end）に STT へ渡した音
-// （AEC の後）の音量がしきい値未満なら、その結果（途中結果・確定とも）をヘルパーから送らない。判定は区間の音量だけで行い、
-// 文の中身（テキストの長さ・語彙）では判定しない。
-
+// 音声認識が完全な無音から文字を作ることがある（Issue #144）。
 let silenceThresholdDBFS: Double = -70
 
 private let silenceThresholdMeanSquare = pow(10, silenceThresholdDBFS / 10)

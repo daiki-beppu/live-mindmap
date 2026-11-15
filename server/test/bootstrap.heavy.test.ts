@@ -46,7 +46,6 @@ if (failures.includes(stage)) {
   console.error("fixture:" + stage + ":failed");
   process.exit(37);
 }
-// 成功する段は、失敗する段のプロセスが実際に終わった後まで残す。
 await until(() => failures.every((name) => {
   const pid = Number(readFileSync(join(dir, name + ".started"), "utf8"));
   try { process.kill(pid, 0); return false; }

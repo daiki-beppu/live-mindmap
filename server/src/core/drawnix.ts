@@ -1,4 +1,3 @@
-// Drawnix が読み込みで確かめるのは type・elements が配列・viewport がオブジェクトの 3 点だけ。
 import type { ExportNode, JsonExport } from "./export.ts";
 import type { Kind } from "./map.ts";
 import { personLine, speakerName, type SpeakerNames } from "./personLine.ts";

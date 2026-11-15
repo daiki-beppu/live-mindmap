@@ -125,7 +125,7 @@ const LINE_DELTA_FACTOR = 20;
 
 export type WheelDelta = { deltaX: number; deltaY: number; deltaMode: number; shiftKey: boolean };
 
-// 二本指スクロールで画面（ビューポートの平行移動）が動く量。delta と逆向き。Mac でない環境の Shift 付きは、縦の量を横に使う（Mac はブラウザが入れ替えて渡す）
+// Mac でない環境の Shift 付きは、縦の量を横に使う（Mac はブラウザが入れ替えて渡す）
 export function scrollPanDelta(wheel: WheelDelta, isMac: boolean): { x: number; y: number } {
   const factor = wheel.deltaMode === 1 ? LINE_DELTA_FACTOR : 1;
   const swap = !isMac && wheel.shiftKey;

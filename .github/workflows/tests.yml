@@ -33,7 +33,6 @@ on:
         value: ${{ jobs.results.outputs.results }}
 
 jobs:
-  # TS の型検査の後に fallow を実行する。helper のビルドは含めない。
   ts:
     if: inputs.run-ts
     runs-on: ubuntu-24.04
@@ -51,7 +50,6 @@ jobs:
           install: false
       - run: pnpm install --frozen-lockfile
         timeout-minutes: 5
-      # ルートの pnpm typecheck は helper の swift build まで走るので、TS のパッケージに絞る（server の typecheck は点検 script も走らせる）。
       # e2e は server のソースを import して層を組むので、型で層の渡し忘れを拾う（#640 は CI の e2e まで気付けなかった）
       - run: pnpm --filter @live-mindmap/server --filter @live-mindmap/web --filter @live-mindmap/e2e typecheck
       # 落ちても前のステップの結果を隠さないよう最後に置く。github-annotations は --fail-on-issues が無いと指摘があっても 0 で終わる
@@ -103,7 +101,6 @@ jobs:
             bash scripts/run-ci-tests.sh web it 0 1 files run
           fi
 
-  # server の runner 0 は bootstrap 専用。残りは一覧から自動分配する。
   heavy:
     if: inputs.run-ts
     runs-on: ubuntu-24.04
@@ -177,7 +174,6 @@ jobs:
         run: |
           bash scripts/run-ci-tests.sh "$PACKAGE" heavy "$SHARD" "$SHARDS" tests run
 
-  # 実取得するテストは配布元の状態に依存するため、管理依存を変更する PR だけで走らせる
   external:
     if: inputs.run-external
     runs-on: ubuntu-24.04
@@ -217,8 +213,6 @@ jobs:
       - run: pnpm test:external
         timeout-minutes: 5
 
-  # E2E（e2e/ の test:e2e、全 target）。コミットした replay cache を --strict-cache で再生するだけで、モデルも資格情報も使わない。
-  # 再生できないステップは REPLAY_STALE で落ちる。リトライは 0（e2e/package.json）。helper は fake-helper を使うので、helper だけの変更では回さない
   e2e:
     if: inputs.run-ts
     runs-on: ubuntu-24.04
@@ -263,16 +257,13 @@ jobs:
     name: helper (${{ matrix.layer }})
     # ヘルパーは SpeechAnalyzer を使うので macOS 26 の SDK が要る
     runs-on: macos-26
-    # テストが止まったときに macOS の枠を占め続けず、ログを残して落とす
     timeout-minutes: 20
-    # 待ちを決めるのは遅い脚なので、並べて短くする。IT が落ちても heavy IT の結果を隠さない
     strategy:
       fail-fast: false
       matrix:
         layer: [unit-it, heavy]
     steps:
       - uses: actions/checkout@v7
-      # WebRTC AEC3 のライブラリ。キャッシュが外れたときだけ uv を入れてビルドする
       - id: apm
         if: inputs.restore-caches && inputs.save-shared-caches
         uses: actions/cache@v6
@@ -310,9 +301,6 @@ jobs:
       - run: swift build --build-tests -Xswiftc -enable-incremental-file-hashing
         timeout-minutes: 10
         working-directory: helper
-      # helper の package.json の test は Command Line Tools のパスを渡す（手元に Xcode が無い前提）。
-      # ランナーには Xcode があるので swift test をそのまま使う。
-      # 層の選び方は helper/package.json の test・test:it・test:it:heavy と同じ
       - name: unit
         if: matrix.layer != 'heavy'
         timeout-minutes: 5
@@ -323,7 +311,6 @@ jobs:
         timeout-minutes: 5
         run: swift test --skip-build --filter 'ITTests/'
         working-directory: helper
-      # 話者分離（Nemotron 3）と、混入の検出（WeSpeaker）のモデル。セットアップの段で前もって取得する（会議の中では取りに行かない）。キャッシュが外れたときだけ取得する
       - id: speaker-models
         if: matrix.layer != 'unit-it' && inputs.restore-caches && inputs.save-shared-caches
         uses: actions/cache@v6
@@ -350,7 +337,6 @@ jobs:
         timeout-minutes: 5
         run: swift test --skip-build --filter 'HeavyTests/'
         working-directory: helper
-      # モデルの取得が .build に作る release の helper も残すため、取得を走らせる脚で保存する
       - if: matrix.layer != 'unit-it' && inputs.save-main-caches && steps.build-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v6
         with:
@@ -370,7 +356,6 @@ jobs:
             ~/Library/Application Support/FluidAudio/Models/nemotron-3-diarization
             ~/Library/Application Support/FluidAudio/Models/speaker-diarization
           key: speaker-models-${{ runner.os }}-${{ hashFiles('helper/Package.resolved', 'helper/scripts/fetch-speaker-models.sh') }}
-  # 判定はcallerのcheckが行う。失敗・skippedを含めて全ジョブの結果を渡す
   results:
     if: always()
     needs: [ts, unit, light, heavy, external, e2e, helper]

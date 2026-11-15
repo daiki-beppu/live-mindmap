@@ -1,4 +1,3 @@
-# 性質と、それを調べる構成（intake-live: start の取り込み、intake-recorded: 録画の取り込み）
 InvOneHelperAtATime intake-live intake-recorded
 InvNotCountedAfterStop intake-live intake-recorded
 InvStoppedOnlyWhenGaveUp intake-live intake-recorded

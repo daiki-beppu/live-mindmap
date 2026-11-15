@@ -20,10 +20,6 @@ export const SelfPauseState = Schema.Struct({
 });
 export type SelfPauseState = typeof SelfPauseState["Type"];
 
-/**
- * openIntake が self-pause の指示に振る番号。セッションの中で 1 から増え、ヘルパーを起動し直しても数え直さない。
- * self-pause-state の handled は、そのヘルパーのプロセスが処理した最後の指示の番号で、まだ処理していなければ 0。
- */
 export const SelfPauseSeq = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)).pipe(Schema.brand("SelfPauseSeq"));
 export type SelfPauseSeq = typeof SelfPauseSeq["Type"];
 

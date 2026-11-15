@@ -35,7 +35,7 @@ export const SeekAudio = Command.define("SeekAudio", {
   execute: ({ time }) => audioElement.pipe(Effect.map((audio) => { if (audio !== null) audio.currentTime = time; return Message.CompletedSeekAudio(); })),
 });
 
-// 声の高さは変えない（preservesPitch）。defaultPlaybackRate も揃えるのは、src を差し替えたときに速さが戻らないようにするため
+// defaultPlaybackRate も揃えるのは、src を差し替えたときに速さが戻らないようにするため
 export const WriteAudioSettings = Command.define("WriteAudioSettings", {
   args: { rate: Schema.Finite, muted: Schema.Boolean, volume: Schema.Finite },
   messages: [Message.CompletedWriteAudioSettings],
@@ -64,7 +64,7 @@ export const ReleaseFocus = Command.define("ReleaseFocus", {
   execute: releaseFocus.pipe(Effect.as(Message.CompletedReleaseFocus())),
 });
 
-// 速さのメニューで項目を選んだあと。Menu は閉じるときに自分の Command（FocusButton）でボタンへフォーカスを戻す。
+// Menu は閉じるときに自分の Command（FocusButton）でボタンへフォーカスを戻す。
 // その Command は commit を待ってから focus するので、同じ時点で外すと順序が決まらない。commit と次の描画を待ってから外し、ボタンに戻されたフォーカスを最後に外す
 export const ReleaseFocusAfterMenuClose = Command.define("ReleaseFocusAfterMenuClose", {
   messages: [Message.CompletedReleaseFocusAfterMenuClose],

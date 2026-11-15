@@ -45,7 +45,6 @@ export type RecordedStart = { file: string; selfFile?: string; title: string | u
 export class SessionsDir extends Context.Service<SessionsDir, string>()("live-mindmap/server/SessionsDir") {}
 
 type IntakeKind = "running" | "interrupted" | "stopped";
-// halted: 書き込みの失敗で止めた。run の知らせも resume も、ここから書き換えない
 type IntakeState = IntakeKind | "halted";
 const INITIAL_INTAKE: IntakeKind = "running";
 const intakeKind = (state: IntakeState): IntakeKind => state === "halted" ? "stopped" : state;
