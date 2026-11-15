@@ -379,8 +379,6 @@ struct LiveSessionITTests {
         try await waitFor("tap の10秒待機登録") { fixture.clock.sleeps.value.contains(.seconds(10)) }
         let stopReturned = Cell(false)
         fixture.tap.onCurrentLine.update { $0 = {
-            // 判定はロックを持ったまま協調スレッドで止まる。停止の要求も待ち合わせも協調スレッドの外で済ませ、
-            // テスト本体の進行を待たない（スレッドの少ない CI で他のテストまで止めない）。
             let requested = DispatchSemaphore(value: 0)
             Thread.detachNewThread {
                 trace.update { $0.append("stop-requested") }

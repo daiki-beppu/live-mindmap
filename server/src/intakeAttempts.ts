@@ -23,9 +23,7 @@ type Intake = {
   stats: Effect.Effect<{ attempt: number; restarts: number }>;
 };
 type Launched = { attempt: HelperAttempt; scope: Scope.Closeable; startedAt: number };
-/** 利用者の最後の自分の一時停止。seq は次の指示の番号の元にもなる。ヘルパーが handled で seq に届いたと返すまで、つながる回ごとに送り直す */
 type SelfPausePress = { readonly paused: boolean; readonly seq: SelfPauseSeq; readonly acknowledged: boolean };
-/** readingPaused は録画ファイルの読み取りの一時停止。止めている間は、つながる回ごとに送り直す（sticky） */
 type Link = { readonly target: HelperAttempt | undefined; readonly selfPause: SelfPausePress | undefined; readonly readingPaused: boolean };
 
 const remember = (link: Link, instruction: HelperInstruction): { link: Link; message: HelperMessage } => {

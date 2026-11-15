@@ -13,7 +13,6 @@
     "skipLibCheck": true,
     "types": ["vite/client"],
     // TS 7 の tsc はこの plugin 欄を読まない。effect-tsgo diagnostics が読む。
-    // web は unstable なモジュールを使っていないが、server と同じ設定に揃えて off。
     "plugins": [
       {
         "name": "@effect/language-service",

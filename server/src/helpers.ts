@@ -41,7 +41,6 @@ export type HelperAttempt = {
 
 export type HelperInstruction = { readonly type: "self-pause" | "reading-pause"; readonly paused: boolean };
 
-/** ソケットに書く指示。self-pause の seq は openIntake だけが振る。 */
 export type HelperMessage =
   | { readonly type: "self-pause"; readonly paused: boolean; readonly seq: SelfPauseSeq }
   | { readonly type: "reading-pause"; readonly paused: boolean };
@@ -272,7 +271,6 @@ const make = Effect.fnUntraced(function* (helper: HelperCommand) {
     const stop = handle.kill({ forceKillAfter: stopTimeoutMs }).pipe(Effect.ignore({ log: "Debug", message: "ヘルパーを止められない" }));
     yield* Effect.forkIn(Effect.andThen(Deferred.await(stopRequested), stop), scope);
 
-    // 間隔は 10ms から倍々に伸ばし、200ms で頭打ちにする（Schedule.min は短い方の待ちを使い、spaced が止まらないので終わらない）
     const connect = openHelperSocket(`ws://127.0.0.1:${port}`).pipe(
       Effect.retry(connectRetry),
       Effect.catchTag("HelperSocketError", (error) => Effect.die(error)),

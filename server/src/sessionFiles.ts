@@ -228,7 +228,6 @@ export type LoggedSessionOptions = {
   criteria?: readonly string[];
   logShiftMs?: number;
   carriedTerms?: readonly string[];
-  // SessionLog の書き込みのロックの中で呼ぶ。ここからログへ書くと、ロックを待ち合って止まる
   send?: SendFrame<NotIntakeFrame>;
   onDiff?: Effect.Effect<void>;
 };

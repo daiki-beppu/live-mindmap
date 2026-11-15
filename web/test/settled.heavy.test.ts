@@ -16,7 +16,6 @@ const openAnimated = async (page: Page, transformAt: string): Promise<void> => {
   await page.setContent(`<div class="map-viewport" style="transform: translate(0px, 0px) scale(1)"></div>
 <script>
   window.__frames = 0;
-  // settled の読みのループが発行した rAF の数。ページ自身の tick（下の raf 経由）は数えない。Playwright の通信待ちを計測に含めないため、ページの中で数える
   window.__settledFrames = 0;
   const raf = window.requestAnimationFrame.bind(window);
   window.requestAnimationFrame = (callback) => { window.__settledFrames += 1; return raf(callback); };

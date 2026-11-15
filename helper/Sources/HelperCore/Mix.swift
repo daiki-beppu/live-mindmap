@@ -89,7 +89,6 @@ public func mixRecordings(
         throw MixError("32 kbps・24 kHz・モノラルの AAC で書けない")
     }
     writer.add(input)
-    // moov を mdat の前（ファイルの先頭）に置く。
     writer.shouldOptimizeForNetworkUse = true
 
     guard reader.startReading() else { throw MixError("読み出しを始められない: \(describe(reader.error))") }

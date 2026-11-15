@@ -1,5 +1,5 @@
 // video.js のアイコン 9 種は、@videojs/react 10.0.1 の default アイコンの SVG を写したもの（座標・属性は原本のまま。描き直していない）。
-// 出どころとライセンス（Apache-2.0）は icons.NOTICE.md にあり、見返しの HTML のライセンスの表示に残る。React の部品（@videojs/react）は import しない。
+// 出どころとライセンス（Apache-2.0）は icons.NOTICE.md にあり、見返しの HTML のライセンスの表示に残る。
 import type { Html, HtmlBuilder } from "foldkit/html";
 import type { Message } from "./message.ts";
 

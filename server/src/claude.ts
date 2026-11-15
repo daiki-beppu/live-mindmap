@@ -24,12 +24,10 @@ function screenBlocks(screens: readonly ScreenChange[]): ContentBlockParam[] {
   );
 }
 
-// 1 つの query を開いたまま使い回す回数。会話の履歴がたまり続けないよう、この回数ごとに開き直す。
 // 14 は、計測（#75）で品質を確かめた最長の回数
 export const QUERY_RENEW_CALLS = 14;
 const RETAINED_SCREENS_MAX = 2;
 
-// Haiku 5.5 のときだけ SYSTEM の末尾に足す念押し（#719）
 const HAIKU_DECISION_APPEND = [
   "# 念押し（必ず守る）",
   "## 決定を TODO で置き換えない",

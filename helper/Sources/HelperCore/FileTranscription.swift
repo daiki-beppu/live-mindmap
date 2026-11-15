@@ -23,7 +23,6 @@ public protocol FileTranscriber {
 
 enum FilePCM {
     case measuring
-    /// `AnalyzerInput` にする。`AnalyzerInput` は Int16 のバッファしか受け付けない（Float32 だと init が落ちる）ので、モノラルの Int16。
     case analyzing
 }
 

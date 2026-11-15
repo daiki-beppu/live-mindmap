@@ -58,7 +58,6 @@ if (command === "corepack") {
   if (args.join(" ") !== "env which pnpm") unexpected();
   console.log(process.env.MEASURE_TEST_NATIVE_PNPM + "\n  Package: pnpm fixture");
 } else if (command === "git") {
-  // 下位 AEC3 のネットワーク取得は fixture スクリプトに置き換える。
   if (args.includes("clone")) log("clone-start", Date.now());
   run(process.env.MEASURE_TEST_GIT, args);
   if (args.includes("clone")) log("clone", resolve(args.at(-1)));

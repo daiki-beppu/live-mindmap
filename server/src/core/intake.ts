@@ -27,7 +27,6 @@ export const MAX_CONFIGURATION_CHANGES = 10;
 
 export type HelperExit = { code: number | null; signal: string | null };
 
-/** つながらなかった回は動いた長さを持たない。長く動いたことによる数え直しも、構成の変化の窓による切り捨ても、つながった回だけ */
 export type IntakeRestartInput = {
   failures: number;
   configurationChanges: ReadonlyArray<number>;

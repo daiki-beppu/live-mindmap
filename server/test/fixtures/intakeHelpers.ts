@@ -9,7 +9,6 @@ const GAP_BEFORE_RELAUNCH_FAILURE_MS = 1;
 export type AttemptScript = {
   events?: string[];
   connect?: boolean;
-  /** connect: false の回が、ソケットを開かないまま終わるまでの時間 */
   failAfterMs?: number;
   launchExit?: HelperExitInfo;
   stderrTail?: string[];

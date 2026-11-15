@@ -59,7 +59,6 @@ export const KEY_ROWS: readonly KeyRow[] = [
     keys: "= / -",
     action: "拡大・縮小（JIS 配列では ^ でも拡大）",
     screens: ALL,
-    // JIS の ^ と US の + でも拡大が効く。Shift 付きの = は JIS の Shift + -
     bindings: [...bind("=", "=", "Shift+=", "^", "Shift+Plus"), ...bind("-", "-")],
   },
   { keys: "0", action: "倍率 1.0 にする", screens: ALL, bindings: bind("0", "0") },

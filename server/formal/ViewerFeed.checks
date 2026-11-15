@@ -1,6 +1,4 @@
-# 性質と、それを調べる構成（viewer-single: showIntake が intake を 1 回送る、viewer-resume: showIntake が intake を 2 回続けて送る）
 InvViewersMatchRetained viewer-single viewer-resume
 InvEndFramesAfterClose viewer-single viewer-resume
 InvSendsSerializedPerKind viewer-resume
 InvNoSendAfterEnd viewer-resume
-# 既知の発見は「known <性質>」の行で書く（.agents/skills/verify-viewer-feed/SKILL.md の「既知の発見」）

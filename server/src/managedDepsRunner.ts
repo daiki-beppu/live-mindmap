@@ -5,7 +5,6 @@ import { dirname, join } from "node:path";
 
 const [owner, command, ...args] = process.argv.slice(2);
 if (owner === undefined || command === undefined) throw new Error("導入ランナーの引数がありません");
-// Windows の PID 生存だけでは子孫の寿命を確認できない。方式が決まるまで外部導入を開始しない。
 if (process.platform === "win32") throw new Error("Windows の導入プロセスの終了確認方式が未対応です");
 const uuid = randomUUID();
 const guard = dirname(owner);
