@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { existsSync, watch } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -176,7 +176,7 @@ describe("e2e serve CLI", () => {
     }
   }, TIMEOUT);
 
-  it("removes acquired temporary files and run-info when the web port is already occupied", async () => {
+  it("fails before creating temporary files or run-info when the web port is already occupied", async () => {
     const blocker = createServer();
     onTestFinished(() => new Promise<void>((resolve) => { blocker.close(() => resolve()); }));
     await new Promise<void>((resolve, reject) => {
@@ -201,12 +201,10 @@ describe("e2e serve CLI", () => {
     const exit = await app.exited();
     expect(exit.signal).toBeNull();
     expect(exit.code).not.toBe(0);
-    await vi.waitFor(() => {
-      expect(published).toBe(true);
-      expect(roots.size).toBeGreaterThan(0);
-    });
+    expect(published).toBe(false);
+    expect(roots.size).toBe(0);
+    expect((await readdir(app.home)).filter((name) => name.startsWith("live-mindmap-e2e-"))).toEqual([]);
     expect(existsSync(app.runInfoPath)).toBe(false);
-    for (const root of roots) expect(existsSync(root)).toBe(false);
     expect(blocker.listening).toBe(true);
   }, TIMEOUT);
 

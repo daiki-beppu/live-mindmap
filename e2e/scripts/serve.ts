@@ -1,5 +1,5 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { createServer as createHttpServer, type ServerResponse } from "node:http";
+import { createServer as createHttpServer, type Server, type ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import { join, normalize, sep } from "node:path";
 import { NodeChildProcessSpawner, NodeFileSystem, NodePath, NodeRuntime, NodeServices } from "@effect/platform-node";
@@ -45,6 +45,17 @@ const update = (input: DiffInput, discussion: boolean) => {
   });
 };
 
+const closeServer = (http: Server) => Effect.callback<void>((resume) => {
+  http.close((error) => resume(error && !("code" in error && error.code === "ERR_SERVER_NOT_RUNNING") ? Effect.die(error) : Effect.void));
+});
+
+const listenOn = (http: Server, port: number) => Effect.callback<void, Error>((resume) => {
+  const failed = (error: Error) => resume(Effect.fail(error));
+  http.once("error", failed);
+  http.listen(port, "127.0.0.1", () => resume(Effect.void));
+  return Effect.sync(() => { http.off("error", failed); });
+});
+
 const layerChildProcessSpawner = NodeChildProcessSpawner.layer.pipe(Layer.provide(Layer.mergeAll(NodeFileSystem.layer, NodePath.layer)));
 
 const program = Command.make("serve", {
@@ -53,6 +64,8 @@ const program = Command.make("serve", {
 }, ({ webPort, eventCount }) => Effect.gen(function* () {
   const discussion = (yield* Config.String("LIVE_MINDMAP_VERIFY_DISCUSSION").pipe(Config.withDefault(""))) === "1";
   const realHelper = (yield* Config.String("LIVE_MINDMAP_VERIFY_REAL_HELPER").pipe(Config.withDefault(""))) === "1";
+  const webPortClaim = yield* Effect.acquireRelease(Effect.sync(() => createHttpServer()), closeServer);
+  yield* listenOn(webPortClaim, webPort);
   const runInfoPath = join(e2eDir, ".run", `${webPort}.json`);
   const root = yield* Effect.acquireRelease(
     Effect.sync(() => mkdtempSync(join(tmpdir(), "live-mindmap-e2e-"))),
@@ -95,16 +108,9 @@ const program = Command.make("serve", {
   }));
   const files = yield* Effect.acquireRelease(
     Effect.sync(() => createHttpServer((req, res) => Effect.runSync(serveFile(new URL(req.url ?? "/", "http://x").pathname, res)))),
-    (http) => Effect.callback<void>((resume) => {
-      http.close((error) => resume(error && !("code" in error && error.code === "ERR_SERVER_NOT_RUNNING") ? Effect.die(error) : Effect.void));
-    }),
+    closeServer,
   );
-  yield* Effect.callback<void, Error>((resume) => {
-    const failed = (error: Error) => resume(Effect.fail(error));
-    files.once("error", failed);
-    files.listen(0, "127.0.0.1", () => resume(Effect.void));
-    return Effect.sync(() => { files.off("error", failed); });
-  });
+  yield* listenOn(files, 0);
   const address = yield* Effect.sync(() => files.address());
   if (address === null || typeof address === "string") return yield* Effect.die("file server has no TCP address");
   const filesPort = address.port;
@@ -123,6 +129,7 @@ const program = Command.make("serve", {
     }),
     (vite) => Effect.promise(() => vite.close()),
   );
+  yield* closeServer(webPortClaim);
   yield* Effect.promise(() => vite.listen());
   return yield* Effect.never;
 }).pipe(Effect.scoped));
